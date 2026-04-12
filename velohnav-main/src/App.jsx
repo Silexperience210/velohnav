@@ -3,7 +3,16 @@ import { ARScreen } from './components/ARScreen';
 import { MapScreen } from './components/MapScreen';
 import { SettingsScreen } from './components/SettingsScreen';
 import { ARNavigationScreen } from './components/ARNavigationScreen';
+import { RoutePlanner } from './components/RoutePlanner';
+import { StatsDashboard } from './components/StatsDashboard';
+import { WeatherOverlay, WeatherCompact } from './components/WeatherOverlay';
+import { NotificationToast, AlertSettings } from './components/NotificationCenter';
+import { VoiceControlButton, VoiceTranscript, useVoiceCommands } from './components/VoiceControl';
 import { useDeviceOrientation } from './hooks/useDeviceOrientation';
+import { useWeather } from './hooks/useWeather';
+import { useStats } from './hooks/useStats';
+import { useVoice } from './hooks/useVoice';
+import { useGeofencing } from './hooks/useGeofencing';
 
 // ── CAPACITOR DETECTION ───────────────────────────────────────────
 const IS_NATIVE = typeof window !== "undefined" &&
@@ -256,16 +265,77 @@ Réponds uniquement sur la mobilité Veloh, les itinéraires, ou l'app.`;
 }
 
 // ── NAV ───────────────────────────────────────────────────────────
-function NavBar({ tab, setTab }) {
+function NavBar({ tab, setTab, onStats, onRoutePlanner, onAlerts }) {
   return (
-    <div style={{ display:"flex",background:"rgba(8,12,15,0.98)",borderTop:`1px solid ${C.border}`,flexShrink:0 }}>
-      {[{id:"ar",i:"⬡",l:"AR"},{id:"map",i:"◈",l:"MAP"},{id:"ai",i:"◎",l:"AI"},{id:"settings",i:"≡",l:"OPT"}].map(t=>(
-        <div key={t.id} onPointerDown={()=>setTab(t.id)} style={{ flex:1,padding:"11px 0 9px",textAlign:"center",cursor:"pointer",
-          borderTop:`2px solid ${tab===t.id?C.accent:"transparent"}`,transition:"border-color 0.15s" }}>
-          <div style={{ fontSize:15,color:tab===t.id?C.accent:C.muted }}>{t.i}</div>
-          <div style={{ fontSize:7,fontFamily:C.fnt,letterSpacing:2,marginTop:2,color:tab===t.id?C.accent:C.muted }}>{t.l}</div>
-        </div>
-      ))}
+    <div>
+      {/* Boutons rapides */}
+      <div style={{ 
+        display:"flex", 
+        gap:8, 
+        padding:"8px 14px",
+        background:"rgba(8,12,15,0.95)",
+        borderTop:`1px solid ${C.border}`,
+      }}>
+        <button
+          onClick={onRoutePlanner}
+          style={{
+            flex:1,
+            padding:"8px",
+            background:"rgba(245,130,13,0.1)",
+            border:`1px solid ${C.accent}40`,
+            borderRadius:6,
+            color:C.accent,
+            fontSize:10,
+            fontWeight:700,
+            cursor:"pointer",
+          }}
+        >
+          🗺️ Itinéraire
+        </button>
+        <button
+          onClick={onStats}
+          style={{
+            flex:1,
+            padding:"8px",
+            background:"rgba(46,204,143,0.1)",
+            border:`1px solid ${C.good}40`,
+            borderRadius:6,
+            color:C.good,
+            fontSize:10,
+            fontWeight:700,
+            cursor:"pointer",
+          }}
+        >
+          📊 Stats
+        </button>
+        <button
+          onClick={onAlerts}
+          style={{
+            flex:1,
+            padding:"8px",
+            background:"rgba(59,130,246,0.1)",
+            border:`1px solid ${C.blue}40`,
+            borderRadius:6,
+            color:C.blue,
+            fontSize:10,
+            fontWeight:700,
+            cursor:"pointer",
+          }}
+        >
+          🔔 Alertes
+        </button>
+      </div>
+      
+      {/* Nav principale */}
+      <div style={{ display:"flex",background:"rgba(8,12,15,0.98)",borderTop:`1px solid ${C.border}`,flexShrink:0 }}>
+        {[{id:"ar",i:"⬡",l:"AR"},{id:"map",i:"◈",l:"MAP"},{id:"ai",i:"◎",l:"AI"},{id:"settings",i:"≡",l:"OPT"}].map(t=>(
+          <div key={t.id} onPointerDown={()=>setTab(t.id)} style={{ flex:1,padding:"11px 0 9px",textAlign:"center",cursor:"pointer",
+            borderTop:`2px solid ${tab===t.id?C.accent:"transparent"}`,transition:"border-color 0.15s" }}>
+            <div style={{ fontSize:15,color:tab===t.id?C.accent:C.muted }}>{t.i}</div>
+            <div style={{ fontSize:7,fontFamily:C.fnt,letterSpacing:2,marginTop:2,color:tab===t.id?C.accent:C.muted }}>{t.l}</div>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
@@ -277,22 +347,69 @@ export default function App() {
   
   // Navigation AR
   const [arNavActive, setArNavActive] = useState(false);
-  const [navStreak, setNavStreak] = useState(0);
   const [isNightMode, setIsNightMode] = useState(false);
+  
+  // Nouvelles fonctionnalités UI
+  const [showRoutePlanner, setShowRoutePlanner] = useState(false);
+  const [showStats, setShowStats] = useState(false);
+  const [showAlertSettings, setShowAlertSettings] = useState(false);
+  const [routeData, setRouteData] = useState(null);
   
   // API Keys
   const [apiKey,setApiKey] = useState("");
   const [claudeKey,setClaudeKey] = useState("");
   const [kimiKey,setKimiKey] = useState("");
-  const [aiProvider,setAiProvider] = useState("claude"); // 'claude', 'kimi', 'none'
+  const [aiProvider,setAiProvider] = useState("claude");
   
   const [stations,setStations] = useState(()=>enrich(FALLBACK,null));
   const [apiLive,setApiLive] = useState(false);
   const [isMock,setIsMock] = useState(true);
   const [gpsPos,setGpsPos] = useState(null);
 
-  // Orientation pour AR et Map
+  // Hooks
   const { alpha: heading } = useDeviceOrientation();
+  const weather = useWeather();
+  const stats = useStats();
+  const voice = useVoice();
+  const geofencing = useGeofencing();
+
+  // Commandes vocales
+  useVoiceCommands({
+    voice,
+    stations,
+    sel,
+    setSel,
+    setArNavActive,
+    gpsPos,
+  });
+
+  // Charger météo quand on a le GPS
+  useEffect(()=>{
+    if (gpsPos) {
+      weather.fetchWeather(gpsPos.lat, gpsPos.lng);
+    }
+  },[gpsPos?.lat, gpsPos?.lng]); // eslint-disable-line
+
+  // Vérifier les alertes géolocalisées
+  useEffect(()=>{
+    if (gpsPos && stations.length > 0) {
+      geofencing.checkAlerts(gpsPos, stations, weather.weather);
+    }
+  },[gpsPos, stations, weather.weather]); // eslint-disable-line
+
+  // Ajouter un trajet aux stats quand on quitte la navigation
+  const handleNavExit = useCallback(() => {
+    const target = stations.find(s => s.id === sel);
+    if (target && target.dist < 100) {
+      stats.addRide({
+        distance: target.dist,
+        stationId: target.id,
+        stationName: target.name,
+        isRain: weather.weather?.precipitation > 0,
+      });
+    }
+    setArNavActive(false);
+  }, [sel, stations, stats, weather.weather]);
 
   // GPS watch continu
   useEffect(()=>{
@@ -329,6 +446,24 @@ export default function App() {
     <div style={{ width:"100%",height:"100vh",display:"flex",flexDirection:"column",
       background:C.bg,overflow:"hidden",maxWidth:430,margin:"0 auto" }}>
       <StatusBar tab={tab} gpsOk={!!gpsPos} apiLive={apiLive} isMock={isMock}/>
+      
+      {/* Météo Overlay (sauf en AR plein écran) */}
+      {!arNavActive && tab === "ar" && (
+        <WeatherOverlay 
+          weather={weather.weather}
+          advice={weather.getBikeAdvice()}
+          gpsPos={gpsPos}
+          onRefresh={weather.fetchWeather}
+          loading={weather.loading}
+        />
+      )}
+      
+      {/* Notification Toast */}
+      <NotificationToast 
+        notification={geofencing.lastNotification}
+        onDismiss={geofencing.clearNotifications}
+      />
+      
       <div style={{ flex:1,display:"flex",flexDirection:"column",overflow:"hidden",minHeight:0 }}>
         {tab==="ar"       &&<ARScreen  stations={stations} sel={sel} setSel={setSel} gpsPos={gpsPos} onNavigateAR={() => setArNavActive(true)}/>}
         {tab==="map"      &&<MapScreen stations={stations} sel={sel} setSel={setSel} gpsPos={gpsPos} heading={heading}/>}
@@ -340,7 +475,25 @@ export default function App() {
           aiProvider={aiProvider} setAiProvider={setAiProvider}
           onRefresh={loadData} apiLive={apiLive} isMock={isMock} gpsPos={gpsPos}/>}
       </div>
-      <NavBar tab={tab} setTab={setTab}/>
+      
+      {/* NavBar avec boutons extra */}
+      <NavBar tab={tab} setTab={setTab} 
+        onStats={() => setShowStats(true)}
+        onRoutePlanner={() => setShowRoutePlanner(true)}
+        onAlerts={() => setShowAlertSettings(true)}
+      />
+      
+      {/* Contrôle Vocal */}
+      <VoiceControlButton 
+        isListening={voice.isListening}
+        isSpeaking={voice.isSpeaking}
+        onToggle={voice.toggleListening}
+        supported={voice.supported}
+      />
+      <VoiceTranscript 
+        transcript={voice.transcript}
+        isListening={voice.isListening}
+      />
       
       {/* Navigation AR immersive */}
       {arNavActive && sel && (
@@ -349,18 +502,49 @@ export default function App() {
           userPos={gpsPos}
           heading={heading}
           stations={stations}
-          streak={navStreak}
+          streak={stats.formatted?.currentStreak || 0}
           isNightMode={isNightMode}
-          onExit={() => {
-            setArNavActive(false);
-            // Incrémenter le streak si on était proche
-            const target = stations.find(s => s.id === sel);
-            if (target && target.dist < 50) {
-              setNavStreak(s => s + 1);
-            }
-          }}
+          onExit={handleNavExit}
         />
       )}
+      
+      {/* Route Planner */}
+      <RoutePlanner 
+        isOpen={showRoutePlanner}
+        onClose={() => setShowRoutePlanner(false)}
+        stations={stations}
+        gpsPos={gpsPos}
+        onStartRoute={(route, name) => {
+          setRouteData({ route, name });
+          // Pour l'instant, prendre la première station
+          if (route.length > 0) {
+            setSel(route[0].id);
+          }
+        }}
+      />
+      
+      {/* Stats Dashboard */}
+      <StatsDashboard 
+        isOpen={showStats}
+        onClose={() => setShowStats(false)}
+        stats={stats.stats}
+        formatted={stats.formatted}
+        allBadges={stats.allBadges}
+        weeklyStats={stats.weeklyStats}
+        unlockedBadges={stats.unlockedBadges}
+      />
+      
+      {/* Alert Settings */}
+      <AlertSettings 
+        isOpen={showAlertSettings}
+        onClose={() => setShowAlertSettings(false)}
+        alerts={geofencing.alerts}
+        onAddAlert={geofencing.addAlert}
+        onRemoveAlert={geofencing.removeAlert}
+        onToggleAlert={geofencing.toggleAlert}
+        stations={stations}
+        gpsPos={gpsPos}
+      />
     </div>
   );
 }

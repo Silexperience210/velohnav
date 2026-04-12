@@ -7,3 +7,8 @@ export { ThemeToggle } from './ThemeToggle';
 export { NavigationMode } from './NavigationMode';
 export { SettingsScreen } from './SettingsScreen';
 export { ARNavigationScreen } from './ARNavigationScreen';
+export { RoutePlanner } from './RoutePlanner';
+export { StatsDashboard } from './StatsDashboard';
+export { WeatherOverlay, WeatherCompact } from './WeatherOverlay';
+export { NotificationToast, AlertSettings } from './NotificationCenter';
+export { VoiceControlButton, VoiceTranscript, useVoiceCommands } from './VoiceControl';
