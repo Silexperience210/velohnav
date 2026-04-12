@@ -3,16 +3,15 @@
   "appName": "VelohNav",
   "webDir": "dist",
   "server": {
-    "androidScheme": "https",
-    "cleartext": false
+    "androidScheme": "https"
   },
   "android": {
-    "allowMixedContent": false,
-    "backgroundColor": "#080c0f"
+    "backgroundColor": "#080c0f",
+    "allowMixedContent": false
   },
   "plugins": {
-    "SplashScreen": {
-      "launchShowDuration": 0
+    "Geolocation": {
+      "permissions": ["location"]
     }
   }
 }

@@ -1,5 +1,64 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 
+// ── CAPACITOR DETECTION ───────────────────────────────────────────
+const IS_NATIVE = typeof window !== "undefined" &&
+  !!(window.Capacitor?.isNativePlatform?.() || window.Capacitor?.platform === "android");
+
+async function getPositionOnce() {
+  if (IS_NATIVE) {
+    try {
+      const { Geolocation } = await import("@capacitor/geolocation");
+      await Geolocation.requestPermissions();
+      const pos = await Geolocation.getCurrentPosition({ enableHighAccuracy:true, timeout:10000 });
+      return { lat:pos.coords.latitude, lng:pos.coords.longitude, acc:Math.round(pos.coords.accuracy) };
+    } catch(e) { console.warn("Native GPS:", e); }
+  }
+  return new Promise((res, rej) => {
+    if (!navigator.geolocation) { rej(new Error("GPS indisponible")); return; }
+    navigator.geolocation.getCurrentPosition(
+      p => res({ lat:p.coords.latitude, lng:p.coords.longitude, acc:Math.round(p.coords.accuracy) }),
+      rej, { enableHighAccuracy:true, timeout:10000 }
+    );
+  });
+}
+
+async function startWatchingGPS(cb) {
+  if (IS_NATIVE) {
+    try {
+      const { Geolocation } = await import("@capacitor/geolocation");
+      await Geolocation.requestPermissions();
+      const id = await Geolocation.watchPosition({ enableHighAccuracy:true }, (pos) => {
+        if (pos?.coords) cb({ lat:pos.coords.latitude, lng:pos.coords.longitude, acc:Math.round(pos.coords.accuracy) });
+      });
+      return () => Geolocation.clearWatch({ id });
+    } catch(e) { console.warn("Native GPS watch:", e); }
+  }
+  if (!navigator.geolocation) return () => {};
+  const id = navigator.geolocation.watchPosition(
+    p => cb({ lat:p.coords.latitude, lng:p.coords.longitude, acc:Math.round(p.coords.accuracy) }),
+    e => console.warn("GPS:", e),
+    { enableHighAccuracy:true, maximumAge:5000 }
+  );
+  return () => navigator.geolocation.clearWatch(id);
+}
+
+// JCDecaux — fetch direct en natif, proxy CORS en web prototype
+async function fetchJCDecaux(apiKey) {
+  const url = `https://api.jcdecaux.com/vls/v3/stations?contract=Luxembourg&apiKey=${apiKey}`;
+  try {
+    const r = await fetch(url);
+    if (r.ok) return await r.json();
+  } catch {}
+  if (!IS_NATIVE) {
+    try {
+      const r = await fetch(`https://corsproxy.io/?${encodeURIComponent(url)}`);
+      if (r.ok) return await r.json();
+    } catch {}
+  }
+  return null;
+}
+
+// ── DESIGN ────────────────────────────────────────────────────────
 const C = {
   bg:"#080c0f", border:"rgba(255,255,255,0.07)",
   accent:"#F5820D", accentBg:"rgba(245,130,13,0.12)",
@@ -19,83 +78,79 @@ const fWalk = m => `${Math.round(m/80)} min`;
 const bCol  = s => s.status==="CLOSED"?"#444":s.bikes===0?C.bad:s.bikes<=2?C.warn:C.good;
 const bTag  = s => s.status==="CLOSED"?"FERMÉ":s.bikes===0?"VIDE":s.bikes<=2?"FAIBLE":"DISPO";
 
-// ── DONNÉES — GPS réels Luxembourg ────────────────────────────────
-const USER = { lat:49.6080, lng:6.1295 }; // Ville-Haute
+function parseStation(raw) {
+  const av = raw.totalStands?.availabilities ?? {};
+  return {
+    id:    raw.number,
+    name:  (raw.name||"").replace(/^\d+[\s\-]+/,"").trim(),
+    lat:   raw.position?.latitude  ?? raw.position?.lat,
+    lng:   raw.position?.longitude ?? raw.position?.lng,
+    cap:   raw.totalStands?.capacity ?? raw.bike_stands ?? 0,
+    bikes: av.bikes ?? raw.available_bikes ?? 0,
+    elec:  av.electricalBikes ?? av.electricalInternalBatteryBikes ?? 0,
+    meca:  av.mechanicalBikes ?? 0,
+    docks: av.stands ?? raw.available_bike_stands ?? 0,
+    status: raw.status==="OPEN" ? "OPEN" : "CLOSED",
+    _mock: false,
+  };
+}
 
-const RAW = [
-  { id:1,  name:"Gare Centrale",       lat:49.59995, lng:6.13385, cap:20, b:7,  e:5 },
-  { id:4,  name:"Place d'Armes",       lat:49.61118, lng:6.13091, cap:15, b:5,  e:4 },
-  { id:2,  name:"Hamilius",            lat:49.61143, lng:6.12975, cap:25, b:2,  e:1 },
-  { id:7,  name:"Clausen",             lat:49.61021, lng:6.14437, cap:12, b:4,  e:3 },
-  { id:14, name:"Kirchberg MUDAM",     lat:49.61921, lng:6.15178, cap:22, b:9,  e:7 },
-  { id:21, name:"Limpertsberg",        lat:49.61571, lng:6.12462, cap:20, b:3,  e:2 },
-  { id:33, name:"Bonnevoie",           lat:49.59650, lng:6.13750, cap:18, b:0,  e:0 },
-  { id:45, name:"Belair",              lat:49.60890, lng:6.11940, cap:16, b:6,  e:4 },
-];
+const REF = { lat:49.6080, lng:6.1295 };
+const FALLBACK = [
+  { id:1,  name:"Gare Centrale",       lat:49.59995, lng:6.13385, cap:20, b:7, e:5 },
+  { id:4,  name:"Place d'Armes",        lat:49.61118, lng:6.13091, cap:15, b:5, e:4 },
+  { id:2,  name:"Hamilius",             lat:49.61143, lng:6.12975, cap:25, b:2, e:1 },
+  { id:7,  name:"Clausen",              lat:49.61021, lng:6.14437, cap:12, b:4, e:3 },
+  { id:14, name:"Kirchberg MUDAM",      lat:49.61921, lng:6.15178, cap:22, b:9, e:7 },
+  { id:21, name:"Limpertsberg",         lat:49.61571, lng:6.12462, cap:20, b:3, e:2 },
+  { id:33, name:"Bonnevoie",            lat:49.59650, lng:6.13750, cap:18, b:0, e:0 },
+  { id:45, name:"Belair",               lat:49.60890, lng:6.11940, cap:16, b:6, e:4 },
+].map(s=>({ id:s.id, name:s.name, lat:s.lat, lng:s.lng, cap:s.cap,
+  bikes:s.b, elec:s.e, meca:s.b-s.e, docks:s.cap-s.b,
+  status:s.b===0&&s.id===33?"CLOSED":"OPEN", _mock:true }));
 
-const STATIONS = RAW.map(s => ({
-  id:s.id, name:s.name, lat:s.lat, lng:s.lng,
-  cap:s.cap, bikes:s.b, elec:s.e, meca:s.b-s.e,
-  docks:s.cap-s.b, status:s.b===0&&s.id===33?"CLOSED":"OPEN",
-  dist: haversine(USER.lat,USER.lng,s.lat,s.lng),
-})).sort((a,b)=>a.dist-b.dist);
+function enrich(list, pos) {
+  const ref = pos ?? REF;
+  return list.filter(s=>s.lat&&s.lng)
+    .map(s=>({ ...s, dist:haversine(ref.lat,ref.lng,s.lat,s.lng) }))
+    .sort((a,b)=>a.dist-b.dist);
+}
+function pins(stations) {
+  return stations.slice(0,6).map((s,i)=>({
+    ...s, px:13+(i%3)*34, py:28+Math.floor(i/3)*38, labelRight:(i%3)<2,
+  }));
+}
 
-// ── PIN POSITIONS — grille 3 cols, sans collision ─────────────────
-const PIN_GRID = STATIONS.slice(0,6).map((s,i) => ({
-  ...s,
-  px: 13 + (i%3) * 34,
-  py: 28 + Math.floor(i/3) * 38,
-  right: (i%3) < 2,
-}));
-
-// ── ANIMATED CITY BG ──────────────────────────────────────────────
-function CityBackground({ offset }) {
-  // Faux décor de rue animé — lignes de fuite qui bougent
-  const s = offset % 80;
+// ── CITY BG ───────────────────────────────────────────────────────
+function CityBG({ off }) {
+  const s = off % 80;
   return (
     <svg style={{ position:"absolute",inset:0,width:"100%",height:"100%" }}
       viewBox="0 0 400 600" preserveAspectRatio="xMidYMid slice">
       <defs>
-        <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor="#0d2010"/>
-          <stop offset="100%" stopColor="#152a18"/>
+        <linearGradient id="sg" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor="#0d2010"/><stop offset="100%" stopColor="#152a18"/>
         </linearGradient>
-        <linearGradient id="road" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor="#0e1a0e"/>
-          <stop offset="100%" stopColor="#1a2a1a"/>
+        <linearGradient id="rg" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor="#0e1a0e"/><stop offset="100%" stopColor="#1a2a1a"/>
         </linearGradient>
       </defs>
-      {/* Ciel */}
       <rect width="400" height="600" fill="#0a1a12"/>
-      {/* Nuances de ciel */}
-      <rect width="400" height="280" fill="url(#sky)"/>
-      {/* Route */}
-      <polygon points="80,380 320,380 400,600 0,600" fill="url(#road)"/>
-      {/* Bâtiments gauche */}
-      {[0,1,2].map(i=>(
-        <rect key={i} x={i*35} y={180-i*20} width={30} height={200+i*20}
-          fill={`rgba(10,${25+i*5},12,0.9)`} stroke="rgba(50,100,50,0.15)" strokeWidth="0.5"/>
-      ))}
-      {/* Bâtiments droite */}
-      {[0,1,2].map(i=>(
-        <rect key={i} x={290+i*35} y={160+i*15} width={28} height={220-i*15}
-          fill={`rgba(8,${20+i*4},10,0.9)`} stroke="rgba(50,100,50,0.12)" strokeWidth="0.5"/>
-      ))}
-      {/* Marquage route animé */}
-      {[0,1,2,3].map(i=>(
-        <rect key={i} x={197} y={420+i*50-(s*0.6)%50} width={6} height={28}
-          fill="rgba(255,140,0,0.2)" rx="1"/>
-      ))}
-      {/* Reflets sol */}
-      <ellipse cx="200" cy="580" rx="120" ry="20" fill="rgba(255,140,0,0.04)"/>
-      {/* Overlay grain */}
-      <rect width="400" height="600" fill="rgba(0,0,0,0.25)"/>
+      <rect width="400" height="280" fill="url(#sg)"/>
+      <polygon points="80,380 320,380 400,600 0,600" fill="url(#rg)"/>
+      {[0,1,2].map(i=><rect key={`l${i}`} x={i*35} y={180-i*20} width={30} height={200+i*20}
+        fill={`rgba(10,${25+i*5},12,0.9)`} stroke="rgba(50,100,50,0.15)" strokeWidth="0.5"/>)}
+      {[0,1,2].map(i=><rect key={`r${i}`} x={290+i*35} y={160+i*15} width={28} height={220-i*15}
+        fill={`rgba(8,${20+i*4},10,0.9)`} stroke="rgba(50,100,50,0.12)" strokeWidth="0.5"/>)}
+      {[0,1,2,3].map(i=><rect key={`m${i}`} x={197} y={420+i*50-(s*0.6)%50} width={6} height={28}
+        fill="rgba(255,140,0,0.2)" rx="1"/>)}
+      <rect width="400" height="600" fill="rgba(0,0,0,0.22)"/>
     </svg>
   );
 }
 
 // ── STATUS BAR ────────────────────────────────────────────────────
-function StatusBar({ tab }) {
+function StatusBar({ tab, gpsOk, apiLive, isMock }) {
   const [t,setT] = useState(new Date());
   useEffect(()=>{ const i=setInterval(()=>setT(new Date()),1000); return()=>clearInterval(i); },[]);
   const LABELS = { ar:"AUGMENTED REALITY", map:"CARTE", ai:"ASSISTANT", settings:"PARAMÈTRES" };
@@ -112,13 +167,18 @@ function StatusBar({ tab }) {
         </div>
       </div>
       <div style={{ display:"flex", gap:5, alignItems:"center" }}>
-        <div style={{ display:"flex", alignItems:"center", gap:3, padding:"3px 7px",
-          background:"rgba(0,0,0,0.4)", border:`1px solid ${C.border}`, borderRadius:3 }}>
-          <div style={{ width:5, height:5, borderRadius:"50%", background:C.good, boxShadow:`0 0 4px ${C.good}` }}/>
-          <span style={{ color:C.good, fontSize:7, fontFamily:C.fnt }}>VILLE-HAUTE</span>
-        </div>
+        {[
+          { l:gpsOk?"GPS ✓":"GPS",  col:gpsOk?C.good:C.warn },
+          { l:apiLive?"LIVE":isMock?"DEMO":"ERR", col:apiLive?C.good:isMock?C.warn:C.bad },
+        ].map(s=>(
+          <div key={s.l} style={{ display:"flex", alignItems:"center", gap:3, padding:"3px 6px",
+            background:"rgba(0,0,0,0.4)", border:`1px solid ${C.border}`, borderRadius:3 }}>
+            <div style={{ width:5,height:5,borderRadius:"50%",background:s.col,boxShadow:`0 0 4px ${s.col}` }}/>
+            <span style={{ color:s.col, fontSize:7, fontFamily:C.fnt }}>{s.l}</span>
+          </div>
+        ))}
         <div style={{ color:C.text, fontSize:11, fontFamily:C.fnt, fontWeight:700,
-          padding:"3px 7px", background:"rgba(0,0,0,0.4)", border:`1px solid ${C.border}`, borderRadius:3 }}>
+          padding:"3px 6px", background:"rgba(0,0,0,0.4)", border:`1px solid ${C.border}`, borderRadius:3 }}>
           {t.toLocaleTimeString("fr",{hour:"2-digit",minute:"2-digit"})}
         </div>
       </div>
@@ -128,39 +188,33 @@ function StatusBar({ tab }) {
 
 // ── AR PIN ────────────────────────────────────────────────────────
 function ARPin({ s, sel, setSel, pulse }) {
-  const col  = bCol(s);
-  const isSel = sel === s.id;
+  const col=bCol(s), isSel=sel===s.id;
   return (
-    <div onPointerDown={() => setSel(isSel ? null : s.id)}
+    <div onPointerDown={()=>setSel(isSel?null:s.id)}
       style={{ position:"absolute", left:`${s.px}%`, top:`${s.py}%`,
-        transform:"translate(-50%,-50%)", cursor:"pointer", zIndex:isSel?25:14,
-        padding:14, margin:-14 /* zone de tap large */ }}>
-      {/* Ring pulsé */}
+        transform:"translate(-50%,-50%)", cursor:"pointer",
+        zIndex:isSel?25:14, padding:14, margin:-14 }}>
       <div style={{ position:"absolute", top:14, left:14, width:13, height:13, borderRadius:"50%",
         boxShadow:`0 0 0 ${pulse?10:3}px ${col}22`, transition:"box-shadow 1s", pointerEvents:"none" }}/>
-      {/* Point central */}
       <div style={{ width:13, height:13, borderRadius:"50%", background:col,
-        border:`2px solid ${isSel?"#fff":"rgba(0,0,0,0.55)"}`,
-        boxShadow:`0 0 10px ${col}`,
+        border:`2px solid ${isSel?"#fff":"rgba(0,0,0,0.55)"}`, boxShadow:`0 0 10px ${col}`,
         transform:isSel?"scale(1.45)":"scale(1)", transition:"transform 0.15s",
         position:"relative", zIndex:2 }}/>
-      {/* Étiquette */}
       <div style={{
         position:"absolute", top:"50%", transform:"translateY(-50%)",
-        ...(s.right ? { left:22 } : { right:22 }),
+        ...(s.labelRight?{left:22}:{right:22}),
         background:"rgba(6,10,14,0.94)",
-        border:`1px solid ${isSel ? col : col+"55"}`,
+        border:`1px solid ${isSel?col:col+"55"}`,
         borderRadius:5, padding:"5px 9px", whiteSpace:"nowrap",
-        boxShadow: isSel ? `0 0 16px ${col}40` : "none",
+        boxShadow:isSel?`0 0 16px ${col}40`:"none",
         pointerEvents:"none", transition:"border-color 0.15s, box-shadow 0.15s",
       }}>
-        <div style={{ color:isSel?col:C.text, fontSize:10, fontFamily:C.fnt, fontWeight:700 }}>
-          {s.name}
-        </div>
+        <div style={{ color:isSel?col:C.text, fontSize:10, fontFamily:C.fnt, fontWeight:700 }}>{s.name}</div>
         <div style={{ display:"flex", gap:7, marginTop:2, alignItems:"center" }}>
           <span style={{ color:col, fontSize:13, fontFamily:C.fnt, fontWeight:900 }}>{s.bikes}</span>
-          {s.elec>0 && <span style={{ color:"#60A5FA", fontSize:8 }}>⚡{s.elec}</span>}
+          {s.elec>0&&<span style={{ color:"#60A5FA", fontSize:8 }}>⚡{s.elec}</span>}
           <span style={{ color:C.muted, fontSize:8 }}>{fDist(s.dist)}</span>
+          {s._mock&&<span style={{ color:"#444", fontSize:7 }}>~</span>}
         </div>
       </div>
     </div>
@@ -168,41 +222,45 @@ function ARPin({ s, sel, setSel, pulse }) {
 }
 
 // ── AR SCREEN ─────────────────────────────────────────────────────
-function ARScreen({ sel, setSel }) {
-  const [hdg,  setHdg]  = useState(0);
-  const [bgOff,setBgOff] = useState(0);
-  const [pulse,setPulse] = useState(false);
+function ARScreen({ stations, sel, setSel }) {
+  const vidRef = useRef(null);
+  const [cam,   setCam]   = useState("idle");
+  const [hdg,   setHdg]   = useState(0);
+  const [bgOff, setBgOff] = useState(0);
+  const [pulse, setPulse] = useState(false);
 
-  useEffect(()=>{
-    const t = setInterval(()=>{
-      setHdg(h=>(h+0.08)%360);
-      setBgOff(o=>o+0.5);
-    }, 50);
-    return ()=>clearInterval(t);
-  },[]);
+  useEffect(()=>{ const t=setInterval(()=>{ setHdg(h=>(h+0.08)%360); setBgOff(o=>o+0.5); },50); return()=>clearInterval(t); },[]);
   useEffect(()=>{ const t=setInterval(()=>setPulse(p=>!p),1100); return()=>clearInterval(t); },[]);
 
-  const station = STATIONS.find(s=>s.id===sel);
+  const startCam = useCallback(async()=>{
+    setCam("requesting");
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video:{ facingMode:"environment" } });
+      if (vidRef.current) { vidRef.current.srcObject=stream; await vidRef.current.play(); }
+      setCam("active");
+    } catch(e) { console.warn("Cam:",e); setCam("denied"); }
+  },[]);
+
+  useEffect(()=>()=>{ vidRef.current?.srcObject?.getTracks().forEach(t=>t.stop()); },[]);
+
+  const station = stations.find(s=>s.id===sel);
+  const pinList = pins(stations);
 
   return (
-    <div style={{ position:"relative", flex:1, overflow:"hidden", minHeight:0 }}>
-      {/* Fond animé simulant une rue */}
-      <CityBackground offset={bgOff}/>
+    <div style={{ position:"relative", flex:1, overflow:"hidden", minHeight:0, background:"#000" }}>
+      <video ref={vidRef} muted playsInline autoPlay style={{
+        position:"absolute", inset:0, width:"100%", height:"100%", objectFit:"cover", zIndex:1,
+        opacity:cam==="active"?1:0, transition:"opacity 0.5s" }}/>
+      {cam!=="active"&&<div style={{ position:"absolute", inset:0, zIndex:2 }}><CityBG off={bgOff}/></div>}
 
-      {/* Vignette + fades HUD */}
-      <div style={{ position:"absolute", inset:0, zIndex:4, pointerEvents:"none" }}>
-        <div style={{ position:"absolute", inset:0,
-          background:"radial-gradient(ellipse at center, transparent 30%, rgba(0,0,0,0.45) 100%)"}}/>
-        <div style={{ position:"absolute", top:0, left:0, right:0, height:70,
-          background:"linear-gradient(to bottom, rgba(8,12,15,0.7), transparent)"}}/>
-        <div style={{ position:"absolute", bottom:0, left:0, right:0, height:230,
-          background:"linear-gradient(to top, rgba(8,12,15,0.98), rgba(8,12,15,0.4) 60%, transparent)"}}/>
+      <div style={{ position:"absolute", inset:0, zIndex:5, pointerEvents:"none" }}>
+        <div style={{ position:"absolute", inset:0, background:"radial-gradient(ellipse at center,transparent 30%,rgba(0,0,0,0.4) 100%)"}}/>
+        <div style={{ position:"absolute", top:0, left:0, right:0, height:70, background:"linear-gradient(to bottom,rgba(8,12,15,0.65),transparent)"}}/>
+        <div style={{ position:"absolute", bottom:0, left:0, right:0, height:230, background:"linear-gradient(to top,rgba(8,12,15,0.98),rgba(8,12,15,0.4) 60%,transparent)"}}/>
       </div>
 
-      {/* Boussole */}
       <div style={{ position:"absolute", top:10, left:"50%", transform:"translateX(-50%)", zIndex:20, pointerEvents:"none" }}>
-        <div style={{ background:"rgba(8,12,15,0.82)", border:`1px solid ${C.border}`,
-          borderRadius:3, padding:"3px 14px", width:184, overflow:"hidden" }}>
+        <div style={{ background:"rgba(8,12,15,0.82)", border:`1px solid ${C.border}`, borderRadius:3, padding:"3px 14px", width:184, overflow:"hidden" }}>
           <div style={{ color:C.accent, fontSize:7, fontFamily:C.fnt, letterSpacing:3, whiteSpace:"nowrap",
             transform:`translateX(${-(hdg%60)*2.8}px)`, transition:"transform 0.05s linear" }}>
             {"N···NE···E···SE···S···SW···W···NW···N···NE···E···SE···S···SW"}
@@ -211,13 +269,10 @@ function ARScreen({ sel, setSel }) {
         <div style={{ color:C.accent, fontSize:8, textAlign:"center", lineHeight:"4px" }}>▾</div>
       </div>
 
-      {/* Horizon */}
-      <div style={{ position:"absolute", top:"46%", left:0, right:0, height:1, zIndex:5, pointerEvents:"none",
-        background:`linear-gradient(to right, transparent, ${C.accent}45, ${C.accent}45, transparent)` }}/>
+      <div style={{ position:"absolute", top:"46%", left:0, right:0, height:1, zIndex:6, pointerEvents:"none",
+        background:`linear-gradient(to right,transparent,${C.accent}45,${C.accent}45,transparent)` }}/>
 
-      {/* Réticule */}
-      <div style={{ position:"absolute", top:"46%", left:"50%", transform:"translate(-50%,-50%)",
-        pointerEvents:"none", zIndex:5 }}>
+      <div style={{ position:"absolute", top:"46%", left:"50%", transform:"translate(-50%,-50%)", pointerEvents:"none", zIndex:6 }}>
         <svg width="26" height="26" viewBox="0 0 26 26">
           <circle cx="13" cy="13" r="4" fill="none" stroke={`${C.accent}45`} strokeWidth="1"/>
           <line x1="13" y1="0" x2="13" y2="7" stroke={`${C.accent}45`} strokeWidth="1"/>
@@ -227,21 +282,43 @@ function ARScreen({ sel, setSel }) {
         </svg>
       </div>
 
-      {/* AR Pins */}
+      {/* Bouton cam — affiché seulement si cam non active, zIndex > pins */}
+      {cam!=="active"&&(
+        <div style={{ position:"absolute", top:"50%", left:"50%", transform:"translate(-50%,-50%)",
+          zIndex:30, display:"flex", flexDirection:"column", alignItems:"center", gap:14 }}>
+          {cam==="idle"&&(
+            <>
+              <div style={{ color:C.muted, fontSize:9, fontFamily:C.fnt, letterSpacing:3 }}>VUE AR VELOHNAV</div>
+              <button onPointerDown={startCam} style={{
+                background:C.accentBg, border:`1px solid ${C.accent}`, color:C.accent,
+                borderRadius:5, padding:"12px 32px", fontSize:12, fontFamily:C.fnt,
+                fontWeight:700, cursor:"pointer", letterSpacing:2, boxShadow:`0 0 20px ${C.accent}25` }}>
+                ▶ ACTIVER CAMÉRA
+              </button>
+            </>
+          )}
+          {cam==="requesting"&&<div style={{ color:C.accent, fontSize:10, fontFamily:C.fnt, letterSpacing:3 }}>ACCÈS CAMÉRA…</div>}
+          {cam==="denied"&&(
+            <div style={{ textAlign:"center", padding:"0 32px" }}>
+              <div style={{ color:C.bad, fontSize:10, fontFamily:C.fnt, marginBottom:8 }}>CAMÉRA REFUSÉE</div>
+              <div style={{ color:C.muted, fontSize:9, fontFamily:C.fnt, lineHeight:1.7 }}>
+                Paramètres → Apps → VelohNav → Autorisations → Caméra
+              </div>
+              <button onPointerDown={startCam} style={{
+                background:"rgba(224,62,62,0.1)", border:`1px solid ${C.bad}`, color:C.bad,
+                borderRadius:4, padding:"8px 20px", fontSize:9, fontFamily:C.fnt,
+                cursor:"pointer", marginTop:12 }}>RÉESSAYER</button>
+            </div>
+          )}
+        </div>
+      )}
+
       <div style={{ position:"absolute", inset:0, zIndex:15 }}>
-        {PIN_GRID.map(s => <ARPin key={s.id} s={s} sel={sel} setSel={setSel} pulse={pulse}/>)}
+        {pinList.map(s=><ARPin key={s.id} s={s} sel={sel} setSel={setSel} pulse={pulse}/>)}
       </div>
 
-      {/* Badge PROTOTYPE */}
-      <div style={{ position:"absolute", top:12, right:12, zIndex:20, pointerEvents:"none",
-        background:"rgba(0,0,0,0.6)", border:`1px solid ${C.border}`,
-        borderRadius:3, padding:"3px 7px" }}>
-        <span style={{ color:C.muted, fontSize:7, fontFamily:C.fnt, letterSpacing:2 }}>PROTOTYPE</span>
-      </div>
-
-      {/* Carte info bottom */}
       <div style={{ position:"absolute", bottom:0, left:0, right:0, padding:"0 14px 14px", zIndex:22 }}>
-        {station ? (
+        {station?(
           <div style={{ background:"rgba(8,12,15,0.97)", borderRadius:8, padding:"13px 15px",
             border:`1px solid ${C.border}`, borderTop:`2px solid ${bCol(station)}`,
             boxShadow:"0 -4px 24px rgba(0,0,0,0.85)" }}>
@@ -249,6 +326,7 @@ function ARScreen({ sel, setSel }) {
               <div>
                 <div style={{ color:C.muted, fontSize:7, fontFamily:C.fnt, letterSpacing:1.5, marginBottom:3 }}>
                   {bTag(station)} · {fDist(station.dist)} · {fWalk(station.dist)} à pied
+                  {station._mock&&" · dispo simulées"}
                 </div>
                 <div style={{ color:C.text, fontSize:15, fontFamily:C.fnt, fontWeight:700 }}>{station.name}</div>
               </div>
@@ -258,24 +336,23 @@ function ARScreen({ sel, setSel }) {
             </div>
             <div style={{ display:"flex", borderTop:`1px solid ${C.border}`, paddingTop:11 }}>
               {[
-                { l:"VÉLOS",  v:station.bikes, col:bCol(station) },
-                { l:"ÉLEC.",  v:station.elec,  col:"#60A5FA"     },
-                { l:"MÉCA.",  v:station.meca,  col:C.text        },
-                { l:"DOCKS",  v:station.docks, col:C.text        },
+                { l:"VÉLOS", v:station.bikes, col:bCol(station) },
+                { l:"ÉLEC.", v:station.elec,  col:"#60A5FA" },
+                { l:"MÉCA.", v:station.meca,  col:C.text },
+                { l:"DOCKS", v:station.docks, col:C.text },
               ].map((m,i)=>(
-                <div key={m.l} style={{ flex:1, textAlign:"center",
-                  borderRight:i<3?`1px solid ${C.border}`:"none" }}>
+                <div key={m.l} style={{ flex:1, textAlign:"center", borderRight:i<3?`1px solid ${C.border}`:"none" }}>
                   <div style={{ color:m.col, fontSize:20, fontFamily:C.fnt, fontWeight:700 }}>{m.v}</div>
                   <div style={{ color:C.muted, fontSize:7, fontFamily:C.fnt, letterSpacing:1, marginTop:1 }}>{m.l}</div>
                 </div>
               ))}
             </div>
           </div>
-        ) : (
+        ):(
           <div style={{ background:"rgba(8,12,15,0.85)", border:`1px solid ${C.border}`,
             borderRadius:8, padding:"11px 15px", textAlign:"center" }}>
             <div style={{ color:C.muted, fontSize:8, fontFamily:C.fnt, letterSpacing:2 }}>
-              {STATIONS.filter(s=>s.bikes>0).length}/{STATIONS.length} DISPONIBLES · TOUCHE UN PIN AR
+              {stations.filter(s=>s.bikes>0).length}/{stations.length} DISPO · TOUCHE UN PIN AR
             </div>
           </div>
         )}
@@ -285,22 +362,18 @@ function ARScreen({ sel, setSel }) {
 }
 
 // ── MAP SCREEN ────────────────────────────────────────────────────
-function MapScreen({ sel, setSel }) {
+function MapScreen({ stations, sel, setSel, gpsPos }) {
   const margin=0.006;
-  const lats=STATIONS.map(s=>s.lat), lngs=STATIONS.map(s=>s.lng);
+  const lats=stations.map(s=>s.lat), lngs=stations.map(s=>s.lng);
   const ltMin=Math.min(...lats)-margin, ltMax=Math.max(...lats)+margin;
   const lnMin=Math.min(...lngs)-margin, lnMax=Math.max(...lngs)+margin;
-  const toXY=(la,ln)=>({
-    x:(ln-lnMin)/(lnMax-lnMin)*88+6,
-    y:(1-(la-ltMin)/(ltMax-ltMin))*86+5,
-  });
-  const ux=toXY(USER.lat,USER.lng);
+  const toXY=(la,ln)=>({ x:(ln-lnMin)/(lnMax-lnMin)*88+6, y:(1-(la-ltMin)/(ltMax-ltMin))*86+5 });
+  const ux=toXY(gpsPos?.lat??REF.lat, gpsPos?.lng??REF.lng);
 
   return (
     <div style={{ flex:1, display:"flex", flexDirection:"column", background:C.bg, minHeight:0 }}>
       <div style={{ flex:1, position:"relative", margin:"8px 14px",
-        background:"rgba(0,0,0,0.5)", border:`1px solid ${C.border}`,
-        borderRadius:8, overflow:"hidden" }}>
+        background:"rgba(0,0,0,0.5)", border:`1px solid ${C.border}`, borderRadius:8, overflow:"hidden" }}>
         <svg style={{ position:"absolute",inset:0,width:"100%",height:"100%",opacity:0.04 }}>
           <defs><pattern id="mg" width="44" height="44" patternUnits="userSpaceOnUse">
             <path d="M44 0L0 0 0 44" fill="none" stroke={C.accent} strokeWidth="0.5"/>
@@ -308,50 +381,36 @@ function MapScreen({ sel, setSel }) {
           <rect width="100%" height="100%" fill="url(#mg)"/>
         </svg>
         <div style={{ position:"absolute",top:"50%",left:"50%",transform:"translate(-50%,-50%)",
-          color:`${C.accent}04`,fontSize:32,fontFamily:C.fnt,fontWeight:700,
-          userSelect:"none",whiteSpace:"nowrap" }}>LUXEMBOURG</div>
+          color:`${C.accent}04`,fontSize:32,fontFamily:C.fnt,fontWeight:700,userSelect:"none",whiteSpace:"nowrap" }}>LUXEMBOURG</div>
 
-        {STATIONS.map(s=>{
+        {stations.map(s=>{
           const {x,y}=toXY(s.lat,s.lng); const col=bCol(s); const act=sel===s.id;
           return (
             <div key={s.id} onPointerDown={()=>setSel(act?null:s.id)}
               style={{ position:"absolute",left:`${x}%`,top:`${y}%`,
                 transform:"translate(-50%,-50%)",width:44,height:44,
-                display:"flex",alignItems:"center",justifyContent:"center",
-                cursor:"pointer",zIndex:act?15:8 }}>
-              {act&&<div style={{ position:"absolute",inset:2,borderRadius:"50%",
-                border:`1.5px solid ${col}`,opacity:0.5 }}/>}
-              <div style={{ width:act?14:10,height:act?14:10,borderRadius:"50%",
-                background:col,boxShadow:`0 0 7px ${col}`,
-                border:`2px solid ${act?"#fff":"rgba(0,0,0,0.5)"}`,transition:"all 0.18s" }}/>
-              <div style={{ position:"absolute",
-                left:x>55?"auto":42,right:x>55?42:"auto",
+                display:"flex",alignItems:"center",justifyContent:"center",cursor:"pointer",zIndex:act?15:8 }}>
+              {act&&<div style={{ position:"absolute",inset:2,borderRadius:"50%",border:`1.5px solid ${col}`,opacity:0.5 }}/>}
+              <div style={{ width:act?14:10,height:act?14:10,borderRadius:"50%",background:col,
+                boxShadow:`0 0 7px ${col}`,border:`2px solid ${act?"#fff":"rgba(0,0,0,0.5)"}`,transition:"all 0.18s" }}/>
+              <div style={{ position:"absolute",left:x>55?"auto":42,right:x>55?42:"auto",
                 top:"50%",transform:"translateY(-50%)",
-                background:"rgba(8,12,15,0.94)",
-                border:`1px solid ${act?col:C.border}`,borderRadius:3,
-                padding:"3px 7px",whiteSpace:"nowrap",
+                background:"rgba(8,12,15,0.94)",border:`1px solid ${act?col:C.border}`,
+                borderRadius:3,padding:"3px 7px",whiteSpace:"nowrap",
                 boxShadow:act?`0 0 8px ${col}25`:"none",pointerEvents:"none" }}>
-                <div style={{ color:act?col:C.muted,fontSize:9,fontFamily:C.fnt,fontWeight:act?700:400 }}>
-                  {s.name}
-                </div>
-                <div style={{ color:C.muted,fontSize:7,fontFamily:C.fnt }}>
-                  {s.bikes}🚲 ⚡{s.elec} · {fDist(s.dist)}
-                </div>
+                <div style={{ color:act?col:C.muted,fontSize:9,fontFamily:C.fnt,fontWeight:act?700:400 }}>{s.name}</div>
+                <div style={{ color:C.muted,fontSize:7,fontFamily:C.fnt }}>{s.bikes}🚲 ⚡{s.elec} · {fDist(s.dist)}</div>
               </div>
             </div>
           );
         })}
 
-        {/* Position utilisateur */}
         <div style={{ position:"absolute",left:`${ux.x}%`,top:`${ux.y}%`,
           transform:"translate(-50%,-50%)",zIndex:20,pointerEvents:"none" }}>
-          <div style={{ position:"absolute",inset:-8,borderRadius:"50%",
-            border:"2px solid rgba(59,130,246,0.5)"}}/>
-          <div style={{ width:10,height:10,borderRadius:"50%",
-            background:C.blue,boxShadow:`0 0 10px ${C.blue}` }}/>
+          <div style={{ position:"absolute",inset:-8,borderRadius:"50%",border:"2px solid rgba(59,130,246,0.5)"}}/>
+          <div style={{ width:10,height:10,borderRadius:"50%",background:C.blue,boxShadow:`0 0 10px ${C.blue}` }}/>
         </div>
       </div>
-
       <div style={{ display:"flex",gap:12,padding:"7px 14px 10px",borderTop:`1px solid ${C.border}` }}>
         {[[C.good,"Dispo"],[C.warn,"Faible"],[C.bad,"Vide"],["#444","Fermé"],[C.blue,"Vous"]].map(([c,l])=>(
           <div key={l} style={{ display:"flex",alignItems:"center",gap:4 }}>
@@ -364,142 +423,97 @@ function MapScreen({ sel, setSel }) {
   );
 }
 
-// ── AI SCREEN — vrai appel Claude API ────────────────────────────
-const SYSTEM_PROMPT = `Tu es VELOH·AI, l'assistant de l'app VelohNav pour le réseau Vel'OH! de Luxembourg.
-Tu réponds en français, de façon concise et utile (3-4 lignes max).
-Tu connais les données temps réel des stations :
+// ── AI SCREEN ─────────────────────────────────────────────────────
+function AIScreen({ stations }) {
+  const top = stations.find(s=>s.bikes>0);
+  const initMsg = top
+    ? `${stations.filter(s=>s.bikes>0).length}/${stations.length} stations dispos. Plus proche : ${top.name} (${fDist(top.dist)}, ${top.bikes}🚲 ⚡${top.elec}).`
+    : "Chargement des stations…";
 
-${STATIONS.map(s =>
-  `• ${s.name} | ${s.bikes} vélos (⚡${s.elec} élec.) | ${s.docks} docks libres | ${fDist(s.dist)} | ${bTag(s)}`
-).join("\n")}
-
-Position utilisateur : Ville-Haute, Luxembourg.
-Réponds uniquement sur la mobilité, les stations Veloh, les itinéraires, ou l'app.`;
-
-function AIScreen() {
   const [history, setHistory] = useState([]);
-  const [display, setDisplay] = useState([{
-    role:"ai",
-    text:`${STATIONS.filter(s=>s.bikes>0).length}/${STATIONS.length} stations disponibles. Plus proche avec vélos : ${STATIONS.find(s=>s.bikes>0)?.name} (${fDist(STATIONS.find(s=>s.bikes>0)?.dist||0)}, ${STATIONS.find(s=>s.bikes>0)?.bikes}🚲 ⚡${STATIONS.find(s=>s.bikes>0)?.elec}).`
-  }]);
-  const [input, setInput] = useState("");
-  const [busy,  setBusy]  = useState(false);
+  const [display, setDisplay] = useState([{ role:"ai", text:initMsg }]);
+  const [input,   setInput]   = useState("");
+  const [busy,    setBusy]    = useState(false);
   const endRef = useRef();
   useEffect(()=>endRef.current?.scrollIntoView({behavior:"smooth"}),[display]);
 
-  const sendText = async (text) => {
-    const userText = (text || input).trim();
-    if (!userText || busy) return;
-    setInput("");
-    setBusy(true);
-    setDisplay(d => [...d, { role:"user", text:userText }]);
-    const newHistory = [...history, { role:"user", content:userText }];
+  const systemPrompt = `Tu es VELOH·AI, l'assistant de VelohNav pour le réseau Vel'OH! Luxembourg.
+Réponds en français, de façon concise (3-4 lignes max).
+Données actuelles (triées par distance) :
+${stations.map(s=>`• ${s.name} | ${s.bikes} vélos (⚡${s.elec} élec.) | ${s.docks} docks | ${fDist(s.dist)} | ${bTag(s)}`).join("\n")}
+Réponds uniquement sur la mobilité Veloh, les itinéraires, ou l'app.`;
+
+  const sendText = useCallback(async(text)=>{
+    const q=(text||input).trim();
+    if(!q||busy) return;
+    setInput(""); setBusy(true);
+    setDisplay(d=>[...d,{role:"user",text:q}]);
+    const hist=[...history,{role:"user",content:q}];
     try {
-      const res = await fetch("https://api.anthropic.com/v1/messages", {
-        method:"POST",
-        headers:{ "Content-Type":"application/json" },
-        body: JSON.stringify({
-          model:"claude-sonnet-4-20250514",
-          max_tokens:300,
-          system: SYSTEM_PROMPT,
-          messages: newHistory,
-        }),
+      const r = await fetch("https://api.anthropic.com/v1/messages",{
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({ model:"claude-sonnet-4-20250514", max_tokens:400,
+          system:systemPrompt, messages:hist }),
       });
-      const data = await res.json();
+      const data = await r.json();
       const reply = data.content?.[0]?.text ?? "Erreur de réponse.";
-      setHistory([...newHistory, { role:"assistant", content:reply }]);
-      setDisplay(d => [...d, { role:"ai", text:reply }]);
-    } catch {
-      setDisplay(d => [...d, { role:"ai", text:"Erreur réseau. Vérifie ta connexion." }]);
-    }
+      setHistory([...hist,{role:"assistant",content:reply}]);
+      setDisplay(d=>[...d,{role:"ai",text:reply}]);
+    } catch { setDisplay(d=>[...d,{role:"ai",text:"Erreur réseau."}]); }
     setBusy(false);
-  };
+  },[input,busy,history,systemPrompt]);
 
-  const send = () => sendText(input);
-
-  const QUICK = [
-    "Quelle station est la plus proche ?",
-    "Combien de vélos électriques dispo ?",
-    "Où déposer mon vélo ?",
-    "Suggestion d'itinéraire Hamilius → Kirchberg",
-  ];
+  const QUICK = ["Station la plus proche ?","Vélos électriques dispo ?","Où déposer mon vélo ?","Itinéraire Hamilius → Kirchberg"];
 
   return (
     <div style={{ flex:1, display:"flex", flexDirection:"column", background:C.bg, minHeight:0 }}>
       <div style={{ padding:"9px 14px 7px", borderBottom:`1px solid ${C.border}`, flexShrink:0 }}>
         <div style={{ color:C.accent, fontSize:10, fontFamily:C.fnt, fontWeight:700, letterSpacing:2 }}>VELOH·AI</div>
         <div style={{ color:C.muted, fontSize:8, fontFamily:C.fnt }}>
-          Claude · {STATIONS.length} stations · Luxembourg Vel'OH!
+          Claude · {stations.length} stations · {stations.some(s=>!s._mock)?"données live":"données simulées"}
         </div>
       </div>
-
       <div style={{ flex:1, overflowY:"auto", padding:"11px 14px", display:"flex", flexDirection:"column", gap:9 }}>
-        {display.map((m,i) => (
+        {display.map((m,i)=>(
           <div key={i} style={{ alignSelf:m.role==="user"?"flex-end":"flex-start", maxWidth:"88%" }}>
-            {m.role==="ai" && (
-              <div style={{ color:C.accent, fontSize:7, fontFamily:C.fnt, letterSpacing:2, marginBottom:3 }}>VELOH·AI</div>
-            )}
-            <div style={{
-              background:m.role==="user" ? C.accentBg : "rgba(255,255,255,0.04)",
-              border:`1px solid ${m.role==="user" ? C.accent+"55" : C.border}`,
-              borderRadius:m.role==="user" ? "10px 10px 2px 10px" : "10px 10px 10px 2px",
-              padding:"9px 12px",
-            }}>
-              <div style={{ color:m.role==="user"?C.accent:C.text, fontSize:10,
-                fontFamily:C.fnt, lineHeight:1.7, whiteSpace:"pre-wrap" }}>
+            {m.role==="ai"&&<div style={{ color:C.accent, fontSize:7, fontFamily:C.fnt, letterSpacing:2, marginBottom:3 }}>VELOH·AI</div>}
+            <div style={{ background:m.role==="user"?C.accentBg:"rgba(255,255,255,0.04)",
+              border:`1px solid ${m.role==="user"?C.accent+"55":C.border}`,
+              borderRadius:m.role==="user"?"10px 10px 2px 10px":"10px 10px 10px 2px", padding:"9px 12px" }}>
+              <div style={{ color:m.role==="user"?C.accent:C.text, fontSize:10, fontFamily:C.fnt, lineHeight:1.7, whiteSpace:"pre-wrap" }}>
                 {m.text}
               </div>
             </div>
           </div>
         ))}
-
-        {busy && (
+        {busy&&(
           <div style={{ alignSelf:"flex-start" }}>
             <div style={{ color:C.accent, fontSize:7, fontFamily:C.fnt, letterSpacing:2, marginBottom:3 }}>VELOH·AI</div>
             <div style={{ background:"rgba(255,255,255,0.04)", border:`1px solid ${C.border}`,
               borderRadius:"10px 10px 10px 2px", padding:"10px 14px", display:"flex", gap:6, alignItems:"center" }}>
-              {[0,1,2].map(i => (
-                <div key={i} style={{ width:6, height:6, borderRadius:"50%", background:C.accent,
-                  opacity:0.7, transform:`scale(${i===1?1.2:0.8})` }}/>
-              ))}
+              {[0,1,2].map(i=><div key={i} style={{ width:6,height:6,borderRadius:"50%",background:C.accent,opacity:0.7,transform:`scale(${i===1?1.2:0.8})` }}/>)}
               <span style={{ color:C.muted, fontSize:8, fontFamily:C.fnt, marginLeft:4 }}>en train de répondre…</span>
             </div>
           </div>
         )}
         <div ref={endRef}/>
       </div>
-
-      {/* Suggestions rapides */}
       <div style={{ display:"flex", gap:6, padding:"5px 14px 7px", overflowX:"auto", flexShrink:0 }}>
-        {QUICK.map(q => (
-          <div key={q} onPointerDown={()=>{ setInput(q); setTimeout(()=>{ sendText(q); },0); }}
-            style={{ flexShrink:0, background:"transparent",
-              border:`1px solid ${C.border}`, color:C.muted,
-              borderRadius:14, padding:"4px 10px",
-              fontSize:8, fontFamily:C.fnt, cursor:"pointer", whiteSpace:"nowrap" }}>
-            {q}
-          </div>
+        {QUICK.map(q=>(
+          <div key={q} onPointerDown={()=>sendText(q)} style={{ flexShrink:0, background:"transparent",
+            border:`1px solid ${C.border}`, color:C.muted, borderRadius:14, padding:"4px 10px",
+            fontSize:8, fontFamily:C.fnt, cursor:"pointer", whiteSpace:"nowrap" }}>{q}</div>
         ))}
       </div>
-
-      <div style={{ display:"flex", gap:8, padding:"7px 14px 13px",
-        borderTop:`1px solid ${C.border}`, flexShrink:0 }}>
-        <input
-          value={input}
-          onChange={e=>setInput(e.target.value)}
-          onKeyDown={e=>e.key==="Enter"&&send()}
-          placeholder="Pose n'importe quelle question sur Veloh…"
-          style={{ flex:1, background:"rgba(255,255,255,0.03)",
-            border:`1px solid ${C.border}`, borderRadius:5,
-            padding:"9px 11px", color:C.text, fontSize:10,
-            fontFamily:C.fnt, outline:"none" }}
-        />
-        <div onPointerDown={send} style={{
-          background: busy ? "rgba(255,255,255,0.04)" : C.accentBg,
-          border:`1px solid ${busy ? C.border : C.accent}`,
-          color:busy ? C.muted : C.accent,
-          borderRadius:5, padding:"9px 16px",
-          fontSize:11, fontFamily:C.fnt, fontWeight:700, cursor:busy?"not-allowed":"pointer",
+      <div style={{ display:"flex", gap:8, padding:"7px 14px 13px", borderTop:`1px solid ${C.border}`, flexShrink:0 }}>
+        <input value={input} onChange={e=>setInput(e.target.value)} onKeyDown={e=>e.key==="Enter"&&sendText(input)}
+          placeholder="Pose ta question sur Veloh…"
+          style={{ flex:1, background:"rgba(255,255,255,0.03)", border:`1px solid ${C.border}`,
+            borderRadius:5, padding:"9px 11px", color:C.text, fontSize:10, fontFamily:C.fnt, outline:"none" }}/>
+        <div onPointerDown={()=>sendText(input)} style={{
+          background:busy?"rgba(255,255,255,0.04)":C.accentBg,
+          border:`1px solid ${busy?C.border:C.accent}`, color:busy?C.muted:C.accent,
+          borderRadius:5, padding:"9px 16px", fontSize:11, fontFamily:C.fnt, fontWeight:700, cursor:busy?"not-allowed":"pointer",
         }}>▶</div>
       </div>
     </div>
@@ -507,9 +521,13 @@ function AIScreen() {
 }
 
 // ── SETTINGS ──────────────────────────────────────────────────────
-function SettingsScreen() {
-  const [lnAddr,setLnAddr] = useState(""); const [lnOn,setLnOn] = useState(false);
-  const [lnSaved,setLnSaved] = useState(false); const [ads,setAds] = useState(true);
+function SettingsScreen({ apiKey, setApiKey, onRefresh, apiLive, isMock, gpsPos }) {
+  const [draft,setDraft]=useState(apiKey);
+  const [saved,setSaved]=useState(false);
+  const [lnAddr,setLnAddr]=useState(""); const [lnOn,setLnOn]=useState(false);
+  const [lnSaved,setLnSaved]=useState(false); const [ads,setAds]=useState(true);
+
+  const saveKey=()=>{ setApiKey(draft.trim()); setSaved(true); setTimeout(()=>{ setSaved(false); onRefresh(); },1200); };
 
   const Toggle=({label,sub,val,set})=>(
     <div style={{ display:"flex",justifyContent:"space-between",alignItems:"center",
@@ -518,10 +536,8 @@ function SettingsScreen() {
         <div style={{ color:C.text,fontSize:11,fontFamily:C.fnt }}>{label}</div>
         {sub&&<div style={{ color:C.muted,fontSize:8,fontFamily:C.fnt,marginTop:2,lineHeight:1.5 }}>{sub}</div>}
       </div>
-      <div onPointerDown={()=>set(v=>!v)} style={{ width:38,height:20,borderRadius:10,cursor:"pointer",
-        position:"relative",flexShrink:0,
-        background:val?C.accentBg:"rgba(255,255,255,0.04)",
-        border:`1px solid ${val?C.accent:C.border}`,
+      <div onPointerDown={()=>set(v=>!v)} style={{ width:38,height:20,borderRadius:10,cursor:"pointer",position:"relative",flexShrink:0,
+        background:val?C.accentBg:"rgba(255,255,255,0.04)",border:`1px solid ${val?C.accent:C.border}`,
         boxShadow:val?`0 0 8px ${C.accent}30`:"none",transition:"all 0.2s" }}>
         <div style={{ position:"absolute",top:3,width:14,height:14,borderRadius:"50%",
           background:val?C.accent:C.muted,left:val?21:3,transition:"left 0.2s,background 0.2s" }}/>
@@ -531,44 +547,63 @@ function SettingsScreen() {
 
   return (
     <div style={{ flex:1,overflowY:"auto",background:C.bg,minHeight:0 }}>
-      {/* Note prototype */}
-      <div style={{ margin:"14px 14px 0",background:"rgba(59,130,246,0.08)",
-        border:`1px solid rgba(59,130,246,0.3)`,borderRadius:7,padding:"11px 13px" }}>
-        <div style={{ color:C.blue,fontSize:9,fontFamily:C.fnt,fontWeight:700,marginBottom:4 }}>
-          ℹ PROTOTYPE WEB
-        </div>
-        <div style={{ color:C.muted,fontSize:8,fontFamily:C.fnt,lineHeight:1.8 }}>
-          GPS et caméra réels non disponibles dans ce sandbox.{"\n"}
-          En app Android native : ARCore + FusedLocationProvider.{"\n"}
-          API JCDecaux : CORS bloqué navigateur → natif OK.
+      <div style={{ margin:"14px 14px 0",background:"rgba(255,255,255,0.02)",
+        border:`1px solid ${gpsPos?C.good+"40":C.border}`,borderRadius:7,padding:"11px 13px" }}>
+        <div style={{ color:C.text,fontSize:11,fontFamily:C.fnt }}>📍 GPS</div>
+        <div style={{ color:gpsPos?C.good:C.muted,fontSize:8,fontFamily:C.fnt,marginTop:2 }}>
+          {gpsPos?`✓ ${gpsPos.lat.toFixed(5)}, ${gpsPos.lng.toFixed(5)} ±${gpsPos.acc}m`:"En attente de l'autorisation…"}
         </div>
       </div>
 
-      {/* LN Rewards */}
+      <div style={{ padding:"14px 14px 0" }}>
+        <div style={{ color:C.muted,fontSize:8,fontFamily:C.fnt,letterSpacing:2,marginBottom:10 }}>🔑 CLÉ API JCDECAUX</div>
+        <div style={{ background:"rgba(255,255,255,0.02)",border:`1px solid ${C.border}`,borderRadius:8,padding:"14px" }}>
+          <div style={{ background:apiLive?"rgba(46,204,143,0.08)":"rgba(245,130,13,0.08)",
+            border:`1px solid ${apiLive?C.good+"40":C.accent+"40"}`,borderRadius:4,padding:"7px 10px",marginBottom:10 }}>
+            <div style={{ color:apiLive?C.good:C.accent,fontSize:9,fontFamily:C.fnt }}>
+              {apiLive?"✓ LIVE — données JCDecaux temps réel":isMock?"⚠ DÉMO — GPS réels, dispos simulées":"⚠ Clé invalide"}
+            </div>
+            {isMock&&<div style={{ color:C.muted,fontSize:8,fontFamily:C.fnt,marginTop:2 }}>developer.jcdecaux.com (gratuit)</div>}
+          </div>
+          <div style={{ display:"flex",gap:8 }}>
+            <input value={draft} onChange={e=>setDraft(e.target.value)} placeholder="Clé API JCDecaux…" type="password"
+              style={{ flex:1,background:"rgba(0,0,0,0.4)",border:`1px solid ${C.border}`,
+                borderRadius:4,padding:"8px 10px",color:C.text,fontSize:11,fontFamily:C.fnt,outline:"none" }}/>
+            <div onPointerDown={saveKey} style={{ background:saved?"rgba(46,204,143,0.15)":C.accentBg,
+              border:`1px solid ${saved?C.good:C.accent}`,color:saved?C.good:C.accent,
+              borderRadius:4,padding:"8px 12px",fontSize:9,fontFamily:C.fnt,cursor:"pointer",fontWeight:700,whiteSpace:"nowrap" }}>
+              {saved?"✓ OK":"APPLIQUER"}
+            </div>
+          </div>
+          <div style={{ color:C.muted,fontSize:8,fontFamily:C.fnt,marginTop:8,lineHeight:1.8 }}>
+            GET /vls/v3/stations?contract=Luxembourg{"\n"}
+            available_bikes · electrical_bikes · mechanical_bikes{"\n"}
+            available_bike_stands · status · position · last_update
+          </div>
+        </div>
+      </div>
+
       <div style={{ padding:"14px 14px 0" }}>
         <div style={{ color:C.muted,fontSize:8,fontFamily:C.fnt,letterSpacing:2,marginBottom:10 }}>⚡ SATS REWARDS</div>
-        <div style={{ background:"rgba(255,255,255,0.02)",border:`1px solid ${C.border}`,
-          borderRadius:8,padding:"0 14px" }}>
-          <Toggle label="Activer les récompenses" sub="Sats envoyés sur ta LN Address après chaque trajet validé" val={lnOn} set={setLnOn}/>
-          {lnOn&&(
-            <div style={{ paddingBottom:14 }}>
-              <div style={{ color:C.muted,fontSize:8,fontFamily:C.fnt,letterSpacing:2,margin:"10px 0 6px" }}>LIGHTNING ADDRESS</div>
-              <div style={{ display:"flex",gap:8 }}>
-                <input value={lnAddr} onChange={e=>setLnAddr(e.target.value)} placeholder="toi@getalby.com"
-                  style={{ flex:1,background:"rgba(0,0,0,0.4)",border:`1px solid ${C.border}`,
-                    borderRadius:4,padding:"8px 10px",color:"#FCD34D",fontSize:11,fontFamily:C.fnt,outline:"none" }}/>
-                <div onPointerDown={()=>{setLnSaved(true);setTimeout(()=>setLnSaved(false),2000);}} style={{
-                  background:lnSaved?"rgba(46,204,143,0.15)":C.accentBg,
-                  border:`1px solid ${lnSaved?C.good:C.accent}`,color:lnSaved?C.good:C.accent,
-                  borderRadius:4,padding:"8px 12px",fontSize:9,fontFamily:C.fnt,cursor:"pointer",fontWeight:700,whiteSpace:"nowrap" }}>
-                  {lnSaved?"✓ OK":"SAVE"}
-                </div>
-              </div>
-              <div style={{ color:C.muted,fontSize:8,fontFamily:C.fnt,marginTop:7,lineHeight:1.8 }}>
-                Alby · WoS · Phoenix · Blink · Zeus{"\n"}LNURL-pay · self-custodial · zéro serveur
+        <div style={{ background:"rgba(255,255,255,0.02)",border:`1px solid ${C.border}`,borderRadius:8,padding:"0 14px" }}>
+          <Toggle label="Activer" sub="Sats après chaque trajet via LNURL-pay self-custodial" val={lnOn} set={setLnOn}/>
+          {lnOn&&<div style={{ paddingBottom:14 }}>
+            <div style={{ color:C.muted,fontSize:8,fontFamily:C.fnt,letterSpacing:2,margin:"10px 0 6px" }}>LIGHTNING ADDRESS</div>
+            <div style={{ display:"flex",gap:8 }}>
+              <input value={lnAddr} onChange={e=>setLnAddr(e.target.value)} placeholder="toi@getalby.com"
+                style={{ flex:1,background:"rgba(0,0,0,0.4)",border:`1px solid ${C.border}`,
+                  borderRadius:4,padding:"8px 10px",color:"#FCD34D",fontSize:11,fontFamily:C.fnt,outline:"none" }}/>
+              <div onPointerDown={()=>{setLnSaved(true);setTimeout(()=>setLnSaved(false),2000);}} style={{
+                background:lnSaved?"rgba(46,204,143,0.15)":C.accentBg,border:`1px solid ${lnSaved?C.good:C.accent}`,
+                color:lnSaved?C.good:C.accent,borderRadius:4,padding:"8px 12px",
+                fontSize:9,fontFamily:C.fnt,cursor:"pointer",fontWeight:700,whiteSpace:"nowrap" }}>
+                {lnSaved?"✓ OK":"SAVE"}
               </div>
             </div>
-          )}
+            <div style={{ color:C.muted,fontSize:8,fontFamily:C.fnt,marginTop:7,lineHeight:1.8 }}>
+              Alby · WoS · Phoenix · Blink · Zeus{"\n"}LNURL-pay · self-custodial · zéro serveur
+            </div>
+          </div>}
         </div>
       </div>
 
@@ -578,15 +613,7 @@ function SettingsScreen() {
           <Toggle label="Publicités AR" sub="Overlays sponsors dans la vue caméra" val={ads} set={setAds}/>
         </div>
       </div>
-
-      <div style={{ padding:"0 14px 20px" }}>
-        <div style={{ color:C.muted,fontSize:8,fontFamily:C.fnt,lineHeight:2,borderTop:`1px solid ${C.border}`,paddingTop:12 }}>
-          API cible : GET /vls/v3/stations?contract=Luxembourg{"\n"}
-          available_bikes · electrical_bikes · mechanical_bikes{"\n"}
-          available_bike_stands · status · position.lat/lng · last_update{"\n"}
-          {STATIONS.length} stations mockées · 116 réelles dans le réseau Veloh
-        </div>
-      </div>
+      <div style={{ height:20 }}/>
     </div>
   );
 }
@@ -596,8 +623,7 @@ function NavBar({ tab, setTab }) {
   return (
     <div style={{ display:"flex",background:"rgba(8,12,15,0.98)",borderTop:`1px solid ${C.border}`,flexShrink:0 }}>
       {[{id:"ar",i:"⬡",l:"AR"},{id:"map",i:"◈",l:"MAP"},{id:"ai",i:"◎",l:"AI"},{id:"settings",i:"≡",l:"OPT"}].map(t=>(
-        <div key={t.id} onPointerDown={()=>setTab(t.id)} style={{ flex:1,padding:"11px 0 9px",
-          textAlign:"center",cursor:"pointer",
+        <div key={t.id} onPointerDown={()=>setTab(t.id)} style={{ flex:1,padding:"11px 0 9px",textAlign:"center",cursor:"pointer",
           borderTop:`2px solid ${tab===t.id?C.accent:"transparent"}`,transition:"border-color 0.15s" }}>
           <div style={{ fontSize:15,color:tab===t.id?C.accent:C.muted }}>{t.i}</div>
           <div style={{ fontSize:7,fontFamily:C.fnt,letterSpacing:2,marginTop:2,color:tab===t.id?C.accent:C.muted }}>{t.l}</div>
@@ -611,15 +637,53 @@ function NavBar({ tab, setTab }) {
 export default function App() {
   const [tab,setTab] = useState("ar");
   const [sel,setSel] = useState(null);
+  const [apiKey,setApiKey] = useState("");
+  const [stations,setStations] = useState(()=>enrich(FALLBACK,null));
+  const [apiLive,setApiLive] = useState(false);
+  const [isMock,setIsMock] = useState(true);
+  const [gpsPos,setGpsPos] = useState(null);
+
+  // GPS watch continu
+  useEffect(()=>{
+    let stop=()=>{};
+    startWatchingGPS(pos=>setGpsPos(pos)).then(fn=>{ stop=fn; });
+    return ()=>stop();
+  },[]);
+
+  // Recalcul distances quand GPS change
+  useEffect(()=>{
+    setStations(prev=>enrich(prev,gpsPos));
+  },[gpsPos]);
+
+  const loadData = useCallback(async()=>{
+    const userPos = gpsPos;
+    if (apiKey) {
+      try {
+        const raw = await fetchJCDecaux(apiKey);
+        if (raw && Array.isArray(raw)) {
+          setStations(enrich(raw.map(parseStation), userPos));
+          setApiLive(true); setIsMock(false); return;
+        }
+      } catch(e) { console.warn("JCDecaux load:", e); }
+      setApiLive(false); setIsMock(true);
+    }
+    setStations(enrich(FALLBACK, userPos));
+    setApiLive(false); setIsMock(true);
+  },[apiKey,gpsPos]);
+
+  useEffect(()=>{ loadData(); },[loadData]);
+  useEffect(()=>{ const t=setInterval(loadData,60000); return()=>clearInterval(t); },[loadData]);
+
   return (
     <div style={{ width:"100%",height:"100vh",display:"flex",flexDirection:"column",
       background:C.bg,overflow:"hidden",maxWidth:430,margin:"0 auto" }}>
-      <StatusBar tab={tab}/>
+      <StatusBar tab={tab} gpsOk={!!gpsPos} apiLive={apiLive} isMock={isMock}/>
       <div style={{ flex:1,display:"flex",flexDirection:"column",overflow:"hidden",minHeight:0 }}>
-        {tab==="ar"       && <ARScreen  sel={sel} setSel={setSel}/>}
-        {tab==="map"      && <MapScreen sel={sel} setSel={setSel}/>}
-        {tab==="ai"       && <AIScreen/>}
-        {tab==="settings" && <SettingsScreen/>}
+        {tab==="ar"       &&<ARScreen  stations={stations} sel={sel} setSel={setSel}/>}
+        {tab==="map"      &&<MapScreen stations={stations} sel={sel} setSel={setSel} gpsPos={gpsPos}/>}
+        {tab==="ai"       &&<AIScreen  stations={stations}/>}
+        {tab==="settings" &&<SettingsScreen apiKey={apiKey} setApiKey={setApiKey}
+          onRefresh={loadData} apiLive={apiLive} isMock={isMock} gpsPos={gpsPos}/>}
       </div>
       <NavBar tab={tab} setTab={setTab}/>
     </div>
