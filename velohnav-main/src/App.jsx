@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { ARScreen } from './components/ARScreen';
 import { MapScreen } from './components/MapScreen';
 import { SettingsScreen } from './components/SettingsScreen';
+import { ARNavigationScreen } from './components/ARNavigationScreen';
 import { useDeviceOrientation } from './hooks/useDeviceOrientation';
 
 // ── CAPACITOR DETECTION ───────────────────────────────────────────
@@ -274,6 +275,11 @@ export default function App() {
   const [tab,setTab] = useState("ar");
   const [sel,setSel] = useState(null);
   
+  // Navigation AR
+  const [arNavActive, setArNavActive] = useState(false);
+  const [navStreak, setNavStreak] = useState(0);
+  const [isNightMode, setIsNightMode] = useState(false);
+  
   // API Keys
   const [apiKey,setApiKey] = useState("");
   const [claudeKey,setClaudeKey] = useState("");
@@ -324,7 +330,7 @@ export default function App() {
       background:C.bg,overflow:"hidden",maxWidth:430,margin:"0 auto" }}>
       <StatusBar tab={tab} gpsOk={!!gpsPos} apiLive={apiLive} isMock={isMock}/>
       <div style={{ flex:1,display:"flex",flexDirection:"column",overflow:"hidden",minHeight:0 }}>
-        {tab==="ar"       &&<ARScreen  stations={stations} sel={sel} setSel={setSel} gpsPos={gpsPos}/>}
+        {tab==="ar"       &&<ARScreen  stations={stations} sel={sel} setSel={setSel} gpsPos={gpsPos} onNavigateAR={() => setArNavActive(true)}/>}
         {tab==="map"      &&<MapScreen stations={stations} sel={sel} setSel={setSel} gpsPos={gpsPos} heading={heading}/>}
         {tab==="ai"       &&<AIScreen  stations={stations}/>}
         {tab==="settings" &&<SettingsScreen 
@@ -335,6 +341,26 @@ export default function App() {
           onRefresh={loadData} apiLive={apiLive} isMock={isMock} gpsPos={gpsPos}/>}
       </div>
       <NavBar tab={tab} setTab={setTab}/>
+      
+      {/* Navigation AR immersive */}
+      {arNavActive && sel && (
+        <ARNavigationScreen 
+          target={stations.find(s => s.id === sel) || stations[0]}
+          userPos={gpsPos}
+          heading={heading}
+          stations={stations}
+          streak={navStreak}
+          isNightMode={isNightMode}
+          onExit={() => {
+            setArNavActive(false);
+            // Incrémenter le streak si on était proche
+            const target = stations.find(s => s.id === sel);
+            if (target && target.dist < 50) {
+              setNavStreak(s => s + 1);
+            }
+          }}
+        />
+      )}
     </div>
   );
 }

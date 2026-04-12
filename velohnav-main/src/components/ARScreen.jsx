@@ -257,7 +257,7 @@ function GyroPermissionModal({ onRequest, permission, isSupported }) {
 }
 
 // ── MAIN AR SCREEN ───────────────────────────────────────────────
-export function ARScreen({ stations, sel, setSel, gpsPos }) {
+export function ARScreen({ stations, sel, setSel, gpsPos, onNavigateAR }) {
   const vidRef = useRef(null);
   const containerRef = useRef(null);
   const [cam, setCam] = useState("idle"); // idle | requesting | active | denied
@@ -666,6 +666,32 @@ export function ARScreen({ stations, sel, setSel, gpsPos }) {
                 </div>
               ))}
             </div>
+            {/* Bouton Navigation AR */}
+            {onNavigateAR && (
+              <div 
+                onClick={() => onNavigateAR(selectedStation)}
+                style={{
+                  marginTop: 11,
+                  padding: "12px 16px",
+                  background: "rgba(245,130,13,0.15)",
+                  border: `1px solid ${C.accent}`,
+                  borderRadius: 6,
+                  color: C.accent,
+                  fontSize: 12,
+                  fontFamily: C.fnt,
+                  fontWeight: 700,
+                  textAlign: "center",
+                  cursor: "pointer",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  gap: 8,
+                }}
+              >
+                <span style={{ fontSize: 14 }}>🧭</span>
+                NAVIGATION AR
+              </div>
+            )}
           </div>
         ) : (
           <div style={{ 

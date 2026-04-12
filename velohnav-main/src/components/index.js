@@ -6,3 +6,4 @@ export { StationDetail } from './StationDetail';
 export { ThemeToggle } from './ThemeToggle';
 export { NavigationMode } from './NavigationMode';
 export { SettingsScreen } from './SettingsScreen';
+export { ARNavigationScreen } from './ARNavigationScreen';
