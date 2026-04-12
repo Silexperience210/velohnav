@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { ARScreen } from './components/ARScreen';
 import { MapScreen } from './components/MapScreen';
+import { SettingsScreen } from './components/SettingsScreen';
 import { useDeviceOrientation } from './hooks/useDeviceOrientation';
 
 // ── CAPACITOR DETECTION ───────────────────────────────────────────
@@ -253,104 +254,6 @@ Réponds uniquement sur la mobilité Veloh, les itinéraires, ou l'app.`;
   );
 }
 
-// ── SETTINGS ──────────────────────────────────────────────────────
-function SettingsScreen({ apiKey, setApiKey, onRefresh, apiLive, isMock, gpsPos }) {
-  const [draft,setDraft]=useState(apiKey);
-  const [saved,setSaved]=useState(false);
-  const [lnAddr,setLnAddr]=useState(""); const [lnOn,setLnOn]=useState(false);
-  const [lnSaved,setLnSaved]=useState(false); const [ads,setAds]=useState(true);
-
-  const saveKey=()=>{ setApiKey(draft.trim()); setSaved(true); setTimeout(()=>{ setSaved(false); onRefresh(); },1200); };
-
-  const Toggle=({label,sub,val,set})=>(
-    <div style={{ display:"flex",justifyContent:"space-between",alignItems:"center",
-      padding:"11px 0",borderBottom:`1px solid ${C.border}` }}>
-      <div style={{ flex:1,marginRight:12 }}>
-        <div style={{ color:C.text,fontSize:11,fontFamily:C.fnt }}>{label}</div>
-        {sub&&<div style={{ color:C.muted,fontSize:8,fontFamily:C.fnt,marginTop:2,lineHeight:1.5 }}>{sub}</div>}
-      </div>
-      <div onPointerDown={()=>set(v=>!v)} style={{ width:38,height:20,borderRadius:10,cursor:"pointer",position:"relative",flexShrink:0,
-        background:val?C.accentBg:"rgba(255,255,255,0.04)",border:`1px solid ${val?C.accent:C.border}`,
-        boxShadow:val?`0 0 8px ${C.accent}30`:"none",transition:"all 0.2s" }}>
-        <div style={{ position:"absolute",top:3,width:14,height:14,borderRadius:"50%",
-          background:val?C.accent:C.muted,left:val?21:3,transition:"left 0.2s,background 0.2s" }}/>
-      </div>
-    </div>
-  );
-
-  return (
-    <div style={{ flex:1,overflowY:"auto",background:C.bg,minHeight:0 }}>
-      <div style={{ margin:"14px 14px 0",background:"rgba(255,255,255,0.02)",
-        border:`1px solid ${gpsPos?C.good+"40":C.border}`,borderRadius:7,padding:"11px 13px" }}>
-        <div style={{ color:C.text,fontSize:11,fontFamily:C.fnt }}>📍 GPS</div>
-        <div style={{ color:gpsPos?C.good:C.muted,fontSize:8,fontFamily:C.fnt,marginTop:2 }}>
-          {gpsPos?`✓ ${gpsPos.lat.toFixed(5)}, ${gpsPos.lng.toFixed(5)} ±${gpsPos.acc}m`:"En attente de l'autorisation…"}
-        </div>
-      </div>
-
-      <div style={{ padding:"14px 14px 0" }}>
-        <div style={{ color:C.muted,fontSize:8,fontFamily:C.fnt,letterSpacing:2,marginBottom:10 }}>🔑 CLÉ API JCDECAUX</div>
-        <div style={{ background:"rgba(255,255,255,0.02)",border:`1px solid ${C.border}`,borderRadius:8,padding:"14px" }}>
-          <div style={{ background:apiLive?"rgba(46,204,143,0.08)":"rgba(245,130,13,0.08)",
-            border:`1px solid ${apiLive?C.good+"40":C.accent+"40"}`,borderRadius:4,padding:"7px 10px",marginBottom:10 }}>
-            <div style={{ color:apiLive?C.good:C.accent,fontSize:9,fontFamily:C.fnt }}>
-              {apiLive?"✓ LIVE — données JCDecaux temps réel":isMock?"⚠ DÉMO — GPS réels, dispos simulées":"⚠ Clé invalide"}
-            </div>
-            {isMock&&<div style={{ color:C.muted,fontSize:8,fontFamily:C.fnt,marginTop:2 }}>developer.jcdecaux.com (gratuit)</div>}
-          </div>
-          <div style={{ display:"flex",gap:8 }}>
-            <input value={draft} onChange={e=>setDraft(e.target.value)} placeholder="Clé API JCDecaux…" type="password"
-              style={{ flex:1,background:"rgba(0,0,0,0.4)",border:`1px solid ${C.border}`,
-                borderRadius:4,padding:"8px 10px",color:C.text,fontSize:11,fontFamily:C.fnt,outline:"none" }}/>
-            <div onPointerDown={saveKey} style={{ background:saved?"rgba(46,204,143,0.15)":C.accentBg,
-              border:`1px solid ${saved?C.good:C.accent}`,color:saved?C.good:C.accent,
-              borderRadius:4,padding:"8px 12px",fontSize:9,fontFamily:C.fnt,cursor:"pointer",fontWeight:700,whiteSpace:"nowrap" }}>
-              {saved?"✓ OK":"APPLIQUER"}
-            </div>
-          </div>
-          <div style={{ color:C.muted,fontSize:8,fontFamily:C.fnt,marginTop:8,lineHeight:1.8 }}>
-            GET /vls/v3/stations?contract=Luxembourg{"\n"}
-            available_bikes · electrical_bikes · mechanical_bikes{"\n"}
-            available_bike_stands · status · position · last_update
-          </div>
-        </div>
-      </div>
-
-      <div style={{ padding:"14px 14px 0" }}>
-        <div style={{ color:C.muted,fontSize:8,fontFamily:C.fnt,letterSpacing:2,marginBottom:10 }}>⚡ SATS REWARDS</div>
-        <div style={{ background:"rgba(255,255,255,0.02)",border:`1px solid ${C.border}`,borderRadius:8,padding:"0 14px" }}>
-          <Toggle label="Activer" sub="Sats après chaque trajet via LNURL-pay self-custodial" val={lnOn} set={setLnOn}/>
-          {lnOn&&<div style={{ paddingBottom:14 }}>
-            <div style={{ color:C.muted,fontSize:8,fontFamily:C.fnt,letterSpacing:2,margin:"10px 0 6px" }}>LIGHTNING ADDRESS</div>
-            <div style={{ display:"flex",gap:8 }}>
-              <input value={lnAddr} onChange={e=>setLnAddr(e.target.value)} placeholder="toi@getalby.com"
-                style={{ flex:1,background:"rgba(0,0,0,0.4)",border:`1px solid ${C.border}`,
-                  borderRadius:4,padding:"8px 10px",color:"#FCD34D",fontSize:11,fontFamily:C.fnt,outline:"none" }}/>
-              <div onPointerDown={()=>{setLnSaved(true);setTimeout(()=>setLnSaved(false),2000);}} style={{
-                background:lnSaved?"rgba(46,204,143,0.15)":C.accentBg,border:`1px solid ${lnSaved?C.good:C.accent}`,
-                color:lnSaved?C.good:C.accent,borderRadius:4,padding:"8px 12px",
-                fontSize:9,fontFamily:C.fnt,cursor:"pointer",fontWeight:700,whiteSpace:"nowrap" }}>
-                {lnSaved?"✓ OK":"SAVE"}
-              </div>
-            </div>
-            <div style={{ color:C.muted,fontSize:8,fontFamily:C.fnt,marginTop:7,lineHeight:1.8 }}>
-              Alby · WoS · Phoenix · Blink · Zeus{"\n"}LNURL-pay · self-custodial · zéro serveur
-            </div>
-          </div>}
-        </div>
-      </div>
-
-      <div style={{ padding:"14px" }}>
-        <div style={{ color:C.muted,fontSize:8,fontFamily:C.fnt,letterSpacing:2,marginBottom:10 }}>APPLICATION</div>
-        <div style={{ background:"rgba(255,255,255,0.02)",border:`1px solid ${C.border}`,borderRadius:8,padding:"0 14px" }}>
-          <Toggle label="Publicités AR" sub="Overlays sponsors dans la vue caméra" val={ads} set={setAds}/>
-        </div>
-      </div>
-      <div style={{ height:20 }}/>
-    </div>
-  );
-}
-
 // ── NAV ───────────────────────────────────────────────────────────
 function NavBar({ tab, setTab }) {
   return (
@@ -370,7 +273,13 @@ function NavBar({ tab, setTab }) {
 export default function App() {
   const [tab,setTab] = useState("ar");
   const [sel,setSel] = useState(null);
+  
+  // API Keys
   const [apiKey,setApiKey] = useState("");
+  const [claudeKey,setClaudeKey] = useState("");
+  const [kimiKey,setKimiKey] = useState("");
+  const [aiProvider,setAiProvider] = useState("claude"); // 'claude', 'kimi', 'none'
+  
   const [stations,setStations] = useState(()=>enrich(FALLBACK,null));
   const [apiLive,setApiLive] = useState(false);
   const [isMock,setIsMock] = useState(true);
@@ -418,7 +327,11 @@ export default function App() {
         {tab==="ar"       &&<ARScreen  stations={stations} sel={sel} setSel={setSel} gpsPos={gpsPos}/>}
         {tab==="map"      &&<MapScreen stations={stations} sel={sel} setSel={setSel} gpsPos={gpsPos} heading={heading}/>
         {tab==="ai"       &&<AIScreen  stations={stations}/>}
-        {tab==="settings" &&<SettingsScreen apiKey={apiKey} setApiKey={setApiKey}
+        {tab==="settings" &&<SettingsScreen 
+          apiKey={apiKey} setApiKey={setApiKey}
+          claudeKey={claudeKey} setClaudeKey={setClaudeKey}
+          kimiKey={kimiKey} setKimiKey={setKimiKey}
+          aiProvider={aiProvider} setAiProvider={setAiProvider}
           onRefresh={loadData} apiLive={apiLive} isMock={isMock} gpsPos={gpsPos}/>}
       </div>
       <NavBar tab={tab} setTab={setTab}/>
