@@ -8,6 +8,7 @@ import { RadarView } from './RadarView';
 import { StationDetail } from './StationDetail';
 import { ThemeToggle } from './ThemeToggle';
 import { NavigationMode } from './NavigationMode';
+import { LuxembourgVectorMap, LuxembourgMinimalMap } from './LuxembourgVectorMap';
 
 // ── CONSTANTS ─────────────────────────────────────────────────────
 const MAX_ZOOM = 18;
@@ -229,6 +230,17 @@ export function MapScreen({ stations, sel, setSel, gpsPos, heading = 0 }) {
           </defs>
           <rect width="100%" height="100%" fill="url(#grid)" />
         </svg>
+
+        {/* Carte vectorielle Luxembourg */}
+        <LuxembourgMinimalMap colors={{
+          districtStroke: colors.border,
+          mainRoad: colors.muted,
+          water: colors.blue,
+          accent: colors.accent,
+          good: colors.good,
+          blue: colors.blue,
+          bg: colors.bg,
+        }} />
 
         {/* User position */}
         {gpsPos && (

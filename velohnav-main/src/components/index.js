@@ -12,3 +12,4 @@ export { StatsDashboard } from './StatsDashboard';
 export { WeatherOverlay, WeatherCompact } from './WeatherOverlay';
 export { NotificationToast, AlertSettings } from './NotificationCenter';
 export { VoiceControlButton, VoiceTranscript, useVoiceCommands } from './VoiceControl';
+export { LuxembourgVectorMap, LuxembourgMinimalMap } from './LuxembourgVectorMap';
