@@ -325,7 +325,7 @@ export default function App() {
       <StatusBar tab={tab} gpsOk={!!gpsPos} apiLive={apiLive} isMock={isMock}/>
       <div style={{ flex:1,display:"flex",flexDirection:"column",overflow:"hidden",minHeight:0 }}>
         {tab==="ar"       &&<ARScreen  stations={stations} sel={sel} setSel={setSel} gpsPos={gpsPos}/>}
-        {tab==="map"      &&<MapScreen stations={stations} sel={sel} setSel={setSel} gpsPos={gpsPos} heading={heading}/>
+        {tab==="map"      &&<MapScreen stations={stations} sel={sel} setSel={setSel} gpsPos={gpsPos} heading={heading}/>}
         {tab==="ai"       &&<AIScreen  stations={stations}/>}
         {tab==="settings" &&<SettingsScreen 
           apiKey={apiKey} setApiKey={setApiKey}
