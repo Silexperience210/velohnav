@@ -490,6 +490,10 @@ export function ARNavigationScreen({
   const [arrowRotation, setArrowRotation] = useState(0);
   const [waypoints, setWaypoints] = useState([]);
   
+  // Ref pour throttler les feedbacks (éviter spam)
+  const lastFeedbackRef = useRef(0);
+  const lastProximityRef = useRef(0);
+  
   // Hooks
   const { initAudio, playDirectionalBeep, playSuccess } = useSpatialAudio();
   const { pulse, proximityPulse } = useHapticNav();
@@ -571,20 +575,30 @@ export function ARNavigationScreen({
     // Calories (~25 kcal/km)
     setCalories(Math.round((target.dist / 1000) * 25));
     
-    // Feedback directionnel
-    if (Math.abs(rotation) > 30) {
-      const dir = rotation < 0 ? 'left' : 'right';
-      pulse(dir);
-      playDirectionalBeep(dir, Math.min(Math.abs(rotation) / 90, 1));
+    // Feedback directionnel (throttle: max 1 fois par seconde)
+    const now = Date.now();
+    if (now - lastFeedbackRef.current > 1000) {
+      if (Math.abs(rotation) > 30) {
+        const dir = rotation < 0 ? 'left' : 'right';
+        pulse(dir);
+        playDirectionalBeep(dir, Math.min(Math.abs(rotation) / 90, 1));
+        lastFeedbackRef.current = now;
+      }
     }
     
-    // Proximité
-    proximityPulse(target.dist);
+    // Proximité (throttle: max 1 fois par 3 secondes)
+    if (now - lastProximityRef.current > 3000) {
+      proximityPulse(target.dist);
+      lastProximityRef.current = now;
+    }
     
-    // Arrivée
-    if (target.dist < 20) {
+    // Arrivée (pas de throttle, une seule fois quand on passe sous 20m)
+    if (target.dist < 20 && !lastFeedbackRef.currentArrived) {
       playSuccess();
       pulse('arrived');
+      lastFeedbackRef.currentArrived = true;
+    } else if (target.dist >= 20) {
+      lastFeedbackRef.currentArrived = false;
     }
     
   }, [userPos, target, heading, pulse, proximityPulse, playDirectionalBeep, playSuccess]);

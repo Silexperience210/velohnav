@@ -669,7 +669,7 @@ export function ARScreen({ stations, sel, setSel, gpsPos, onNavigateAR }) {
             {/* Bouton Navigation AR */}
             {onNavigateAR && (
               <div 
-                onClick={() => onNavigateAR(selectedStation)}
+                onClick={() => onNavigateAR()}
                 style={{
                   marginTop: 11,
                   padding: "12px 16px",
