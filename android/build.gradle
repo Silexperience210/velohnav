@@ -2,14 +2,11 @@ buildscript {
     repositories {
         google()
         mavenCentral()
-        gradlePluginPortal()
     }
     dependencies {
         classpath 'com.android.tools.build:gradle:8.13.0'
         classpath 'com.google.gms:google-services:4.4.4'
-        classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:2.1.0"
-        // Plugin marker Compose Kotlin 2.0+ (bundled dans kotlin-gradle-plugin)
-        classpath "org.jetbrains.kotlin.plugin.compose:org.jetbrains.kotlin.plugin.compose.gradle.plugin:2.1.0"
+        classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:1.9.24"
     }
 }
 
@@ -19,6 +16,17 @@ allprojects {
     repositories {
         google()
         mavenCentral()
+    }
+    // Force les versions coroutines/kotlin-stdlib compatibles Kotlin 1.9.x
+    // sur TOUS les modules y compris capacitor-geolocation
+    configurations.all {
+        resolutionStrategy {
+            force "org.jetbrains.kotlin:kotlin-stdlib:1.9.24"
+            force "org.jetbrains.kotlin:kotlin-stdlib-jdk7:1.9.24"
+            force "org.jetbrains.kotlin:kotlin-stdlib-jdk8:1.9.24"
+            force "org.jetbrains.kotlinx:kotlinx-coroutines-core:1.8.1"
+            force "org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1"
+        }
     }
 }
 
