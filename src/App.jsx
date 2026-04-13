@@ -763,6 +763,8 @@ function MapScreen({ stations, sel, setSel, gpsPos }) {
       <div style={{ color:C.muted,fontSize:10,fontFamily:C.fnt }}>Chargement des stations…</div>
     </div>
   );
+
+  // ── Bounding box ────────────────────────────────────────────────
   const margin=0.006;
   const lats=stations.map(s=>s.lat), lngs=stations.map(s=>s.lng);
   const ltMin=Math.min(...lats)-margin, ltMax=Math.max(...lats)+margin;
@@ -770,44 +772,161 @@ function MapScreen({ stations, sel, setSel, gpsPos }) {
   const toXY=(la,ln)=>({ x:(ln-lnMin)/(lnMax-lnMin)*88+6, y:(1-(la-ltMin)/(ltMax-ltMin))*86+5 });
   const ux=toXY(gpsPos?.lat??REF.lat, gpsPos?.lng??REF.lng);
 
+  // ── Pan / Zoom state ────────────────────────────────────────────
+  const [view,setView]=useState({x:0,y:0,s:1});
+  const viewRef=useRef({x:0,y:0,s:1});
+  const containerRef=useRef(null);
+  const ptrs=useRef(new Map());         // pointerId → [cx, cy]
+  const gesture=useRef(null);           // pan | pinch data
+  const didMove=useRef(false);          // true si drag >5px
+
+  const applyView=useCallback(v=>{
+    viewRef.current=v;
+    setView({...v});
+  },[]);
+
+  const onPtrDown=useCallback(e=>{
+    e.currentTarget.setPointerCapture(e.pointerId);
+    ptrs.current.set(e.pointerId,[e.clientX,e.clientY]);
+    didMove.current=false;
+
+    if(ptrs.current.size===1){
+      gesture.current={
+        type:"pan",
+        ox:e.clientX, oy:e.clientY,
+        vx:viewRef.current.x, vy:viewRef.current.y,
+      };
+    } else if(ptrs.current.size===2){
+      const [[x1,y1],[x2,y2]]=[...ptrs.current.values()];
+      gesture.current={
+        type:"pinch",
+        d0:Math.hypot(x2-x1,y2-y1),
+        s0:viewRef.current.s,
+        vx:viewRef.current.x, vy:viewRef.current.y,
+        cx:(x1+x2)/2, cy:(y1+y2)/2,
+      };
+    }
+  },[]);
+
+  const onPtrMove=useCallback(e=>{
+    ptrs.current.set(e.pointerId,[e.clientX,e.clientY]);
+    const g=gesture.current; if(!g) return;
+
+    if(g.type==="pan"){
+      const dx=e.clientX-g.ox, dy=e.clientY-g.oy;
+      if(Math.hypot(dx,dy)>5) didMove.current=true;
+      if(didMove.current) applyView({...viewRef.current, x:g.vx+dx, y:g.vy+dy});
+
+    } else if(g.type==="pinch"){
+      didMove.current=true;
+      const [[x1,y1],[x2,y2]]=[...ptrs.current.values()];
+      const d=Math.hypot(x2-x1,y2-y1);
+      const ns=Math.max(0.8,Math.min(5,g.s0*d/g.d0));
+      // Zoom vers le centre du pinch
+      const rect=containerRef.current?.getBoundingClientRect();
+      if(!rect) return;
+      const lx=g.cx-rect.left, ly=g.cy-rect.top;
+      const cx_content=(lx-g.vx)/g.s0, cy_content=(ly-g.vy)/g.s0;
+      applyView({ s:ns, x:lx-cx_content*ns, y:ly-cy_content*ns });
+    }
+  },[applyView]);
+
+  const onPtrUp=useCallback(e=>{
+    ptrs.current.delete(e.pointerId);
+    if(ptrs.current.size===0) gesture.current=null;
+    else if(ptrs.current.size===1){
+      // Retour en mode pan après fin du pinch
+      const [pid,[cx,cy]]=[...ptrs.current.entries()][0];
+      gesture.current={
+        type:"pan",
+        ox:cx, oy:cy,
+        vx:viewRef.current.x, vy:viewRef.current.y,
+      };
+    }
+  },[]);
+
+  const resetView=useCallback(()=>applyView({x:0,y:0,s:1}),[applyView]);
+  const isPanned=Math.abs(view.x)>4||Math.abs(view.y)>4||Math.abs(view.s-1)>0.05;
+
   return (
-    <div style={{ flex:1, display:"flex", flexDirection:"column", background:C.bg, minHeight:0 }}>
-      <div style={{ flex:1, position:"relative", margin:"8px 14px",
-        background:"rgba(0,0,0,0.5)", border:`1px solid ${C.border}`, borderRadius:8, overflow:"hidden" }}>
+    <div style={{ flex:1,display:"flex",flexDirection:"column",background:C.bg,minHeight:0 }}>
+      <div ref={containerRef}
+        style={{ flex:1,position:"relative",margin:"8px 14px",
+          background:"rgba(0,0,0,0.5)",border:`1px solid ${C.border}`,borderRadius:8,
+          overflow:"hidden",touchAction:"none",userSelect:"none" }}
+        onPointerDown={onPtrDown}
+        onPointerMove={onPtrMove}
+        onPointerUp={onPtrUp}
+        onPointerCancel={onPtrUp}>
 
-        {/* Grille de fond */}
-        <svg style={{ position:"absolute",inset:0,width:"100%",height:"100%",opacity:0.03 }}>
-          <defs><pattern id="mg" width="44" height="44" patternUnits="userSpaceOnUse">
-            <path d="M44 0L0 0 0 44" fill="none" stroke={C.accent} strokeWidth="0.5"/>
-          </pattern></defs>
-          <rect width="100%" height="100%" fill="url(#mg)"/>
-        </svg>
+        {/* Contenu transformable */}
+        <div style={{
+          position:"absolute",inset:0,
+          transform:`translate(${view.x}px,${view.y}px) scale(${view.s})`,
+          transformOrigin:"0 0",
+          willChange:"transform",
+        }}>
+          {/* Grille */}
+          <svg style={{ position:"absolute",inset:0,width:"100%",height:"100%",opacity:0.03,pointerEvents:"none" }}>
+            <defs><pattern id="mg" width="44" height="44" patternUnits="userSpaceOnUse">
+              <path d="M44 0L0 0 0 44" fill="none" stroke={C.accent} strokeWidth="0.5"/>
+            </pattern></defs>
+            <rect width="100%" height="100%" fill="url(#mg)"/>
+          </svg>
 
-        {/* Croquis SVG Luxembourg */}
-        <LuxMap toXY={toXY}/>
+          {/* Croquis SVG */}
+          <LuxMap toXY={toXY}/>
 
-        {/* Stations — points only, no labels */}
-        {stations.map(s=>{
-          const {x,y}=toXY(s.lat,s.lng); const col=bCol(s); const act=sel===s.id;
-          return (
-            <div key={s.id} onPointerDown={()=>setSel(act?null:s.id)}
-              style={{ position:"absolute",left:`${x}%`,top:`${y}%`,
-                transform:"translate(-50%,-50%)",width:36,height:36,
-                display:"flex",alignItems:"center",justifyContent:"center",cursor:"pointer",zIndex:act?15:8 }}>
-              {act&&<div style={{ position:"absolute",inset:4,borderRadius:"50%",border:`1.5px solid ${col}`,opacity:0.5 }}/>}
-              <div style={{ width:act?13:8,height:act?13:8,borderRadius:"50%",background:col,
-                boxShadow:`0 0 6px ${col}`,border:`2px solid ${act?"#fff":"rgba(0,0,0,0.5)"}`,transition:"all 0.18s" }}/>
-            </div>
-          );
-        })}
+          {/* Stations */}
+          {stations.map(s=>{
+            const {x,y}=toXY(s.lat,s.lng); const col=bCol(s); const act=sel===s.id;
+            return (
+              <div key={s.id}
+                onPointerDown={e=>e.stopPropagation()}
+                onClick={()=>{ if(!didMove.current) setSel(act?null:s.id); }}
+                style={{ position:"absolute",left:`${x}%`,top:`${y}%`,
+                  transform:"translate(-50%,-50%)",width:36,height:36,
+                  display:"flex",alignItems:"center",justifyContent:"center",
+                  cursor:"pointer",zIndex:act?15:8 }}>
+                {act&&<div style={{ position:"absolute",inset:4,borderRadius:"50%",
+                  border:`1.5px solid ${col}`,opacity:0.5 }}/>}
+                <div style={{ width:act?13:8,height:act?13:8,borderRadius:"50%",background:col,
+                  boxShadow:`0 0 6px ${col}`,border:`2px solid ${act?"#fff":"rgba(0,0,0,0.5)"}`,
+                  transition:"all 0.18s" }}/>
+              </div>
+            );
+          })}
 
-        {/* Position utilisateur */}
-        <div style={{ position:"absolute",left:`${ux.x}%`,top:`${ux.y}%`,
-          transform:"translate(-50%,-50%)",zIndex:20,pointerEvents:"none" }}>
-          <div style={{ position:"absolute",inset:-8,borderRadius:"50%",border:"2px solid rgba(59,130,246,0.5)"}}/>
-          <div style={{ width:10,height:10,borderRadius:"50%",background:C.blue,boxShadow:`0 0 10px ${C.blue}` }}/>
+          {/* Position utilisateur */}
+          <div style={{ position:"absolute",left:`${ux.x}%`,top:`${ux.y}%`,
+            transform:"translate(-50%,-50%)",zIndex:20,pointerEvents:"none" }}>
+            <div style={{ position:"absolute",inset:-8,borderRadius:"50%",border:"2px solid rgba(59,130,246,0.5)"}}/>
+            <div style={{ width:10,height:10,borderRadius:"50%",background:C.blue,boxShadow:`0 0 10px ${C.blue}` }}/>
+          </div>
         </div>
+
+        {/* Bouton reset — visible si déplacé/zoomé */}
+        {isPanned&&(
+          <div onPointerDown={e=>{e.stopPropagation();resetView();}}
+            style={{ position:"absolute",top:8,right:8,zIndex:30,
+              background:"rgba(8,12,15,0.90)",border:`1px solid ${C.accent}55`,
+              borderRadius:5,padding:"5px 10px",cursor:"pointer",
+              display:"flex",alignItems:"center",gap:5 }}>
+            <span style={{ color:C.accent,fontSize:9,fontFamily:C.fnt,letterSpacing:1 }}>⊙ RESET</span>
+          </div>
+        )}
+
+        {/* Zoom indicator */}
+        {view.s>1.15&&(
+          <div style={{ position:"absolute",bottom:8,right:8,zIndex:30,pointerEvents:"none",
+            background:"rgba(8,12,15,0.80)",border:`1px solid ${C.border}`,
+            borderRadius:4,padding:"3px 7px" }}>
+            <span style={{ color:C.muted,fontSize:7,fontFamily:C.fnt }}>×{view.s.toFixed(1)}</span>
+          </div>
+        )}
       </div>
+
+      {/* Légende */}
       <div style={{ display:"flex",gap:12,padding:"7px 14px 10px",borderTop:`1px solid ${C.border}` }}>
         {[[C.good,"Dispo"],[C.warn,"Faible"],[C.bad,"Vide"],["#444","Fermé"],[C.blue,"Vous"]].map(([c,l])=>(
           <div key={l} style={{ display:"flex",alignItems:"center",gap:4 }}>
