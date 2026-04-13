@@ -2,8 +2,8 @@ apply plugin: 'com.android.application'
 apply plugin: 'kotlin-android'
 
 android {
-    namespace = "com.silexperience.velohnav"
-    compileSdk = rootProject.ext.compileSdkVersion
+    namespace "com.silexperience.velohnav"
+    compileSdk rootProject.ext.compileSdkVersion
 
     defaultConfig {
         applicationId "com.silexperience.velohnav"
@@ -13,7 +13,6 @@ android {
         versionName "1.0"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
 
-        // Clé Maps API depuis local.properties
         def mapsKey = project.findProperty("MAPS_API_KEY") ?: ""
         buildConfigField "String", "MAPS_API_KEY", "\"${mapsKey}\""
         manifestPlaceholders = [MAPS_API_KEY: mapsKey]
@@ -62,7 +61,6 @@ repositories {
 }
 
 dependencies {
-    // Capacitor (existant)
     implementation fileTree(include: ['*.jar'], dir: 'libs')
     implementation "androidx.appcompat:appcompat:$androidxAppCompatVersion"
     implementation "androidx.coordinatorlayout:coordinatorlayout:$androidxCoordinatorLayoutVersion"
@@ -77,7 +75,7 @@ dependencies {
     implementation 'com.google.ar:core:1.46.0'
     implementation 'io.github.sceneview:arsceneview:2.2.1'
 
-    // Jetpack Compose
+    // Compose
     implementation platform('androidx.compose:compose-bom:2024.06.00')
     implementation 'androidx.compose.ui:ui'
     implementation 'androidx.compose.material3:material3'
@@ -89,7 +87,7 @@ dependencies {
     implementation 'androidx.lifecycle:lifecycle-viewmodel-compose:2.8.3'
     implementation 'androidx.lifecycle:lifecycle-runtime-ktx:2.8.3'
 
-    // Retrofit (Directions API)
+    // Retrofit
     implementation 'com.squareup.retrofit2:retrofit:2.11.0'
     implementation 'com.squareup.retrofit2:converter-gson:2.11.0'
     implementation 'com.squareup.okhttp3:logging-interceptor:4.12.0'
@@ -110,5 +108,5 @@ try {
         apply plugin: 'com.google.gms.google-services'
     }
 } catch (Exception e) {
-    logger.warn("google-services.json not found, skipping plugin")
+    logger.warn("google-services.json not found")
 }
