@@ -319,7 +319,7 @@ function ARPin({ s, sel, setSel, pulse }) {
 
 // ── AR SCREEN ─────────────────────────────────────────────────────
 const COMPASS_LABELS=["N","NE","E","SE","S","SO","O","NO"];
-const FOV=68; // horizontal camera FOV in degrees
+const FOV=68;
 
 function ARScreen({ stations, sel, setSel, gpsPos }) {
   const vidRef=useRef(null);
@@ -337,23 +337,27 @@ function ARScreen({ stations, sel, setSel, gpsPos }) {
     return()=>clearInterval(t);
   },[]);
 
-  const startCam=useCallback(async()=>{
+  // ── Activation unique : caméra + boussole dans le même geste ──
+  const startAR=useCallback(async()=>{
     setCam("requesting");
+    // Boussole en premier (iOS 13 : requestPermission doit être dans le geste)
+    await startCompass();
+    // Puis caméra
     try{
       const stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:"environment"}});
       if(vidRef.current){vidRef.current.srcObject=stream; await vidRef.current.play();}
       setCam("active");
     }catch(e){console.warn("Cam:",e);setCam("denied");}
-  },[]);
+  },[startCompass]);
 
   useEffect(()=>{
     const vid=vidRef.current;
     return()=>{vid?.srcObject?.getTracks().forEach(t=>t.stop());};
   },[]);
 
-  // ── Real AR projection ──────────────────────────────────────────
+  // ── Projection AR réelle ───────────────────────────────────────
   const arPins=useMemo(()=>{
-    if(heading===null||!gpsPos) return null; // null = use fake grid
+    if(heading===null||!gpsPos) return null;
     return stations
       .filter(s=>s.lat&&s.lng&&s.dist<1600)
       .map(s=>{
@@ -362,18 +366,18 @@ function ARScreen({ stations, sel, setSel, gpsPos }) {
         if(Math.abs(rel)>FOV/2+8) return null;
         const x=50+(rel/(FOV/2))*50;
         const dc=Math.min(s.dist,1200);
-        const y=70-(1-dc/1200)*44;          // far=26% near=70%
+        const y=70-(1-dc/1200)*44;
         const scale=Math.max(0.55,1-dc/1500);
-        return{...s, x, y, scale, labelRight:rel<0, rel};
+        return{...s,x,y,scale,labelRight:rel<0,rel};
       })
       .filter(Boolean)
-      .sort((a,b)=>b.dist-a.dist);          // back-to-front
+      .sort((a,b)=>b.dist-a.dist);
   },[heading,gpsPos,stations]);
 
   const fakePins=useMemo(()=>pins(stations),[stations]);
   const visiblePins=arPins??fakePins;
 
-  // ── Nav overlay (selected station) ────────────────────────────
+  // ── Nav overlay ────────────────────────────────────────────────
   const navStation=stations.find(s=>s.id===sel);
   const navRel=useMemo(()=>{
     if(!navStation||!gpsPos||heading===null) return null;
@@ -384,23 +388,31 @@ function ARScreen({ stations, sel, setSel, gpsPos }) {
   const hdg=heading!==null?Math.round(heading):null;
   const cardLabel=hdg!==null?COMPASS_LABELS[Math.round(hdg/45)%8]:"?";
 
+  // ── Status boussole pour l'UI ──────────────────────────────────
+  const compassStatus=()=>{
+    if(perm==="idle")      return{label:"BOUSSOLE : APPUIE SUR ACTIVER AR",col:C.muted};
+    if(perm==="requesting")return{label:"BOUSSOLE EN COURS…",col:C.warn};
+    if(perm==="denied")    return{label:"BOUSSOLE REFUSÉE — AR LIMITÉ",col:C.bad};
+    if(perm==="unavailable")return{label:"BOUSSOLE INDISPONIBLE",col:C.bad};
+    if(heading===null)     return{label:"BOUSSOLE : ATTENTE SIGNAL…",col:C.warn};
+    return{label:`AR ACTIF · ${hdg}° ${cardLabel}`,col:C.good};
+  };
+  const cs=compassStatus();
+
   return (
     <div style={{position:"relative",flex:1,overflow:"hidden",minHeight:0,background:"#000"}}>
 
-      {/* Camera feed */}
       <video ref={vidRef} muted playsInline autoPlay style={{
         position:"absolute",inset:0,width:"100%",height:"100%",objectFit:"cover",zIndex:1,
         opacity:cam==="active"?1:0,transition:"opacity 0.5s"}}/>
       {cam!=="active"&&<div style={{position:"absolute",inset:0,zIndex:2}}><CityBG off={bgOff}/></div>}
 
-      {/* Gradient vignette */}
       <div style={{position:"absolute",inset:0,zIndex:5,pointerEvents:"none"}}>
         <div style={{position:"absolute",inset:0,background:"radial-gradient(ellipse at center,transparent 30%,rgba(0,0,0,0.35) 100%)"}}/>
         <div style={{position:"absolute",top:0,left:0,right:0,height:70,background:"linear-gradient(to bottom,rgba(8,12,15,0.65),transparent)"}}/>
         <div style={{position:"absolute",bottom:0,left:0,right:0,height:230,background:"linear-gradient(to top,rgba(8,12,15,0.98),rgba(8,12,15,0.4) 60%,transparent)"}}/>
       </div>
 
-      {/* Blue nav path */}
       {navRel!==null&&<NavCanvas relBear={navRel}/>}
 
       {/* Compass strip */}
@@ -413,14 +425,14 @@ function ARScreen({ stations, sel, setSel, gpsPos }) {
             </div>
           ):(
             <div style={{color:C.muted,fontSize:7,fontFamily:C.fnt,textAlign:"center",letterSpacing:1}}>
-              {perm==="denied"?"⊗ BOUSSOLE REFUSÉE":"⊕ BOUSSOLE INACTIVE"}
+              ···
             </div>
           )}
         </div>
         <div style={{color:C.accent,fontSize:8,textAlign:"center",lineHeight:"4px"}}>▾</div>
       </div>
 
-      {/* Horizon line + crosshair */}
+      {/* Horizon + crosshair */}
       <div style={{position:"absolute",top:"46%",left:0,right:0,height:1,zIndex:6,pointerEvents:"none",
         background:`linear-gradient(to right,transparent,${C.accent}45,${C.accent}45,transparent)`}}/>
       <div style={{position:"absolute",top:"46%",left:"50%",transform:"translate(-50%,-50%)",pointerEvents:"none",zIndex:6}}>
@@ -433,29 +445,37 @@ function ARScreen({ stations, sel, setSel, gpsPos }) {
         </svg>
       </div>
 
-      {/* Cam activation */}
+      {/* Bouton activation — caméra + boussole en un seul tap */}
       {cam!=="active"&&(
         <div style={{position:"absolute",top:"50%",left:"50%",transform:"translate(-50%,-50%)",
           zIndex:30,display:"flex",flexDirection:"column",alignItems:"center",gap:14}}>
-          {cam==="idle"&&(
+          {(cam==="idle")&&(
             <>
               <div style={{color:C.muted,fontSize:9,fontFamily:C.fnt,letterSpacing:3}}>VUE AR VELOHNAV</div>
-              <button onPointerDown={startCam} style={{
+              <button onPointerDown={startAR} style={{
                 background:C.accentBg,border:`1px solid ${C.accent}`,color:C.accent,
                 borderRadius:5,padding:"12px 32px",fontSize:12,fontFamily:C.fnt,
                 fontWeight:700,cursor:"pointer",letterSpacing:2,boxShadow:`0 0 20px ${C.accent}25`}}>
-                ▶ ACTIVER CAMÉRA
+                ▶ ACTIVER AR
               </button>
+              <div style={{color:C.muted,fontSize:8,fontFamily:C.fnt,textAlign:"center",lineHeight:1.6}}>
+                Caméra + boussole
+              </div>
             </>
           )}
-          {cam==="requesting"&&<div style={{color:C.accent,fontSize:10,fontFamily:C.fnt,letterSpacing:3}}>ACCÈS CAMÉRA…</div>}
+          {cam==="requesting"&&(
+            <div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:8}}>
+              <div style={{color:C.accent,fontSize:10,fontFamily:C.fnt,letterSpacing:3}}>INITIALISATION…</div>
+              <div style={{color:C.muted,fontSize:8,fontFamily:C.fnt}}>{cs.label}</div>
+            </div>
+          )}
           {cam==="denied"&&(
             <div style={{textAlign:"center",padding:"0 32px"}}>
               <div style={{color:C.bad,fontSize:10,fontFamily:C.fnt,marginBottom:8}}>CAMÉRA REFUSÉE</div>
               <div style={{color:C.muted,fontSize:9,fontFamily:C.fnt,lineHeight:1.7}}>
                 Paramètres → Apps → VelohNav → Autorisations → Caméra
               </div>
-              <button onPointerDown={startCam} style={{
+              <button onPointerDown={startAR} style={{
                 background:"rgba(224,62,62,0.1)",border:`1px solid ${C.bad}`,color:C.bad,
                 borderRadius:4,padding:"8px 20px",fontSize:9,fontFamily:C.fnt,
                 cursor:"pointer",marginTop:12}}>RÉESSAYER</button>
@@ -464,24 +484,12 @@ function ARScreen({ stations, sel, setSel, gpsPos }) {
         </div>
       )}
 
-      {/* Boussole activation (cam active, compass idle) */}
-      {cam==="active"&&perm==="idle"&&(
-        <div style={{position:"absolute",top:44,right:12,zIndex:30}}>
-          <button onPointerDown={startCompass} style={{
-            background:C.accentBg,border:`1px solid ${C.accent}55`,color:C.accent,
-            borderRadius:4,padding:"6px 11px",fontSize:8,fontFamily:C.fnt,
-            cursor:"pointer",letterSpacing:1,boxShadow:`0 0 8px ${C.accent}20`}}>
-            ⊕ AR RÉEL
-          </button>
-        </div>
-      )}
-
-      {/* AR mode badge */}
-      {arPins&&(
+      {/* Status bar boussole (cam active) */}
+      {cam==="active"&&(
         <div style={{position:"absolute",top:44,left:12,zIndex:20,pointerEvents:"none"}}>
-          <div style={{background:"rgba(46,204,143,0.08)",border:`1px solid ${C.good}30`,
+          <div style={{background:`rgba(0,0,0,0.55)`,border:`1px solid ${cs.col}30`,
             borderRadius:3,padding:"3px 8px"}}>
-            <span style={{color:C.good,fontSize:7,fontFamily:C.fnt,letterSpacing:1}}>AR RÉEL · {hdg}° {cardLabel}</span>
+            <span style={{color:cs.col,fontSize:7,fontFamily:C.fnt,letterSpacing:1}}>{cs.label}</span>
           </div>
         </div>
       )}
@@ -531,7 +539,7 @@ function ARScreen({ stations, sel, setSel, gpsPos }) {
             <div style={{color:C.muted,fontSize:8,fontFamily:C.fnt,letterSpacing:2}}>
               {arPins
                 ?`${arPins.length} STATIONS EN VUE · TOURNE-TOI POUR SCANNER`
-                :`${stations.filter(s=>s.bikes>0).length}/${stations.length} DISPO · TOUCHE UN PIN AR`}
+                :`${stations.filter(s=>s.bikes>0).length}/${stations.length} DISPO · TOUCHE UN PIN`}
             </div>
           </div>
         )}
