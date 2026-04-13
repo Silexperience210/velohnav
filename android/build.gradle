@@ -17,15 +17,25 @@ allprojects {
         google()
         mavenCentral()
     }
-    // Force les versions coroutines/kotlin-stdlib compatibles Kotlin 1.9.x
-    // sur TOUS les modules y compris capacitor-geolocation
-    configurations.all {
-        resolutionStrategy {
-            force "org.jetbrains.kotlin:kotlin-stdlib:1.9.24"
-            force "org.jetbrains.kotlin:kotlin-stdlib-jdk7:1.9.24"
-            force "org.jetbrains.kotlin:kotlin-stdlib-jdk8:1.9.24"
-            force "org.jetbrains.kotlinx:kotlinx-coroutines-core:1.8.1"
-            force "org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1"
+}
+
+// Forcer versions Kotlin/coroutines compatibles dans tous les sous-projets
+// afterEvaluate + eachDependency évite de casser les variants AGP
+subprojects {
+    afterEvaluate { proj ->
+        proj.configurations.all { config ->
+            config.resolutionStrategy.eachDependency { details ->
+                def g = details.requested.group
+                def n = details.requested.name
+                if (g == 'org.jetbrains.kotlinx' && n.startsWith('kotlinx-coroutines')) {
+                    details.useVersion '1.8.1'
+                    details.because 'Force coroutines compatibles Kotlin 1.9.24'
+                }
+                if (g == 'org.jetbrains.kotlin' && n.startsWith('kotlin-stdlib')) {
+                    details.useVersion '1.9.24'
+                    details.because 'Force kotlin-stdlib 1.9.24'
+                }
+            }
         }
     }
 }
