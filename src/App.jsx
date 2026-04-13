@@ -94,7 +94,7 @@ function parseStation(raw) {
     cap:   raw.totalStands?.capacity ?? raw.bike_stands ?? 0,
     bikes: av.bikes ?? raw.available_bikes ?? 0,
     elec:  av.electricalBikes ?? av.electricalInternalBatteryBikes ?? 0,
-    meca:  av.mechanicalBikes ?? 0,
+    meca:  0,
     docks: av.stands ?? raw.available_bike_stands ?? 0,
     status: raw.status==="OPEN" ? "OPEN" : "CLOSED",
     _mock: false,
@@ -112,7 +112,7 @@ const FALLBACK = [
   { id:33, name:"Bonnevoie",            lat:49.59650, lng:6.13750, cap:18, b:0, e:0 },
   { id:45, name:"Belair",               lat:49.60890, lng:6.11940, cap:16, b:6, e:4 },
 ].map(s=>({ id:s.id, name:s.name, lat:s.lat, lng:s.lng, cap:s.cap,
-  bikes:s.b, elec:s.e, meca:s.b-s.e, docks:s.cap-s.b,
+  bikes:s.b, elec:s.e, meca:0, docks:s.cap-s.b,
   status:s.b===0&&s.id===33?"CLOSED":"OPEN", _mock:true }));
 
 function enrich(list, pos) {
@@ -622,9 +622,9 @@ function ARScreen({ stations, sel, setSel, gpsPos }) {
             <div style={{display:"flex",borderTop:`1px solid ${C.border}`,paddingTop:11}}>
               {[
                 {l:"VÉLOS",v:navStation.bikes,col:bCol(navStation)},
-                {l:"ÉLEC.",v:navStation.elec, col:"#60A5FA"},
-                {l:"MÉCA.",v:navStation.meca, col:C.text},
+                {l:"ÉLEC.", v:navStation.elec, col:"#60A5FA"},
                 {l:"DOCKS",v:navStation.docks,col:C.text},
+                {l:"CAP.",  v:navStation.cap,  col:C.muted},
               ].map((m,i)=>(
                 <div key={m.l} style={{flex:1,textAlign:"center",borderRight:i<3?`1px solid ${C.border}`:"none"}}>
                   <div style={{color:m.col,fontSize:20,fontFamily:C.fnt,fontWeight:700}}>{m.v}</div>
@@ -711,8 +711,12 @@ function LuxMap({ toXY }) {
     [49.6065,6.1360,"GRUND"],
   ];
 
-  const rCol = `rgba(245,130,13,0.13)`;
-  const rivCol = `rgba(96,165,250,0.22)`;
+  const rCol  = `rgba(255,255,255,0.30)`;   // routes — blanc
+  const rivCol = `rgba(100,210,255,0.70)`;   // Alzette — bleu vif
+  const petCol = `rgba(100,200,255,0.45)`;   // Pétrusse — bleu moyen
+  const kEdge  = `rgba(255,190,80,0.30)`;    // Kirchberg edge — orange doux
+  const kBridg = `rgba(255,255,255,0.42)`;   // pont Kirchberg — blanc
+  const lblCol = `rgba(255,255,255,0.52)`;   // labels — blanc lisible
 
   return (
     <svg style={{ position:"absolute",inset:0,width:"100%",height:"100%",pointerEvents:"none" }}
@@ -720,30 +724,30 @@ function LuxMap({ toXY }) {
 
       {/* Kirchberg plateau edge */}
       <polyline points={pts(kirchbergEdge)}
-        fill="none" stroke={`rgba(245,130,13,0.08)`} strokeWidth="3"
-        strokeDasharray="0.8,2.2"/>
+        fill="none" stroke={kEdge} strokeWidth="2.5"
+        strokeDasharray="1,2.5"/>
 
       {/* Rivers */}
       <polyline points={pts(alzette)}
-        fill="none" stroke={rivCol} strokeWidth="1.1" strokeLinecap="round" strokeLinejoin="round"/>
+        fill="none" stroke={rivCol} strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/>
       <polyline points={pts(petrusse)}
-        fill="none" stroke={`rgba(96,165,250,0.15)`} strokeWidth="0.7" strokeLinecap="round"/>
+        fill="none" stroke={petCol} strokeWidth="0.9" strokeLinecap="round"/>
 
       {/* Roads */}
-      <path d={road(bvdRoyal)}  fill="none" stroke={rCol} strokeWidth="0.9" strokeLinecap="round"/>
-      <path d={road(avGare)}    fill="none" stroke={rCol} strokeWidth="0.7" strokeLinecap="round"/>
-      <path d={road(routeArlon)} fill="none" stroke={rCol} strokeWidth="0.7" strokeLinecap="round"/>
-      <path d={road(kirchbergBridge)} fill="none" stroke={`rgba(245,130,13,0.18)`} strokeWidth="0.9" strokeLinecap="round"/>
-      <path d={road(routeEsch)} fill="none" stroke={rCol} strokeWidth="0.7" strokeLinecap="round"/>
-      <path d={road(avgJFK)}    fill="none" stroke={rCol} strokeWidth="0.7" strokeLinecap="round"/>
+      <path d={road(bvdRoyal)}    fill="none" stroke={rCol} strokeWidth="1.1" strokeLinecap="round"/>
+      <path d={road(avGare)}      fill="none" stroke={rCol} strokeWidth="0.8" strokeLinecap="round"/>
+      <path d={road(routeArlon)}  fill="none" stroke={rCol} strokeWidth="0.8" strokeLinecap="round"/>
+      <path d={road(kirchbergBridge)} fill="none" stroke={kBridg} strokeWidth="1.1" strokeLinecap="round"/>
+      <path d={road(routeEsch)}   fill="none" stroke={rCol} strokeWidth="0.8" strokeLinecap="round"/>
+      <path d={road(avgJFK)}      fill="none" stroke={rCol} strokeWidth="0.8" strokeLinecap="round"/>
 
       {/* District labels */}
       {labels.map(([la,ln,txt])=>{
         const {x,y}=toXY(la,ln);
         return (
           <text key={txt} x={x} y={y}
-            fill="rgba(255,255,255,0.11)" fontSize="3.2"
-            fontFamily="'Courier New',monospace" textAnchor="middle" letterSpacing="0.8">
+            fill={lblCol} fontSize="3.5"
+            fontFamily="'Courier New',monospace" textAnchor="middle" letterSpacing="1">
             {txt}
           </text>
         );
@@ -998,7 +1002,7 @@ function SettingsScreen({ apiKey, setApiKey, claudeKey, setClaudeKey, onRefresh,
           </div>
           <div style={{ color:C.muted,fontSize:8,fontFamily:C.fnt,marginTop:8,lineHeight:1.8 }}>
             GET /vls/v3/stations?contract=Luxembourg{"\n"}
-            available_bikes · electrical_bikes · mechanical_bikes{"\n"}
+            available_bikes · electrical_bikes{"\n"}
             available_bike_stands · status · position · last_update
           </div>
         </div>
