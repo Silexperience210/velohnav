@@ -35,6 +35,11 @@ jobs:
       - name: Sync Capacitor Android
         run: npx cap sync android
 
+      - name: Inject Maps API Key
+        run: |
+          echo "MAPS_API_KEY=${{ secrets.MAPS_API_KEY }}" >> android/local.properties
+          echo "sdk.dir=$ANDROID_HOME" >> android/local.properties
+
       - name: Set gradlew executable
         run: chmod +x android/gradlew
 
@@ -45,7 +50,7 @@ jobs:
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: VelohNav-debug
+          name: VelohNav-AR-debug
           path: android/app/build/outputs/apk/debug/app-debug.apk
           retention-days: 30
 
@@ -53,5 +58,4 @@ jobs:
         run: |
           APK=android/app/build/outputs/apk/debug/app-debug.apk
           SIZE=$(du -h $APK | cut -f1)
-          echo "✅ APK built: $SIZE"
-          echo "📥 Download from GitHub Actions → Artifacts → VelohNav-debug"
+          echo "✅ APK VelohNav AR built: $SIZE"
