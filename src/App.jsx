@@ -364,6 +364,110 @@ function ARScreen({ stations, sel, setSel }) {
   );
 }
 
+// ── LUX MAP SVG SKETCH ───────────────────────────────────────────
+function LuxMap({ toXY }) {
+  // Converts [lat,lng] array → "x,y x,y …" for polyline/polygon
+  const pts = coords => coords.map(([la,ln])=>{ const {x,y}=toXY(la,ln); return `${x},${y}`; }).join(" ");
+  // Converts [lat,lng] array → SVG path string
+  const road = coords => {
+    const segs = coords.map(([la,ln])=>{ const {x,y}=toXY(la,ln); return [x,y]; });
+    return segs.map(([x,y],i)=>`${i===0?"M":"L"}${x} ${y}`).join(" ");
+  };
+
+  /* ── Rivers ── */
+  const alzette = [
+    [49.5945,6.1340],[49.5975,6.1350],[49.6000,6.1358],
+    [49.6030,6.1372],[49.6055,6.1382],[49.6075,6.1395],
+    [49.6100,6.1435],[49.6120,6.1480],[49.6145,6.1510],
+  ];
+  const petrusse = [
+    [49.6040,6.1090],[49.6025,6.1140],[49.6020,6.1200],
+    [49.6030,6.1260],[49.6045,6.1300],[49.6070,6.1360],
+  ];
+
+  /* ── Major roads ── */
+  const bvdRoyal = [
+    [49.5985,6.1305],[49.6040,6.1305],[49.6080,6.1300],
+    [49.6110,6.1295],[49.6150,6.1265],
+  ];
+  const avGare = [
+    [49.5960,6.1310],[49.5995,6.1330],[49.6020,6.1338],
+  ];
+  const routeArlon = [
+    [49.6120,6.1268],[49.6155,6.1205],[49.6180,6.1150],
+  ];
+  const kirchbergBridge = [
+    [49.6110,6.1295],[49.6140,6.1360],[49.6170,6.1440],
+    [49.6200,6.1510],[49.6220,6.1560],
+  ];
+  const routeEsch = [
+    [49.5985,6.1305],[49.5970,6.1230],[49.5960,6.1150],
+  ];
+  const avgJFK = [
+    [49.6220,6.1560],[49.6230,6.1630],[49.6235,6.1700],
+  ];
+
+  /* ── Kirchberg plateau boundary (escarpment) ── */
+  const kirchbergEdge = [
+    [49.6145,6.1355],[49.6160,6.1400],[49.6180,6.1450],
+    [49.6210,6.1500],[49.6250,6.1560],[49.6265,6.1640],
+    [49.6265,6.1730],[49.6250,6.1810],
+  ];
+
+  /* ── District labels [lat, lng, text] ── */
+  const labels = [
+    [49.6225,6.1620,"KIRCHBERG"],
+    [49.6170,6.1185,"LIMPERTSBERG"],
+    [49.6108,6.1295,"VILLE-HAUTE"],
+    [49.6000,6.1290,"GARE"],
+    [49.5958,6.1370,"BONNEVOIE"],
+    [49.6095,6.1455,"CLAUSEN"],
+    [49.6085,6.1165,"BELAIR"],
+    [49.6000,6.1190,"HOLLERICH"],
+    [49.6065,6.1360,"GRUND"],
+  ];
+
+  const rCol = `rgba(245,130,13,0.13)`;
+  const rivCol = `rgba(96,165,250,0.22)`;
+
+  return (
+    <svg style={{ position:"absolute",inset:0,width:"100%",height:"100%",pointerEvents:"none" }}
+      viewBox="0 0 100 100" preserveAspectRatio="none">
+
+      {/* Kirchberg plateau edge */}
+      <polyline points={pts(kirchbergEdge)}
+        fill="none" stroke={`rgba(245,130,13,0.08)`} strokeWidth="3"
+        strokeDasharray="0.8,2.2"/>
+
+      {/* Rivers */}
+      <polyline points={pts(alzette)}
+        fill="none" stroke={rivCol} strokeWidth="1.1" strokeLinecap="round" strokeLinejoin="round"/>
+      <polyline points={pts(petrusse)}
+        fill="none" stroke={`rgba(96,165,250,0.15)`} strokeWidth="0.7" strokeLinecap="round"/>
+
+      {/* Roads */}
+      <path d={road(bvdRoyal)}  fill="none" stroke={rCol} strokeWidth="0.9" strokeLinecap="round"/>
+      <path d={road(avGare)}    fill="none" stroke={rCol} strokeWidth="0.7" strokeLinecap="round"/>
+      <path d={road(routeArlon)} fill="none" stroke={rCol} strokeWidth="0.7" strokeLinecap="round"/>
+      <path d={road(kirchbergBridge)} fill="none" stroke={`rgba(245,130,13,0.18)`} strokeWidth="0.9" strokeLinecap="round"/>
+      <path d={road(routeEsch)} fill="none" stroke={rCol} strokeWidth="0.7" strokeLinecap="round"/>
+      <path d={road(avgJFK)}    fill="none" stroke={rCol} strokeWidth="0.7" strokeLinecap="round"/>
+
+      {/* District labels */}
+      {labels.map(([la,ln,txt])=>{
+        const {x,y}=toXY(la,ln);
+        return (
+          <text key={txt} x={x} y={y}
+            fill="rgba(255,255,255,0.11)" fontSize="3.2"
+            fontFamily="'Courier New',monospace" textAnchor="middle" letterSpacing="0.8">
+            {txt}
+          </text>
+        );
+      })}
+    </svg>
+  );
+}
+
 // ── MAP SCREEN ────────────────────────────────────────────────────
 function MapScreen({ stations, sel, setSel, gpsPos }) {
   if (!stations.length) return (
@@ -382,37 +486,34 @@ function MapScreen({ stations, sel, setSel, gpsPos }) {
     <div style={{ flex:1, display:"flex", flexDirection:"column", background:C.bg, minHeight:0 }}>
       <div style={{ flex:1, position:"relative", margin:"8px 14px",
         background:"rgba(0,0,0,0.5)", border:`1px solid ${C.border}`, borderRadius:8, overflow:"hidden" }}>
-        <svg style={{ position:"absolute",inset:0,width:"100%",height:"100%",opacity:0.04 }}>
+
+        {/* Grille de fond */}
+        <svg style={{ position:"absolute",inset:0,width:"100%",height:"100%",opacity:0.03 }}>
           <defs><pattern id="mg" width="44" height="44" patternUnits="userSpaceOnUse">
             <path d="M44 0L0 0 0 44" fill="none" stroke={C.accent} strokeWidth="0.5"/>
           </pattern></defs>
           <rect width="100%" height="100%" fill="url(#mg)"/>
         </svg>
-        <div style={{ position:"absolute",top:"50%",left:"50%",transform:"translate(-50%,-50%)",
-          color:`${C.accent}04`,fontSize:32,fontFamily:C.fnt,fontWeight:700,userSelect:"none",whiteSpace:"nowrap" }}>LUXEMBOURG</div>
 
+        {/* Croquis SVG Luxembourg */}
+        <LuxMap toXY={toXY}/>
+
+        {/* Stations — points only, no labels */}
         {stations.map(s=>{
           const {x,y}=toXY(s.lat,s.lng); const col=bCol(s); const act=sel===s.id;
           return (
             <div key={s.id} onPointerDown={()=>setSel(act?null:s.id)}
               style={{ position:"absolute",left:`${x}%`,top:`${y}%`,
-                transform:"translate(-50%,-50%)",width:44,height:44,
+                transform:"translate(-50%,-50%)",width:36,height:36,
                 display:"flex",alignItems:"center",justifyContent:"center",cursor:"pointer",zIndex:act?15:8 }}>
-              {act&&<div style={{ position:"absolute",inset:2,borderRadius:"50%",border:`1.5px solid ${col}`,opacity:0.5 }}/>}
-              <div style={{ width:act?14:10,height:act?14:10,borderRadius:"50%",background:col,
-                boxShadow:`0 0 7px ${col}`,border:`2px solid ${act?"#fff":"rgba(0,0,0,0.5)"}`,transition:"all 0.18s" }}/>
-              <div style={{ position:"absolute",left:x>55?"auto":42,right:x>55?42:"auto",
-                top:"50%",transform:"translateY(-50%)",
-                background:"rgba(8,12,15,0.94)",border:`1px solid ${act?col:C.border}`,
-                borderRadius:3,padding:"3px 7px",whiteSpace:"nowrap",
-                boxShadow:act?`0 0 8px ${col}25`:"none",pointerEvents:"none" }}>
-                <div style={{ color:act?col:C.muted,fontSize:9,fontFamily:C.fnt,fontWeight:act?700:400 }}>{s.name}</div>
-                <div style={{ color:C.muted,fontSize:7,fontFamily:C.fnt }}>{s.bikes}🚲 ⚡{s.elec} · {fDist(s.dist)}</div>
-              </div>
+              {act&&<div style={{ position:"absolute",inset:4,borderRadius:"50%",border:`1.5px solid ${col}`,opacity:0.5 }}/>}
+              <div style={{ width:act?13:8,height:act?13:8,borderRadius:"50%",background:col,
+                boxShadow:`0 0 6px ${col}`,border:`2px solid ${act?"#fff":"rgba(0,0,0,0.5)"}`,transition:"all 0.18s" }}/>
             </div>
           );
         })}
 
+        {/* Position utilisateur */}
         <div style={{ position:"absolute",left:`${ux.x}%`,top:`${ux.y}%`,
           transform:"translate(-50%,-50%)",zIndex:20,pointerEvents:"none" }}>
           <div style={{ position:"absolute",inset:-8,borderRadius:"50%",border:"2px solid rgba(59,130,246,0.5)"}}/>
