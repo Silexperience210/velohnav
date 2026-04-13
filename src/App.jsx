@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 
 // ── CAPACITOR DETECTION ───────────────────────────────────────────
 const IS_NATIVE = typeof window !== "undefined" &&
@@ -73,6 +73,12 @@ function haversine(la1,ln1,la2,ln2) {
   const a=Math.sin(dL/2)**2+Math.cos(la1*Math.PI/180)*Math.cos(la2*Math.PI/180)*Math.sin(dl/2)**2;
   return Math.round(R*2*Math.atan2(Math.sqrt(a),Math.sqrt(1-a)));
 }
+function getBearing(la1,ln1,la2,ln2){
+  const φ1=la1*Math.PI/180,φ2=la2*Math.PI/180,Δλ=(ln2-ln1)*Math.PI/180;
+  const y=Math.sin(Δλ)*Math.cos(φ2);
+  const x=Math.cos(φ1)*Math.sin(φ2)-Math.sin(φ1)*Math.cos(φ2)*Math.cos(Δλ);
+  return(Math.atan2(y,x)*180/Math.PI+360)%360;
+}
 const fDist = m => m<1000 ? `${m}m` : `${(m/1000).toFixed(1)}km`;
 const fWalk = m => `${Math.round(m/80)} min`;
 const bCol  = s => s.status==="CLOSED"?"#444":s.bikes===0?C.bad:s.bikes<=2?C.warn:C.good;
@@ -117,8 +123,98 @@ function enrich(list, pos) {
 }
 function pins(stations) {
   return stations.slice(0,6).map((s,i)=>({
-    ...s, px:13+(i%3)*34, py:28+Math.floor(i/3)*38, labelRight:(i%3)<2,
+    ...s, x:13+(i%3)*34, y:28+Math.floor(i/3)*38, labelRight:(i%3)<2,
   }));
+}
+
+// ── COMPASS HOOK ──────────────────────────────────────────────────
+function useCompass(){
+  const [heading,setHeading]=useState(null);
+  const [perm,setPerm]=useState("idle"); // idle|requesting|granted|denied|unavailable
+  const cleanup=useRef(null);
+
+  const start=useCallback(async()=>{
+    setPerm("requesting");
+    if(typeof DeviceOrientationEvent?.requestPermission==="function"){
+      try{
+        const r=await DeviceOrientationEvent.requestPermission();
+        if(r!=="granted"){setPerm("denied");return;}
+      }catch{setPerm("denied");return;}
+    }
+    if(!window.DeviceOrientationEvent){setPerm("unavailable");return;}
+    let last=null;
+    const handler=e=>{
+      let h=null;
+      if(e.webkitCompassHeading!=null) h=e.webkitCompassHeading;         // iOS
+      else if(e.alpha!=null) h=(360-e.alpha+360)%360;                    // Android
+      if(h===null) return;
+      // Smooth lerp to avoid jitter
+      last=last===null?h:last+((h-last+540)%360-180)*0.25;
+      setHeading((last+360)%360);
+    };
+    window.addEventListener("deviceorientationabsolute",handler,true);
+    window.addEventListener("deviceorientation",handler,true);
+    setPerm("granted");
+    cleanup.current=()=>{
+      window.removeEventListener("deviceorientationabsolute",handler,true);
+      window.removeEventListener("deviceorientation",handler,true);
+    };
+  },[]);
+
+  useEffect(()=>()=>cleanup.current?.(),[]);
+  return{heading,perm,start};
+}
+
+// ── NAV CANVAS — blue path overlay ────────────────────────────────
+function NavCanvas({relBear}){
+  const ref=useRef();
+  useEffect(()=>{
+    const cv=ref.current; if(!cv) return;
+    const W=cv.offsetWidth||360,H=cv.offsetHeight||260;
+    cv.width=W; cv.height=H;
+    const ctx=cv.getContext("2d");
+    ctx.clearRect(0,0,W,H);
+    const clamp=Math.max(-38,Math.min(38,relBear??0));
+    const vx=W/2+(clamp/38)*(W*0.28), vy=H*0.38;
+
+    // Filled corridor
+    const g=ctx.createLinearGradient(W/2,H,vx,vy);
+    g.addColorStop(0,"rgba(59,130,246,0.48)");
+    g.addColorStop(0.55,"rgba(59,130,246,0.14)");
+    g.addColorStop(1,"rgba(59,130,246,0)");
+    ctx.beginPath();
+    ctx.moveTo(W/2-58,H); ctx.lineTo(vx-5,vy);
+    ctx.lineTo(vx+5,vy); ctx.lineTo(W/2+58,H);
+    ctx.closePath(); ctx.fillStyle=g; ctx.fill();
+
+    // Dashed center line
+    ctx.beginPath(); ctx.setLineDash([10,7]);
+    ctx.moveTo(W/2,H); ctx.lineTo(vx,vy);
+    ctx.strokeStyle="rgba(147,197,253,0.6)";
+    ctx.lineWidth=1.5; ctx.stroke(); ctx.setLineDash([]);
+
+    // Edge lines
+    [[-58,-5],[58,5]].forEach(([base,tip])=>{
+      ctx.beginPath();
+      ctx.moveTo(W/2+base,H); ctx.lineTo(vx+tip,vy);
+      ctx.strokeStyle="rgba(59,130,246,0.5)";
+      ctx.lineWidth=1; ctx.stroke();
+    });
+
+    // Perspective cross-hatch
+    for(let i=1;i<=4;i++){
+      const t=i/5;
+      const px=W/2+(vx-W/2)*t, py=H+(vy-H)*t, hw=(58-57*t);
+      ctx.beginPath(); ctx.moveTo(px-hw,py); ctx.lineTo(px+hw,py);
+      ctx.strokeStyle=`rgba(59,130,246,${0.18*(1-t)})`;
+      ctx.lineWidth=0.8; ctx.stroke();
+    }
+  },[relBear]);
+
+  return <canvas ref={ref} style={{
+    position:"absolute",bottom:0,left:0,width:"100%",height:"52%",
+    pointerEvents:"none",zIndex:11
+  }}/>;
 }
 
 // ── CITY BG ───────────────────────────────────────────────────────
@@ -189,32 +285,32 @@ function StatusBar({ tab, gpsOk, apiLive, isMock }) {
 // ── AR PIN ────────────────────────────────────────────────────────
 function ARPin({ s, sel, setSel, pulse }) {
   const col=bCol(s), isSel=sel===s.id;
+  const scale=s.scale??1;
+  const dotSize=Math.round((isSel?14:9)*scale);
   return (
     <div onPointerDown={()=>setSel(isSel?null:s.id)}
-      style={{ position:"absolute", left:`${s.px}%`, top:`${s.py}%`,
+      style={{ position:"absolute", left:`${s.x}%`, top:`${s.y}%`,
         transform:"translate(-50%,-50%)", cursor:"pointer",
         zIndex:isSel?25:14, padding:14, margin:-14 }}>
-      <div style={{ position:"absolute", top:14, left:14, width:13, height:13, borderRadius:"50%",
+      <div style={{ position:"absolute", top:14, left:14, width:dotSize, height:dotSize, borderRadius:"50%",
         boxShadow:`0 0 0 ${pulse?10:3}px ${col}22`, transition:"box-shadow 1s", pointerEvents:"none" }}/>
-      <div style={{ width:13, height:13, borderRadius:"50%", background:col,
-        border:`2px solid ${isSel?"#fff":"rgba(0,0,0,0.55)"}`, boxShadow:`0 0 10px ${col}`,
-        transform:isSel?"scale(1.45)":"scale(1)", transition:"transform 0.15s",
+      <div style={{ width:dotSize, height:dotSize, borderRadius:"50%", background:col,
+        border:`2px solid ${isSel?"#fff":"rgba(0,0,0,0.55)"}`, boxShadow:`0 0 ${8*scale}px ${col}`,
+        transform:isSel?"scale(1.4)":"scale(1)", transition:"transform 0.15s",
         position:"relative", zIndex:2 }}/>
+      {/* Distance badge */}
       <div style={{
         position:"absolute", top:"50%", transform:"translateY(-50%)",
-        ...(s.labelRight?{left:22}:{right:22}),
-        background:"rgba(6,10,14,0.94)",
-        border:`1px solid ${isSel?col:col+"55"}`,
-        borderRadius:5, padding:"5px 9px", whiteSpace:"nowrap",
-        boxShadow:isSel?`0 0 16px ${col}40`:"none",
-        pointerEvents:"none", transition:"border-color 0.15s, box-shadow 0.15s",
+        ...(s.labelRight?{left:dotSize+6}:{right:dotSize+6}),
+        background:"rgba(6,10,14,0.88)", border:`1px solid ${isSel?col:col+"44"}`,
+        borderRadius:4, padding:"3px 7px", whiteSpace:"nowrap", pointerEvents:"none",
+        boxShadow:isSel?`0 0 14px ${col}40`:"none", transition:"border-color 0.15s",
       }}>
-        <div style={{ color:isSel?col:C.text, fontSize:10, fontFamily:C.fnt, fontWeight:700 }}>{s.name}</div>
-        <div style={{ display:"flex", gap:7, marginTop:2, alignItems:"center" }}>
-          <span style={{ color:col, fontSize:13, fontFamily:C.fnt, fontWeight:900 }}>{s.bikes}</span>
-          {s.elec>0&&<span style={{ color:"#60A5FA", fontSize:8 }}>⚡{s.elec}</span>}
-          <span style={{ color:C.muted, fontSize:8 }}>{fDist(s.dist)}</span>
-          {s._mock&&<span style={{ color:"#444", fontSize:7 }}>~</span>}
+        <div style={{ color:isSel?col:C.text, fontSize:9, fontFamily:C.fnt, fontWeight:700 }}>{s.name}</div>
+        <div style={{ display:"flex", gap:5, marginTop:1, alignItems:"center" }}>
+          <span style={{ color:col, fontSize:12, fontFamily:C.fnt, fontWeight:900 }}>{s.bikes}</span>
+          {s.elec>0&&<span style={{ color:"#60A5FA", fontSize:7 }}>⚡{s.elec}</span>}
+          <span style={{ color:C.muted, fontSize:7 }}>{fDist(s.dist)}</span>
         </div>
       </div>
     </div>
@@ -222,60 +318,112 @@ function ARPin({ s, sel, setSel, pulse }) {
 }
 
 // ── AR SCREEN ─────────────────────────────────────────────────────
-function ARScreen({ stations, sel, setSel }) {
-  const vidRef = useRef(null);
-  const [cam,   setCam]   = useState("idle");
-  const [hdg,   setHdg]   = useState(0);
-  const [bgOff, setBgOff] = useState(0);
-  const [pulse, setPulse] = useState(false);
+const COMPASS_LABELS=["N","NE","E","SE","S","SO","O","NO"];
+const FOV=68; // horizontal camera FOV in degrees
 
-  useEffect(()=>{ const t=setInterval(()=>{ setHdg(h=>(h+0.08)%360); setBgOff(o=>o+0.5); },50); return()=>clearInterval(t); },[]);
-  useEffect(()=>{ const t=setInterval(()=>setPulse(p=>!p),1100); return()=>clearInterval(t); },[]);
+function ARScreen({ stations, sel, setSel, gpsPos }) {
+  const vidRef=useRef(null);
+  const [cam,   setCam]  =useState("idle");
+  const [bgOff, setBgOff]=useState(0);
+  const [pulse, setPulse]=useState(false);
+  const {heading,perm,start:startCompass}=useCompass();
 
-  const startCam = useCallback(async()=>{
+  useEffect(()=>{
+    const t=setInterval(()=>setBgOff(o=>o+0.5),50);
+    return()=>clearInterval(t);
+  },[]);
+  useEffect(()=>{
+    const t=setInterval(()=>setPulse(p=>!p),1100);
+    return()=>clearInterval(t);
+  },[]);
+
+  const startCam=useCallback(async()=>{
     setCam("requesting");
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video:{ facingMode:"environment" } });
-      if (vidRef.current) { vidRef.current.srcObject=stream; await vidRef.current.play(); }
+    try{
+      const stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:"environment"}});
+      if(vidRef.current){vidRef.current.srcObject=stream; await vidRef.current.play();}
       setCam("active");
-    } catch(e) { console.warn("Cam:",e); setCam("denied"); }
+    }catch(e){console.warn("Cam:",e);setCam("denied");}
   },[]);
 
   useEffect(()=>{
-    const vid = vidRef.current;
-    return ()=>{ vid?.srcObject?.getTracks().forEach(t=>t.stop()); };
+    const vid=vidRef.current;
+    return()=>{vid?.srcObject?.getTracks().forEach(t=>t.stop());};
   },[]);
 
-  const station = stations.find(s=>s.id===sel);
-  const pinList = pins(stations);
+  // ── Real AR projection ──────────────────────────────────────────
+  const arPins=useMemo(()=>{
+    if(heading===null||!gpsPos) return null; // null = use fake grid
+    return stations
+      .filter(s=>s.lat&&s.lng&&s.dist<1600)
+      .map(s=>{
+        const bear=getBearing(gpsPos.lat,gpsPos.lng,s.lat,s.lng);
+        const rel=((bear-heading+540)%360)-180;
+        if(Math.abs(rel)>FOV/2+8) return null;
+        const x=50+(rel/(FOV/2))*50;
+        const dc=Math.min(s.dist,1200);
+        const y=70-(1-dc/1200)*44;          // far=26% near=70%
+        const scale=Math.max(0.55,1-dc/1500);
+        return{...s, x, y, scale, labelRight:rel<0, rel};
+      })
+      .filter(Boolean)
+      .sort((a,b)=>b.dist-a.dist);          // back-to-front
+  },[heading,gpsPos,stations]);
+
+  const fakePins=useMemo(()=>pins(stations),[stations]);
+  const visiblePins=arPins??fakePins;
+
+  // ── Nav overlay (selected station) ────────────────────────────
+  const navStation=stations.find(s=>s.id===sel);
+  const navRel=useMemo(()=>{
+    if(!navStation||!gpsPos||heading===null) return null;
+    const bear=getBearing(gpsPos.lat,gpsPos.lng,navStation.lat,navStation.lng);
+    return((bear-heading+540)%360)-180;
+  },[navStation,gpsPos,heading]);
+
+  const hdg=heading!==null?Math.round(heading):null;
+  const cardLabel=hdg!==null?COMPASS_LABELS[Math.round(hdg/45)%8]:"?";
 
   return (
-    <div style={{ position:"relative", flex:1, overflow:"hidden", minHeight:0, background:"#000" }}>
+    <div style={{position:"relative",flex:1,overflow:"hidden",minHeight:0,background:"#000"}}>
+
+      {/* Camera feed */}
       <video ref={vidRef} muted playsInline autoPlay style={{
-        position:"absolute", inset:0, width:"100%", height:"100%", objectFit:"cover", zIndex:1,
-        opacity:cam==="active"?1:0, transition:"opacity 0.5s" }}/>
-      {cam!=="active"&&<div style={{ position:"absolute", inset:0, zIndex:2 }}><CityBG off={bgOff}/></div>}
+        position:"absolute",inset:0,width:"100%",height:"100%",objectFit:"cover",zIndex:1,
+        opacity:cam==="active"?1:0,transition:"opacity 0.5s"}}/>
+      {cam!=="active"&&<div style={{position:"absolute",inset:0,zIndex:2}}><CityBG off={bgOff}/></div>}
 
-      <div style={{ position:"absolute", inset:0, zIndex:5, pointerEvents:"none" }}>
-        <div style={{ position:"absolute", inset:0, background:"radial-gradient(ellipse at center,transparent 30%,rgba(0,0,0,0.4) 100%)"}}/>
-        <div style={{ position:"absolute", top:0, left:0, right:0, height:70, background:"linear-gradient(to bottom,rgba(8,12,15,0.65),transparent)"}}/>
-        <div style={{ position:"absolute", bottom:0, left:0, right:0, height:230, background:"linear-gradient(to top,rgba(8,12,15,0.98),rgba(8,12,15,0.4) 60%,transparent)"}}/>
+      {/* Gradient vignette */}
+      <div style={{position:"absolute",inset:0,zIndex:5,pointerEvents:"none"}}>
+        <div style={{position:"absolute",inset:0,background:"radial-gradient(ellipse at center,transparent 30%,rgba(0,0,0,0.35) 100%)"}}/>
+        <div style={{position:"absolute",top:0,left:0,right:0,height:70,background:"linear-gradient(to bottom,rgba(8,12,15,0.65),transparent)"}}/>
+        <div style={{position:"absolute",bottom:0,left:0,right:0,height:230,background:"linear-gradient(to top,rgba(8,12,15,0.98),rgba(8,12,15,0.4) 60%,transparent)"}}/>
       </div>
 
-      <div style={{ position:"absolute", top:10, left:"50%", transform:"translateX(-50%)", zIndex:20, pointerEvents:"none" }}>
-        <div style={{ background:"rgba(8,12,15,0.82)", border:`1px solid ${C.border}`, borderRadius:3, padding:"3px 14px", width:184, overflow:"hidden" }}>
-          <div style={{ color:C.accent, fontSize:7, fontFamily:C.fnt, letterSpacing:3, whiteSpace:"nowrap",
-            transform:`translateX(${-(hdg%60)*2.8}px)`, transition:"transform 0.05s linear" }}>
-            {"N···NE···E···SE···S···SW···W···NW···N···NE···E···SE···S···SW"}
-          </div>
+      {/* Blue nav path */}
+      {navRel!==null&&<NavCanvas relBear={navRel}/>}
+
+      {/* Compass strip */}
+      <div style={{position:"absolute",top:10,left:"50%",transform:"translateX(-50%)",zIndex:20,pointerEvents:"none"}}>
+        <div style={{background:"rgba(8,12,15,0.82)",border:`1px solid ${C.border}`,borderRadius:3,padding:"3px 14px",width:184,overflow:"hidden"}}>
+          {hdg!==null?(
+            <div style={{color:C.accent,fontSize:7,fontFamily:C.fnt,letterSpacing:2,whiteSpace:"nowrap",
+              transform:`translateX(${-(hdg%60)*2.8}px)`,transition:"transform 0.08s linear"}}>
+              {"N···NE···E···SE···S···SO···O···NO···N···NE···E···SE"}
+            </div>
+          ):(
+            <div style={{color:C.muted,fontSize:7,fontFamily:C.fnt,textAlign:"center",letterSpacing:1}}>
+              {perm==="denied"?"⊗ BOUSSOLE REFUSÉE":"⊕ BOUSSOLE INACTIVE"}
+            </div>
+          )}
         </div>
-        <div style={{ color:C.accent, fontSize:8, textAlign:"center", lineHeight:"4px" }}>▾</div>
+        <div style={{color:C.accent,fontSize:8,textAlign:"center",lineHeight:"4px"}}>▾</div>
       </div>
 
-      <div style={{ position:"absolute", top:"46%", left:0, right:0, height:1, zIndex:6, pointerEvents:"none",
-        background:`linear-gradient(to right,transparent,${C.accent}45,${C.accent}45,transparent)` }}/>
-
-      <div style={{ position:"absolute", top:"46%", left:"50%", transform:"translate(-50%,-50%)", pointerEvents:"none", zIndex:6 }}>
+      {/* Horizon line + crosshair */}
+      <div style={{position:"absolute",top:"46%",left:0,right:0,height:1,zIndex:6,pointerEvents:"none",
+        background:`linear-gradient(to right,transparent,${C.accent}45,${C.accent}45,transparent)`}}/>
+      <div style={{position:"absolute",top:"46%",left:"50%",transform:"translate(-50%,-50%)",pointerEvents:"none",zIndex:6}}>
         <svg width="26" height="26" viewBox="0 0 26 26">
           <circle cx="13" cy="13" r="4" fill="none" stroke={`${C.accent}45`} strokeWidth="1"/>
           <line x1="13" y1="0" x2="13" y2="7" stroke={`${C.accent}45`} strokeWidth="1"/>
@@ -285,77 +433,105 @@ function ARScreen({ stations, sel, setSel }) {
         </svg>
       </div>
 
-      {/* Bouton cam — affiché seulement si cam non active, zIndex > pins */}
+      {/* Cam activation */}
       {cam!=="active"&&(
-        <div style={{ position:"absolute", top:"50%", left:"50%", transform:"translate(-50%,-50%)",
-          zIndex:30, display:"flex", flexDirection:"column", alignItems:"center", gap:14 }}>
+        <div style={{position:"absolute",top:"50%",left:"50%",transform:"translate(-50%,-50%)",
+          zIndex:30,display:"flex",flexDirection:"column",alignItems:"center",gap:14}}>
           {cam==="idle"&&(
             <>
-              <div style={{ color:C.muted, fontSize:9, fontFamily:C.fnt, letterSpacing:3 }}>VUE AR VELOHNAV</div>
+              <div style={{color:C.muted,fontSize:9,fontFamily:C.fnt,letterSpacing:3}}>VUE AR VELOHNAV</div>
               <button onPointerDown={startCam} style={{
-                background:C.accentBg, border:`1px solid ${C.accent}`, color:C.accent,
-                borderRadius:5, padding:"12px 32px", fontSize:12, fontFamily:C.fnt,
-                fontWeight:700, cursor:"pointer", letterSpacing:2, boxShadow:`0 0 20px ${C.accent}25` }}>
+                background:C.accentBg,border:`1px solid ${C.accent}`,color:C.accent,
+                borderRadius:5,padding:"12px 32px",fontSize:12,fontFamily:C.fnt,
+                fontWeight:700,cursor:"pointer",letterSpacing:2,boxShadow:`0 0 20px ${C.accent}25`}}>
                 ▶ ACTIVER CAMÉRA
               </button>
             </>
           )}
-          {cam==="requesting"&&<div style={{ color:C.accent, fontSize:10, fontFamily:C.fnt, letterSpacing:3 }}>ACCÈS CAMÉRA…</div>}
+          {cam==="requesting"&&<div style={{color:C.accent,fontSize:10,fontFamily:C.fnt,letterSpacing:3}}>ACCÈS CAMÉRA…</div>}
           {cam==="denied"&&(
-            <div style={{ textAlign:"center", padding:"0 32px" }}>
-              <div style={{ color:C.bad, fontSize:10, fontFamily:C.fnt, marginBottom:8 }}>CAMÉRA REFUSÉE</div>
-              <div style={{ color:C.muted, fontSize:9, fontFamily:C.fnt, lineHeight:1.7 }}>
+            <div style={{textAlign:"center",padding:"0 32px"}}>
+              <div style={{color:C.bad,fontSize:10,fontFamily:C.fnt,marginBottom:8}}>CAMÉRA REFUSÉE</div>
+              <div style={{color:C.muted,fontSize:9,fontFamily:C.fnt,lineHeight:1.7}}>
                 Paramètres → Apps → VelohNav → Autorisations → Caméra
               </div>
               <button onPointerDown={startCam} style={{
-                background:"rgba(224,62,62,0.1)", border:`1px solid ${C.bad}`, color:C.bad,
-                borderRadius:4, padding:"8px 20px", fontSize:9, fontFamily:C.fnt,
-                cursor:"pointer", marginTop:12 }}>RÉESSAYER</button>
+                background:"rgba(224,62,62,0.1)",border:`1px solid ${C.bad}`,color:C.bad,
+                borderRadius:4,padding:"8px 20px",fontSize:9,fontFamily:C.fnt,
+                cursor:"pointer",marginTop:12}}>RÉESSAYER</button>
             </div>
           )}
         </div>
       )}
 
-      <div style={{ position:"absolute", inset:0, zIndex:15 }}>
-        {pinList.map(s=><ARPin key={s.id} s={s} sel={sel} setSel={setSel} pulse={pulse}/>)}
+      {/* Boussole activation (cam active, compass idle) */}
+      {cam==="active"&&perm==="idle"&&(
+        <div style={{position:"absolute",top:44,right:12,zIndex:30}}>
+          <button onPointerDown={startCompass} style={{
+            background:C.accentBg,border:`1px solid ${C.accent}55`,color:C.accent,
+            borderRadius:4,padding:"6px 11px",fontSize:8,fontFamily:C.fnt,
+            cursor:"pointer",letterSpacing:1,boxShadow:`0 0 8px ${C.accent}20`}}>
+            ⊕ AR RÉEL
+          </button>
+        </div>
+      )}
+
+      {/* AR mode badge */}
+      {arPins&&(
+        <div style={{position:"absolute",top:44,left:12,zIndex:20,pointerEvents:"none"}}>
+          <div style={{background:"rgba(46,204,143,0.08)",border:`1px solid ${C.good}30`,
+            borderRadius:3,padding:"3px 8px"}}>
+            <span style={{color:C.good,fontSize:7,fontFamily:C.fnt,letterSpacing:1}}>AR RÉEL · {hdg}° {cardLabel}</span>
+          </div>
+        </div>
+      )}
+
+      {/* Pins */}
+      <div style={{position:"absolute",inset:0,zIndex:15}}>
+        {visiblePins.map(s=><ARPin key={s.id} s={s} sel={sel} setSel={setSel} pulse={pulse}/>)}
       </div>
 
-      <div style={{ position:"absolute", bottom:0, left:0, right:0, padding:"0 14px 14px", zIndex:22 }}>
-        {station?(
-          <div style={{ background:"rgba(8,12,15,0.97)", borderRadius:8, padding:"13px 15px",
-            border:`1px solid ${C.border}`, borderTop:`2px solid ${bCol(station)}`,
-            boxShadow:"0 -4px 24px rgba(0,0,0,0.85)" }}>
-            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:11 }}>
+      {/* Bottom panel */}
+      <div style={{position:"absolute",bottom:0,left:0,right:0,padding:"0 14px 14px",zIndex:22}}>
+        {navStation?(
+          <div style={{background:"rgba(8,12,15,0.97)",borderRadius:8,padding:"13px 15px",
+            border:`1px solid ${C.border}`,borderTop:`2px solid ${bCol(navStation)}`,
+            boxShadow:"0 -4px 24px rgba(0,0,0,0.85)"}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:11}}>
               <div>
-                <div style={{ color:C.muted, fontSize:7, fontFamily:C.fnt, letterSpacing:1.5, marginBottom:3 }}>
-                  {bTag(station)} · {fDist(station.dist)} · {fWalk(station.dist)} à pied
-                  {station._mock&&" · dispo simulées"}
+                <div style={{color:C.muted,fontSize:7,fontFamily:C.fnt,letterSpacing:1.5,marginBottom:3}}>
+                  {bTag(navStation)} · {fDist(navStation.dist)} · {fWalk(navStation.dist)} à pied
+                  {navRel!==null&&` · cap ${Math.round(((heading??0)+navRel+360)%360)}° ${
+                    COMPASS_LABELS[Math.round((((heading??0)+navRel+360)%360)/45)%8]}`}
+                  {navStation._mock&&" · dispo simulées"}
                 </div>
-                <div style={{ color:C.text, fontSize:15, fontFamily:C.fnt, fontWeight:700 }}>{station.name}</div>
+                <div style={{color:C.text,fontSize:15,fontFamily:C.fnt,fontWeight:700}}>{navStation.name}</div>
               </div>
-              <div onPointerDown={()=>setSel(null)} style={{ padding:"6px 9px",
-                background:"rgba(255,255,255,0.04)", border:`1px solid ${C.border}`,
-                borderRadius:4, color:C.muted, fontSize:11, cursor:"pointer" }}>✕</div>
+              <div onPointerDown={()=>setSel(null)} style={{padding:"6px 9px",
+                background:"rgba(255,255,255,0.04)",border:`1px solid ${C.border}`,
+                borderRadius:4,color:C.muted,fontSize:11,cursor:"pointer"}}>✕</div>
             </div>
-            <div style={{ display:"flex", borderTop:`1px solid ${C.border}`, paddingTop:11 }}>
+            <div style={{display:"flex",borderTop:`1px solid ${C.border}`,paddingTop:11}}>
               {[
-                { l:"VÉLOS", v:station.bikes, col:bCol(station) },
-                { l:"ÉLEC.", v:station.elec,  col:"#60A5FA" },
-                { l:"MÉCA.", v:station.meca,  col:C.text },
-                { l:"DOCKS", v:station.docks, col:C.text },
+                {l:"VÉLOS",v:navStation.bikes,col:bCol(navStation)},
+                {l:"ÉLEC.",v:navStation.elec, col:"#60A5FA"},
+                {l:"MÉCA.",v:navStation.meca, col:C.text},
+                {l:"DOCKS",v:navStation.docks,col:C.text},
               ].map((m,i)=>(
-                <div key={m.l} style={{ flex:1, textAlign:"center", borderRight:i<3?`1px solid ${C.border}`:"none" }}>
-                  <div style={{ color:m.col, fontSize:20, fontFamily:C.fnt, fontWeight:700 }}>{m.v}</div>
-                  <div style={{ color:C.muted, fontSize:7, fontFamily:C.fnt, letterSpacing:1, marginTop:1 }}>{m.l}</div>
+                <div key={m.l} style={{flex:1,textAlign:"center",borderRight:i<3?`1px solid ${C.border}`:"none"}}>
+                  <div style={{color:m.col,fontSize:20,fontFamily:C.fnt,fontWeight:700}}>{m.v}</div>
+                  <div style={{color:C.muted,fontSize:7,fontFamily:C.fnt,letterSpacing:1,marginTop:1}}>{m.l}</div>
                 </div>
               ))}
             </div>
           </div>
         ):(
-          <div style={{ background:"rgba(8,12,15,0.85)", border:`1px solid ${C.border}`,
-            borderRadius:8, padding:"11px 15px", textAlign:"center" }}>
-            <div style={{ color:C.muted, fontSize:8, fontFamily:C.fnt, letterSpacing:2 }}>
-              {stations.filter(s=>s.bikes>0).length}/{stations.length} DISPO · TOUCHE UN PIN AR
+          <div style={{background:"rgba(8,12,15,0.85)",border:`1px solid ${C.border}`,
+            borderRadius:8,padding:"11px 15px",textAlign:"center"}}>
+            <div style={{color:C.muted,fontSize:8,fontFamily:C.fnt,letterSpacing:2}}>
+              {arPins
+                ?`${arPins.length} STATIONS EN VUE · TOURNE-TOI POUR SCANNER`
+                :`${stations.filter(s=>s.bikes>0).length}/${stations.length} DISPO · TOUCHE UN PIN AR`}
             </div>
           </div>
         )}
@@ -864,7 +1040,7 @@ export default function App() {
       background:C.bg,overflow:"hidden",maxWidth:430,margin:"0 auto" }}>
       <StatusBar tab={tab} gpsOk={!!gpsPos} apiLive={apiLive} isMock={isMock}/>
       <div style={{ flex:1,display:"flex",flexDirection:"column",overflow:"hidden",minHeight:0 }}>
-        {tab==="ar"       &&<ARScreen  stations={stations} sel={sel} setSel={setSel}/>}
+        {tab==="ar"       &&<ARScreen  stations={stations} sel={sel} setSel={setSel} gpsPos={gpsPos}/>}
         {tab==="map"      &&<MapScreen stations={stations} sel={sel} setSel={setSel} gpsPos={gpsPos}/>}
         {tab==="ai"       &&<AIScreen  stations={stations} claudeKey={claudeKey}
           aiHistory={aiHistory} setAiHistory={setAiHistory}
