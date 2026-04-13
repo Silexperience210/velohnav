@@ -130,11 +130,13 @@ function pins(stations) {
 // ── COMPASS HOOK ──────────────────────────────────────────────────
 function useCompass(){
   const [heading,setHeading]=useState(null);
-  const [perm,setPerm]=useState("idle"); // idle|requesting|granted|denied|unavailable
+  const [perm,setPerm]=useState("idle");
   const cleanup=useRef(null);
 
   const start=useCallback(async()=>{
     setPerm("requesting");
+
+    // iOS 13+ seulement
     if(typeof DeviceOrientationEvent?.requestPermission==="function"){
       try{
         const r=await DeviceOrientationEvent.requestPermission();
@@ -142,22 +144,46 @@ function useCompass(){
       }catch{setPerm("denied");return;}
     }
     if(!window.DeviceOrientationEvent){setPerm("unavailable");return;}
+
     let last=null;
-    const handler=e=>{
-      let h=null;
-      if(e.webkitCompassHeading!=null) h=e.webkitCompassHeading;         // iOS
-      else if(e.alpha!=null) h=(360-e.alpha+360)%360;                    // Android
-      if(h===null) return;
-      // Smooth lerp to avoid jitter
-      last=last===null?h:last+((h-last+540)%360-180)*0.25;
-      setHeading((last+360)%360);
+    let gotAbsolute=false; // true dès qu'on reçoit un event absolu valide
+
+    const update=(h)=>{
+      last=last===null?h:last+((h-last+540)%360-180)*0.2;
+      setHeading(Math.round((last+360)%360));
     };
-    window.addEventListener("deviceorientationabsolute",handler,true);
-    window.addEventListener("deviceorientation",handler,true);
+
+    // Handler absolu (Android Chrome 74+ : alpha = cap magnétique réel)
+    const absHandler=(e)=>{
+      if(e.alpha==null) return;
+      gotAbsolute=true;
+      update((360-e.alpha+360)%360);
+    };
+
+    // Handler relatif — utilisé SEULEMENT si aucun absolu reçu
+    // iOS → webkitCompassHeading, Android fallback → alpha relatif
+    const relHandler=(e)=>{
+      if(gotAbsolute) return;
+      if(e.webkitCompassHeading!=null)      update(e.webkitCompassHeading);
+      else if(e.alpha!=null)                update((360-e.alpha+360)%360);
+    };
+
+    window.addEventListener("deviceorientationabsolute",absHandler,true);
+    window.addEventListener("deviceorientation",relHandler,true);
     setPerm("granted");
+
+    // Timeout : si aucun signal après 4s → diagnostic
+    const t=setTimeout(()=>{
+      setHeading(h=>{
+        if(h===null) setPerm("nosignal");
+        return h;
+      });
+    },4000);
+
     cleanup.current=()=>{
-      window.removeEventListener("deviceorientationabsolute",handler,true);
-      window.removeEventListener("deviceorientation",handler,true);
+      clearTimeout(t);
+      window.removeEventListener("deviceorientationabsolute",absHandler,true);
+      window.removeEventListener("deviceorientation",relHandler,true);
     };
   },[]);
 
@@ -390,11 +416,12 @@ function ARScreen({ stations, sel, setSel, gpsPos }) {
 
   // ── Status boussole pour l'UI ──────────────────────────────────
   const compassStatus=()=>{
-    if(perm==="idle")      return{label:"BOUSSOLE : APPUIE SUR ACTIVER AR",col:C.muted};
-    if(perm==="requesting")return{label:"BOUSSOLE EN COURS…",col:C.warn};
-    if(perm==="denied")    return{label:"BOUSSOLE REFUSÉE — AR LIMITÉ",col:C.bad};
-    if(perm==="unavailable")return{label:"BOUSSOLE INDISPONIBLE",col:C.bad};
-    if(heading===null)     return{label:"BOUSSOLE : ATTENTE SIGNAL…",col:C.warn};
+    if(perm==="idle")       return{label:"APPUIE SUR ACTIVER AR",col:C.muted};
+    if(perm==="requesting") return{label:"INITIALISATION…",col:C.warn};
+    if(perm==="denied")     return{label:"BOUSSOLE REFUSÉE",col:C.bad};
+    if(perm==="unavailable")return{label:"CAPTEUR INDISPONIBLE",col:C.bad};
+    if(perm==="nosignal")   return{label:"AUCUN SIGNAL — PAGE EN HTTPS ?",col:C.bad};
+    if(heading===null)      return{label:"ATTENTE CAPTEUR…",col:C.warn};
     return{label:`AR ACTIF · ${hdg}° ${cardLabel}`,col:C.good};
   };
   const cs=compassStatus();
