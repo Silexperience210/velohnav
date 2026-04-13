@@ -1,0 +1,14 @@
+apply plugin: 'com.android.library'
+
+android {
+    namespace "capacitor.cordova.android.plugins"
+    compileSdk rootProject.ext.compileSdkVersion
+    defaultConfig {
+        minSdkVersion rootProject.ext.minSdkVersion
+        targetSdkVersion rootProject.ext.targetSdkVersion
+    }
+}
+
+dependencies {
+    implementation project(':capacitor-android')
+}
