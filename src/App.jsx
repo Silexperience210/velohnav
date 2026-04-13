@@ -241,7 +241,10 @@ function ARScreen({ stations, sel, setSel }) {
     } catch(e) { console.warn("Cam:",e); setCam("denied"); }
   },[]);
 
-  useEffect(()=>()=>{ vidRef.current?.srcObject?.getTracks().forEach(t=>t.stop()); },[]);
+  useEffect(()=>{
+    const vid = vidRef.current;
+    return ()=>{ vid?.srcObject?.getTracks().forEach(t=>t.stop()); };
+  },[]);
 
   const station = stations.find(s=>s.id===sel);
   const pinList = pins(stations);
@@ -363,6 +366,11 @@ function ARScreen({ stations, sel, setSel }) {
 
 // ── MAP SCREEN ────────────────────────────────────────────────────
 function MapScreen({ stations, sel, setSel, gpsPos }) {
+  if (!stations.length) return (
+    <div style={{ flex:1,display:"flex",alignItems:"center",justifyContent:"center",background:C.bg }}>
+      <div style={{ color:C.muted,fontSize:10,fontFamily:C.fnt }}>Chargement des stations…</div>
+    </div>
+  );
   const margin=0.006;
   const lats=stations.map(s=>s.lat), lngs=stations.map(s=>s.lng);
   const ltMin=Math.min(...lats)-margin, ltMax=Math.max(...lats)+margin;
@@ -424,18 +432,24 @@ function MapScreen({ stations, sel, setSel, gpsPos }) {
 }
 
 // ── AI SCREEN ─────────────────────────────────────────────────────
-function AIScreen({ stations }) {
+function AIScreen({ stations, claudeKey, aiHistory, setAiHistory, aiDisplay, setAiDisplay }) {
   const top = stations.find(s=>s.bikes>0);
   const initMsg = top
     ? `${stations.filter(s=>s.bikes>0).length}/${stations.length} stations dispos. Plus proche : ${top.name} (${fDist(top.dist)}, ${top.bikes}🚲 ⚡${top.elec}).`
     : "Chargement des stations…";
 
-  const [history, setHistory] = useState([]);
-  const [display, setDisplay] = useState([{ role:"ai", text:initMsg }]);
   const [input,   setInput]   = useState("");
   const [busy,    setBusy]    = useState(false);
   const endRef = useRef();
-  useEffect(()=>endRef.current?.scrollIntoView({behavior:"smooth"}),[display]);
+  useEffect(()=>endRef.current?.scrollIntoView({behavior:"smooth"}),[aiDisplay]);
+
+  // Update greeting when stations switch from mock to live
+  useEffect(()=>{
+    if (aiHistory.length === 0) {
+      setAiDisplay([{ role:"ai", text:initMsg }]);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[stations]);
 
   const systemPrompt = `Tu es VELOH·AI, l'assistant de VelohNav pour le réseau Vel'OH! Luxembourg.
 Réponds en français, de façon concise (3-4 lignes max).
@@ -446,22 +460,37 @@ Réponds uniquement sur la mobilité Veloh, les itinéraires, ou l'app.`;
   const sendText = useCallback(async(text)=>{
     const q=(text||input).trim();
     if(!q||busy) return;
+    if (!claudeKey) {
+      setAiDisplay(d=>[...d,{role:"user",text:q},{role:"ai",text:"⚠ Clé API Claude manquante — entre-la dans OPT pour activer l'assistant."}]);
+      setInput(""); return;
+    }
     setInput(""); setBusy(true);
-    setDisplay(d=>[...d,{role:"user",text:q}]);
-    const hist=[...history,{role:"user",content:q}];
+    setAiDisplay(d=>[...d,{role:"user",text:q}]);
+    const hist=[...aiHistory,{role:"user",content:q}];
     try {
       const r = await fetch("https://api.anthropic.com/v1/messages",{
-        method:"POST", headers:{"Content-Type":"application/json"},
+        method:"POST",
+        headers:{
+          "Content-Type":"application/json",
+          "x-api-key": claudeKey,
+          "anthropic-version": "2023-06-01",
+          "anthropic-dangerous-direct-browser-access": "true",
+        },
         body:JSON.stringify({ model:"claude-sonnet-4-20250514", max_tokens:400,
           system:systemPrompt, messages:hist }),
       });
       const data = await r.json();
-      const reply = data.content?.[0]?.text ?? "Erreur de réponse.";
-      setHistory([...hist,{role:"assistant",content:reply}]);
-      setDisplay(d=>[...d,{role:"ai",text:reply}]);
-    } catch { setDisplay(d=>[...d,{role:"ai",text:"Erreur réseau."}]); }
+      if (!r.ok) {
+        const errMsg = data?.error?.message ?? `Erreur API (${r.status})`;
+        setAiDisplay(d=>[...d,{role:"ai",text:`⚠ ${errMsg}`}]);
+      } else {
+        const reply = data.content?.[0]?.text ?? "Erreur de réponse.";
+        setAiHistory([...hist,{role:"assistant",content:reply}]);
+        setAiDisplay(d=>[...d,{role:"ai",text:reply}]);
+      }
+    } catch { setAiDisplay(d=>[...d,{role:"ai",text:"Erreur réseau."}]); }
     setBusy(false);
-  },[input,busy,history,systemPrompt]);
+  },[input,busy,aiHistory,claudeKey,systemPrompt,setAiHistory,setAiDisplay]);
 
   const QUICK = ["Station la plus proche ?","Vélos électriques dispo ?","Où déposer mon vélo ?","Itinéraire Hamilius → Kirchberg"];
 
@@ -474,7 +503,7 @@ Réponds uniquement sur la mobilité Veloh, les itinéraires, ou l'app.`;
         </div>
       </div>
       <div style={{ flex:1, overflowY:"auto", padding:"11px 14px", display:"flex", flexDirection:"column", gap:9 }}>
-        {display.map((m,i)=>(
+        {aiDisplay.map((m,i)=>(
           <div key={i} style={{ alignSelf:m.role==="user"?"flex-end":"flex-start", maxWidth:"88%" }}>
             {m.role==="ai"&&<div style={{ color:C.accent, fontSize:7, fontFamily:C.fnt, letterSpacing:2, marginBottom:3 }}>VELOH·AI</div>}
             <div style={{ background:m.role==="user"?C.accentBg:"rgba(255,255,255,0.04)",
@@ -521,13 +550,20 @@ Réponds uniquement sur la mobilité Veloh, les itinéraires, ou l'app.`;
 }
 
 // ── SETTINGS ──────────────────────────────────────────────────────
-function SettingsScreen({ apiKey, setApiKey, onRefresh, apiLive, isMock, gpsPos }) {
+function SettingsScreen({ apiKey, setApiKey, claudeKey, setClaudeKey, onRefresh, apiLive, isMock, gpsPos, lnAddr, setLnAddr, lnOn, setLnOn, ads, setAds }) {
   const [draft,setDraft]=useState(apiKey);
   const [saved,setSaved]=useState(false);
-  const [lnAddr,setLnAddr]=useState(""); const [lnOn,setLnOn]=useState(false);
-  const [lnSaved,setLnSaved]=useState(false); const [ads,setAds]=useState(true);
+  const [claudeDraft,setClaudeDraft]=useState(claudeKey);
+  const [claudeSaved,setClaudeSaved]=useState(false);
+  const [lnSaved,setLnSaved]=useState(false);
+
+  // Keep draft in sync if apiKey is loaded externally (e.g. from localStorage)
+  useEffect(()=>{ setDraft(apiKey); },[apiKey]);
+  useEffect(()=>{ setClaudeDraft(claudeKey); },[claudeKey]);
 
   const saveKey=()=>{ setApiKey(draft.trim()); setSaved(true); setTimeout(()=>{ setSaved(false); onRefresh(); },1200); };
+  const saveClaudeKey=()=>{ setClaudeKey(claudeDraft.trim()); setClaudeSaved(true); setTimeout(()=>setClaudeSaved(false),1500); };
+  const saveLn=()=>{ setLnSaved(true); setTimeout(()=>setLnSaved(false),1500); };
 
   const Toggle=({label,sub,val,set})=>(
     <div style={{ display:"flex",justifyContent:"space-between",alignItems:"center",
@@ -584,6 +620,32 @@ function SettingsScreen({ apiKey, setApiKey, onRefresh, apiLive, isMock, gpsPos 
       </div>
 
       <div style={{ padding:"14px 14px 0" }}>
+        <div style={{ color:C.muted,fontSize:8,fontFamily:C.fnt,letterSpacing:2,marginBottom:10 }}>🤖 CLÉ API CLAUDE</div>
+        <div style={{ background:"rgba(255,255,255,0.02)",border:`1px solid ${C.border}`,borderRadius:8,padding:"14px" }}>
+          <div style={{ background:claudeKey?"rgba(46,204,143,0.08)":"rgba(245,130,13,0.08)",
+            border:`1px solid ${claudeKey?C.good+"40":C.accent+"40"}`,borderRadius:4,padding:"7px 10px",marginBottom:10 }}>
+            <div style={{ color:claudeKey?C.good:C.accent,fontSize:9,fontFamily:C.fnt }}>
+              {claudeKey?"✓ Clé Claude configurée — assistant IA actif":"⚠ Clé Claude requise pour l'onglet AI"}
+            </div>
+            {!claudeKey&&<div style={{ color:C.muted,fontSize:8,fontFamily:C.fnt,marginTop:2 }}>console.anthropic.com → API Keys</div>}
+          </div>
+          <div style={{ display:"flex",gap:8 }}>
+            <input value={claudeDraft} onChange={e=>setClaudeDraft(e.target.value)} placeholder="sk-ant-..." type="password"
+              style={{ flex:1,background:"rgba(0,0,0,0.4)",border:`1px solid ${C.border}`,
+                borderRadius:4,padding:"8px 10px",color:C.text,fontSize:11,fontFamily:C.fnt,outline:"none" }}/>
+            <div onPointerDown={saveClaudeKey} style={{ background:claudeSaved?"rgba(46,204,143,0.15)":C.accentBg,
+              border:`1px solid ${claudeSaved?C.good:C.accent}`,color:claudeSaved?C.good:C.accent,
+              borderRadius:4,padding:"8px 12px",fontSize:9,fontFamily:C.fnt,cursor:"pointer",fontWeight:700,whiteSpace:"nowrap" }}>
+              {claudeSaved?"✓ OK":"APPLIQUER"}
+            </div>
+          </div>
+          <div style={{ color:C.muted,fontSize:8,fontFamily:C.fnt,marginTop:8,lineHeight:1.8 }}>
+            Clé stockée localement uniquement · jamais transmise à un tiers
+          </div>
+        </div>
+      </div>
+
+      <div style={{ padding:"14px 14px 0" }}>
         <div style={{ color:C.muted,fontSize:8,fontFamily:C.fnt,letterSpacing:2,marginBottom:10 }}>⚡ SATS REWARDS</div>
         <div style={{ background:"rgba(255,255,255,0.02)",border:`1px solid ${C.border}`,borderRadius:8,padding:"0 14px" }}>
           <Toggle label="Activer" sub="Sats après chaque trajet via LNURL-pay self-custodial" val={lnOn} set={setLnOn}/>
@@ -593,7 +655,7 @@ function SettingsScreen({ apiKey, setApiKey, onRefresh, apiLive, isMock, gpsPos 
               <input value={lnAddr} onChange={e=>setLnAddr(e.target.value)} placeholder="toi@getalby.com"
                 style={{ flex:1,background:"rgba(0,0,0,0.4)",border:`1px solid ${C.border}`,
                   borderRadius:4,padding:"8px 10px",color:"#FCD34D",fontSize:11,fontFamily:C.fnt,outline:"none" }}/>
-              <div onPointerDown={()=>{setLnSaved(true);setTimeout(()=>setLnSaved(false),2000);}} style={{
+              <div onPointerDown={saveLn} style={{
                 background:lnSaved?"rgba(46,204,143,0.15)":C.accentBg,border:`1px solid ${lnSaved?C.good:C.accent}`,
                 color:lnSaved?C.good:C.accent,borderRadius:4,padding:"8px 12px",
                 fontSize:9,fontFamily:C.fnt,cursor:"pointer",fontWeight:700,whiteSpace:"nowrap" }}>
@@ -637,26 +699,48 @@ function NavBar({ tab, setTab }) {
 export default function App() {
   const [tab,setTab] = useState("ar");
   const [sel,setSel] = useState(null);
-  const [apiKey,setApiKey] = useState("");
+  const [apiKey,setApiKey]     = useState(()=>localStorage.getItem("velohnav_jcdKey")||"");
+  const [claudeKey,setClaudeKey] = useState(()=>localStorage.getItem("velohnav_claudeKey")||"");
+  const [lnAddr,setLnAddr]     = useState(()=>localStorage.getItem("velohnav_lnAddr")||"");
+  const [lnOn,setLnOn]         = useState(()=>localStorage.getItem("velohnav_lnOn")==="true");
+  const [ads,setAds]           = useState(()=>localStorage.getItem("velohnav_ads")!=="false");
   const [stations,setStations] = useState(()=>enrich(FALLBACK,null));
-  const [apiLive,setApiLive] = useState(false);
-  const [isMock,setIsMock] = useState(true);
-  const [gpsPos,setGpsPos] = useState(null);
+  const [apiLive,setApiLive]   = useState(false);
+  const [isMock,setIsMock]     = useState(true);
+  const [gpsPos,setGpsPos]     = useState(null);
+
+  // Lifted AI conversation state — survives tab switches
+  const top0 = FALLBACK.find(s=>s.bikes>0);
+  const [aiHistory, setAiHistory] = useState([]);
+  const [aiDisplay, setAiDisplay] = useState([{ role:"ai",
+    text: top0 ? `${FALLBACK.filter(s=>s.bikes>0).length}/${FALLBACK.length} stations dispos. Plus proche : ${top0.name} (${fDist(haversine(REF.lat,REF.lng,top0.lat,top0.lng))}, ${top0.bikes}🚲 ⚡${top0.elec}).` : "Chargement…"
+  }]);
+
+  // Persist settings to localStorage
+  useEffect(()=>{ localStorage.setItem("velohnav_jcdKey",   apiKey);    },[apiKey]);
+  useEffect(()=>{ localStorage.setItem("velohnav_claudeKey",claudeKey); },[claudeKey]);
+  useEffect(()=>{ localStorage.setItem("velohnav_lnAddr",   lnAddr);    },[lnAddr]);
+  useEffect(()=>{ localStorage.setItem("velohnav_lnOn",     lnOn);      },[lnOn]);
+  useEffect(()=>{ localStorage.setItem("velohnav_ads",      ads);       },[ads]);
 
   // GPS watch continu
   useEffect(()=>{
     let stop=()=>{};
-    startWatchingGPS(pos=>setGpsPos(pos)).then(fn=>{ stop=fn; });
+    startWatchingGPS(pos=>setGpsPos(pos)).then(fn=>{ if(fn) stop=fn; });
     return ()=>stop();
   },[]);
 
-  // Recalcul distances quand GPS change
+  // Recalcul distances quand GPS change (sans re-fetch API)
   useEffect(()=>{
     setStations(prev=>enrich(prev,gpsPos));
   },[gpsPos]);
 
+  // Ref pour que loadData lise la position GPS sans en dépendre
+  const gpsRef = useRef(null);
+  useEffect(()=>{ gpsRef.current = gpsPos; },[gpsPos]);
+
   const loadData = useCallback(async()=>{
-    const userPos = gpsPos;
+    const userPos = gpsRef.current;
     if (apiKey) {
       try {
         const raw = await fetchJCDecaux(apiKey);
@@ -669,7 +753,7 @@ export default function App() {
     }
     setStations(enrich(FALLBACK, userPos));
     setApiLive(false); setIsMock(true);
-  },[apiKey,gpsPos]);
+  },[apiKey]); // ← gpsPos retiré : évite le re-fetch à chaque update GPS
 
   useEffect(()=>{ loadData(); },[loadData]);
   useEffect(()=>{ const t=setInterval(loadData,60000); return()=>clearInterval(t); },[loadData]);
@@ -681,8 +765,15 @@ export default function App() {
       <div style={{ flex:1,display:"flex",flexDirection:"column",overflow:"hidden",minHeight:0 }}>
         {tab==="ar"       &&<ARScreen  stations={stations} sel={sel} setSel={setSel}/>}
         {tab==="map"      &&<MapScreen stations={stations} sel={sel} setSel={setSel} gpsPos={gpsPos}/>}
-        {tab==="ai"       &&<AIScreen  stations={stations}/>}
-        {tab==="settings" &&<SettingsScreen apiKey={apiKey} setApiKey={setApiKey}
+        {tab==="ai"       &&<AIScreen  stations={stations} claudeKey={claudeKey}
+          aiHistory={aiHistory} setAiHistory={setAiHistory}
+          aiDisplay={aiDisplay} setAiDisplay={setAiDisplay}/>}
+        {tab==="settings" &&<SettingsScreen
+          apiKey={apiKey}    setApiKey={setApiKey}
+          claudeKey={claudeKey} setClaudeKey={setClaudeKey}
+          lnAddr={lnAddr}    setLnAddr={setLnAddr}
+          lnOn={lnOn}        setLnOn={setLnOn}
+          ads={ads}          setAds={setAds}
           onRefresh={loadData} apiLive={apiLive} isMock={isMock} gpsPos={gpsPos}/>}
       </div>
       <NavBar tab={tab} setTab={setTab}/>
