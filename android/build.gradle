@@ -4,13 +4,37 @@ buildscript {
         mavenCentral()
     }
     dependencies {
-        // FIX : AGP 8.13.0 (avril 2026) introduit des checks Kotlin stricts qui cassent
-        // @capacitor/geolocation@8.2.0 (SUSPEND_CALL_FROM_WRONG_CONTEXT).
-        // Downgrade vers 8.7.3, dernière version stable testée avec Capacitor 8.x.
-        classpath 'com.android.tools.build:gradle:8.7.3'
+        // AGP 8.9.1 : version minimale requise par androidx.activity:1.11.0 et core:1.17.0
+        classpath 'com.android.tools.build:gradle:8.9.1'
         classpath 'com.google.gms:google-services:4.4.4'
         classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:1.9.24"
     }
+}
+
+apply from: "variables.gradle"
+
+allprojects {
+    repositories {
+        google()
+        mavenCentral()
+    }
+}
+
+// FIX : @capacitor/geolocation@8.2.0 a allWarningsAsErrors=true dans son build.gradle.
+// SUSPEND_CALL_FROM_WRONG_CONTEXT est un WARNING Kotlin 1.9.x — devient une erreur
+// de compilation à cause de ce flag. On le force à false sur tous les sous-projets.
+subprojects {
+    afterEvaluate {
+        tasks.withType(org.jetbrains.kotlin.gradle.tasks.KotlinCompile).configureEach {
+            kotlinOptions {
+                allWarningsAsErrors = false
+            }
+        }
+    }
+}
+
+task clean(type: Delete) {
+    delete rootProject.buildDir
 }
 
 apply from: "variables.gradle"
