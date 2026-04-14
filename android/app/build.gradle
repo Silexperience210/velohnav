@@ -1,5 +1,7 @@
 apply plugin: 'com.android.application'
 apply plugin: 'kotlin-android'
+// FIX : Kotlin 2.x → le Compose Compiler plugin remplace kotlinCompilerExtensionVersion
+apply plugin: 'org.jetbrains.kotlin.plugin.compose'
 
 android {
     namespace "com.silexperience.velohnav"
@@ -39,17 +41,16 @@ android {
         buildConfig true
     }
 
-    composeOptions {
-        kotlinCompilerExtensionVersion '1.5.14'
-    }
+    // composeOptions kotlinCompilerExtensionVersion retiré : géré automatiquement
+    // par le plugin org.jetbrains.kotlin.plugin.compose avec Kotlin 2.x
 
     kotlinOptions {
-        jvmTarget = '17'
+        jvmTarget = '21'
     }
 
     compileOptions {
-        sourceCompatibility JavaVersion.VERSION_17
-        targetCompatibility JavaVersion.VERSION_17
+        sourceCompatibility JavaVersion.VERSION_21
+        targetCompatibility JavaVersion.VERSION_21
     }
 
     packaging {
