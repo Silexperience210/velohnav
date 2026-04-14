@@ -4,7 +4,10 @@ buildscript {
         mavenCentral()
     }
     dependencies {
-        classpath 'com.android.tools.build:gradle:8.13.0'
+        // FIX : AGP 8.13.0 (avril 2026) introduit des checks Kotlin stricts qui cassent
+        // @capacitor/geolocation@8.2.0 (SUSPEND_CALL_FROM_WRONG_CONTEXT).
+        // Downgrade vers 8.7.3, dernière version stable testée avec Capacitor 8.x.
+        classpath 'com.android.tools.build:gradle:8.7.3'
         classpath 'com.google.gms:google-services:4.4.4'
         classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:1.9.24"
     }
