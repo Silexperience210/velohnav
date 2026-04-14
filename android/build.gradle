@@ -4,13 +4,15 @@ buildscript {
         mavenCentral()
     }
     dependencies {
-        // AGP 8.9.1 requis par androidx.activity:1.11.0 + core:1.17.0
+        // AGP 8.9.1 : minimum requis par androidx.activity:1.11.0 + core:1.17.0
         classpath 'com.android.tools.build:gradle:8.9.1'
         classpath 'com.google.gms:google-services:4.4.4'
-        // Kotlin 2.1.0 : compatible avec stdlib 2.1.0 et coroutines 1.10.2
-        // tirés en transitif. @capacitor/geolocation supprimé (Kotlin 1.9 interne
-        // incompatible avec stdlib 2.1.0, aucune config root ne peut l'overrider).
+        // Kotlin 2.1.0 : obligatoire car @capacitor/android@8.3.0 tire
+        // kotlinx-coroutines:1.10.2 + kotlin-stdlib:2.1.0 en transitif
         classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:2.1.0"
+        // CRITIQUE : sans ce classpath, apply plugin: 'org.jetbrains.kotlin.plugin.compose'
+        // echoue avec "Plugin not found" meme avec kotlin-gradle-plugin 2.x en classpath
+        classpath "org.jetbrains.kotlin:compose-compiler-gradle-plugin:2.1.0"
     }
 }
 
@@ -21,4 +23,20 @@ allprojects {
         google()
         mavenCentral()
     }
+}
+
+// @capacitor/geolocation@8.2.0 active allWarningsAsErrors=true dans son build.gradle.
+// Ce bloc l'ecrase pour tous les sous-projets Capacitor.
+subprojects {
+    afterEvaluate {
+        tasks.withType(org.jetbrains.kotlin.gradle.tasks.KotlinCompile).configureEach {
+            kotlinOptions {
+                allWarningsAsErrors = false
+            }
+        }
+    }
+}
+
+task clean(type: Delete) {
+    delete rootProject.buildDir
 }

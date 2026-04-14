@@ -1,5 +1,8 @@
 apply plugin: 'com.android.application'
 apply plugin: 'kotlin-android'
+// Kotlin 2.x : le Compose Compiler plugin est séparé de kotlin-gradle-plugin.
+// Nécessite classpath "org.jetbrains.kotlin:compose-compiler-gradle-plugin:2.1.0" dans buildscript.
+apply plugin: 'org.jetbrains.kotlin.plugin.compose'
 
 android {
     namespace "com.silexperience.velohnav"
@@ -38,10 +41,7 @@ android {
         buildConfig true
     }
 
-    // Kotlin 1.9.24 + Compose Compiler 1.5.14 (versions compatibles, stable)
-    composeOptions {
-        kotlinCompilerExtensionVersion '1.5.14'
-    }
+    // Kotlin 2.x + org.jetbrains.kotlin.plugin.compose : plus besoin de kotlinCompilerExtensionVersion
 
     kotlinOptions {
         jvmTarget = '17'
