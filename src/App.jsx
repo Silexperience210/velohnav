@@ -99,10 +99,93 @@ function enrich(list, pos) {
     .map(s=>({ ...s, dist:haversine(ref.lat,ref.lng,s.lat,s.lng) }))
     .sort((a,b)=>a.dist-b.dist);
 }
-function pins(stations) {
+
+// FIX #10 : fakePins orientés — si heading connu, projette les stations réelles
+// dans le FOV de la caméra; sinon fallback positions fixes nord-sud
+function pins(stations, heading=null, gpsPos=null) {
+  if (heading !== null && gpsPos) {
+    const FOV_=68;
+    return stations
+      .filter(s=>s.lat&&s.lng&&s.dist<15000)
+      .map(s=>{
+        const bear=getBearing(gpsPos.lat,gpsPos.lng,s.lat,s.lng);
+        const rel=((bear-heading+540)%360)-180;
+        if(Math.abs(rel)>FOV_/2+8) return null;
+        const x=50+(rel/(FOV_/2))*50;
+        const dc=Math.min(s.dist,12000);
+        const y=70-(1-dc/12000)*44;
+        const scale=Math.max(0.3,1-dc/14000);
+        return{...s,x,y,scale,labelRight:rel<0,rel};
+      })
+      .filter(Boolean)
+      .sort((a,b)=>b.dist-a.dist)
+      .slice(0,8);
+  }
+  // Fallback statique : 6 stations les plus proches en grille 3×2
   return stations.slice(0,6).map((s,i)=>({
-    ...s, x:13+(i%3)*34, y:28+Math.floor(i/3)*38, labelRight:(i%3)<2,
+    ...s, x:13+(i%3)*34, y:28+Math.floor(i/3)*38, labelRight:(i%3)<2, scale:1,
   }));
+}
+
+// ── HISTORIQUE STATIONS (feature #13) ────────────────────────────
+const HIST_KEY = "velohnav_history";
+function getHistory() {
+  try { return JSON.parse(localStorage.getItem(HIST_KEY)||"[]"); } catch { return []; }
+}
+function addToHistory(station) {
+  const prev = getHistory().filter(h=>h.id!==station.id);
+  const entry = { id:station.id, name:station.name, lat:station.lat, lng:station.lng,
+    visitedAt: Date.now() };
+  localStorage.setItem(HIST_KEY, JSON.stringify([entry,...prev].slice(0,10)));
+}
+
+// ── LNURL-PAY (feature #2) ────────────────────────────────────────
+// Envoie des sats via LNURL-pay depuis une Lightning Address (user@domain)
+async function payLnAddress(lnAddress, satsAmount, comment="VelohNav trajet") {
+  try {
+    const [user, domain] = lnAddress.split("@");
+    if (!user || !domain) throw new Error("Adresse invalide");
+    // 1. Fetch LNURL metadata
+    const metaUrl = `https://${domain}/.well-known/lnurlp/${user}`;
+    const meta = await fetch(metaUrl).then(r=>r.json());
+    if (meta.status === "ERROR") throw new Error(meta.reason);
+    const msats = satsAmount * 1000;
+    if (msats < meta.minSendable || msats > meta.maxSendable)
+      throw new Error(`Montant hors limites (${meta.minSendable/1000}–${meta.maxSendable/1000} sats)`);
+    // 2. Request invoice
+    const callbackUrl = new URL(meta.callback);
+    callbackUrl.searchParams.set("amount", msats);
+    if (meta.commentAllowed > 0) callbackUrl.searchParams.set("comment", comment.slice(0, meta.commentAllowed));
+    const inv = await fetch(callbackUrl.toString()).then(r=>r.json());
+    if (inv.status === "ERROR") throw new Error(inv.reason);
+    // 3. Ouvrir dans le wallet via URI lightning:
+    window.location.href = `lightning:${inv.pr}`;
+    return { ok: true, invoice: inv.pr };
+  } catch(e) {
+    return { ok: false, error: e.message };
+  }
+}
+
+// ── NOTIFICATIONS (feature #14) ──────────────────────────────────
+async function requestNotifPerm() {
+  if (!("Notification" in window)) return false;
+  if (Notification.permission === "granted") return true;
+  const p = await Notification.requestPermission();
+  return p === "granted";
+}
+function notifyStation(station, prevBikes) {
+  if (!("Notification" in window) || Notification.permission !== "granted") return;
+  if (station.bikes === 0 && prevBikes > 0) {
+    new Notification(`🚲 ${station.name} est vide`, {
+      body: `Plus aucun vélo disponible.`,
+      icon: "./icon-192.png", tag: `empty-${station.id}`, silent: false,
+    });
+  } else if (station.bikes <= 2 && prevBikes > 2) {
+    new Notification(`⚠️ ${station.name} presque vide`, {
+      body: `Plus que ${station.bikes} vélo${station.bikes>1?"s":""} disponible${station.bikes>1?"s":""}.`,
+      icon: "./icon-192.png", tag: `low-${station.id}`, silent: true,
+    });
+  }
 }
 
 // ── COMPASS HOOK ──────────────────────────────────────────────────
@@ -323,7 +406,7 @@ function CityBG({ off }) {
 }
 
 // ── STATUS BAR ────────────────────────────────────────────────────
-function StatusBar({ tab, gpsOk, apiLive, isMock }) {
+function StatusBar({ tab, gpsOk, apiLive, isMock, onRefresh, refreshing }) {
   const [t,setT] = useState(new Date());
   useEffect(()=>{ const i=setInterval(()=>setT(new Date()),1000); return()=>clearInterval(i); },[]);
   const LABELS = { ar:"AUGMENTED REALITY", map:"CARTE", ai:"ASSISTANT", settings:"PARAMÈTRES" };
@@ -350,6 +433,14 @@ function StatusBar({ tab, gpsOk, apiLive, isMock }) {
             <span style={{ color:s.col, fontSize:7, fontFamily:C.fnt }}>{s.l}</span>
           </div>
         ))}
+        {/* Bouton refresh manuel (#8) */}
+        <div onPointerDown={onRefresh}
+          style={{ padding:"3px 6px", background:"rgba(0,0,0,0.4)",
+            border:`1px solid ${C.border}`, borderRadius:3, cursor:"pointer",
+            fontSize:10, transform:refreshing?"rotate(180deg)":"rotate(0deg)",
+            transition:"transform 0.5s", userSelect:"none" }}>
+          🔄
+        </div>
         <div style={{ color:C.text, fontSize:11, fontFamily:C.fnt, fontWeight:700,
           padding:"3px 6px", background:"rgba(0,0,0,0.4)", border:`1px solid ${C.border}`, borderRadius:3 }}>
           {t.toLocaleTimeString("fr",{hour:"2-digit",minute:"2-digit"})}
@@ -457,7 +548,7 @@ function ARPin({ s, sel, setSel, pulse }) {
 const COMPASS_LABELS=["N","NE","E","SE","S","SO","O","NO"];
 const FOV=68;
 
-function ARScreen({ stations, sel, setSel, gpsPos }) {
+function ARScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip }) {
   const vidRef=useRef(null);
   const [cam,   setCam]  =useState("idle");
   const [bgOff, setBgOff]=useState(0);
@@ -511,7 +602,7 @@ function ARScreen({ stations, sel, setSel, gpsPos }) {
       .sort((a,b)=>b.dist-a.dist);
   },[heading,gpsPos,stations]);
 
-  const fakePins=useMemo(()=>pins(stations),[stations]);
+  const fakePins=useMemo(()=>pins(stations,heading,gpsPos),[stations,heading,gpsPos]);
   const visiblePins=arPins??fakePins;
 
   // ── Nav overlay ────────────────────────────────────────────────
@@ -796,19 +887,34 @@ function LuxMap({ toXY }) {
 }
 
 // ── MAP SCREEN ────────────────────────────────────────────────────
-function MapScreen({ stations, sel, setSel, gpsPos }) {
+function MapScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip }) {
+  const [filter, setFilter] = useState("all"); // all | bikes | docks | elec
+  const [search, setSearch] = useState("");
+
+  // Stations filtrées pour affichage
+  const displayed = useMemo(()=>{
+    let s = stations;
+    if (search.trim()) {
+      const q = search.trim().toLowerCase();
+      s = s.filter(st=>st.name.toLowerCase().includes(q));
+    }
+    if (filter==="bikes") s = s.filter(st=>st.bikes>0&&st.status==="OPEN");
+    if (filter==="docks") s = s.filter(st=>st.docks>0&&st.status==="OPEN");
+    if (filter==="elec")  s = s.filter(st=>st.elec>0&&st.status==="OPEN");
+    return s;
+  },[stations, filter, search]);
+
   if (!stations.length) return (
     <div style={{ flex:1,display:"flex",alignItems:"center",justifyContent:"center",background:C.bg }}>
       <div style={{ color:C.muted,fontSize:10,fontFamily:C.fnt }}>Chargement des stations…</div>
     </div>
   );
 
-  // ── Bounding box avec marge généreuse → toutes les stations visibles d'emblée
+  // ── Bounding box sur TOUTES les stations (stable même si filtre actif)
   const margin=0.012;
   const lats=stations.map(s=>s.lat), lngs=stations.map(s=>s.lng);
   const ltMin=Math.min(...lats)-margin, ltMax=Math.max(...lats)+margin;
   const lnMin=Math.min(...lngs)-margin, lnMax=Math.max(...lngs)+margin;
-  // toXY en % avec padding interne 5% → les dots ne sortent jamais du bord
   const toXY=(la,ln)=>({ x:(ln-lnMin)/(lnMax-lnMin)*90+5, y:(1-(la-ltMin)/(ltMax-ltMin))*90+5 });
   const ux=toXY(gpsPos?.lat??REF.lat, gpsPos?.lng??REF.lng);
 
@@ -892,25 +998,62 @@ function MapScreen({ stations, sel, setSel, gpsPos }) {
   },[applyView,ux]);
 
   const isPanned=Math.abs(view.x)>4||Math.abs(view.y)>4||view.s>1.05;
-  const selStation=stations.find(s=>s.id===sel);
+  const selStation=displayed.find(s=>s.id===sel) ?? stations.find(s=>s.id===sel);
 
-  // Stats résumées
+  // Stats résumées (sur toutes les stations, pas juste filtrées)
   const nDispo=stations.filter(s=>s.bikes>0&&s.status==="OPEN").length;
   const nVide=stations.filter(s=>s.bikes===0&&s.status==="OPEN").length;
-  const nFerme=stations.filter(s=>s.status==="CLOSED").length;
+
+  // Filtres
+  const FILTERS=[
+    {id:"all",  label:"Tout",    count:stations.length},
+    {id:"bikes",label:"🚲 Vélos",count:stations.filter(s=>s.bikes>0&&s.status==="OPEN").length},
+    {id:"docks",label:"🅿 Docks", count:stations.filter(s=>s.docks>0&&s.status==="OPEN").length},
+    {id:"elec", label:"⚡ Élec",  count:stations.filter(s=>s.elec>0&&s.status==="OPEN").length},
+  ];
 
   return (
     <div style={{ flex:1,display:"flex",flexDirection:"column",background:C.bg,minHeight:0,position:"relative" }}>
 
-      {/* ── Barre stats en haut ─────────────────────────── */}
-      <div style={{ display:"flex",gap:8,padding:"8px 14px 6px",flexShrink:0,alignItems:"center" }}>
-        <div style={{ color:C.muted,fontSize:7,fontFamily:C.fnt,flex:1 }}>
-          <span style={{ color:C.good,fontWeight:700 }}>{nDispo}</span> dispo ·{" "}
-          <span style={{ color:C.warn }}>{nVide}</span> vide ·{" "}
-          <span style={{ color:"#555" }}>{nFerme}</span> fermé ·{" "}
-          <span style={{ color:C.muted }}>{stations.length} total</span>
+      {/* ── Barre recherche ───────────────────────────────── */}
+      <div style={{ padding:"8px 10px 0",flexShrink:0 }}>
+        <div style={{ display:"flex",alignItems:"center",gap:6,
+          background:"rgba(255,255,255,0.04)", border:`1px solid ${C.border}`,
+          borderRadius:8, padding:"6px 10px" }}>
+          <span style={{ color:C.muted, fontSize:12 }}>🔍</span>
+          <input value={search} onChange={e=>setSearch(e.target.value)}
+            placeholder="Rechercher une station…"
+            style={{ flex:1, background:"transparent", border:"none", outline:"none",
+              color:C.text, fontSize:11, fontFamily:C.fnt }}/>
+          {search&&<span onPointerDown={()=>setSearch("")}
+            style={{ color:C.muted, fontSize:12, cursor:"pointer" }}>✕</span>}
         </div>
-        {gpsPos&&<div style={{ color:C.blue,fontSize:7,fontFamily:C.fnt }}>±{gpsPos.acc}m</div>}
+      </div>
+
+      {/* ── Filtres pills ─────────────────────────────────── */}
+      <div style={{ display:"flex",gap:5,padding:"6px 10px 4px",flexShrink:0,overflowX:"auto" }}>
+        {FILTERS.map(f=>(
+          <div key={f.id} onPointerDown={()=>setFilter(f.id)}
+            style={{ flexShrink:0, padding:"4px 10px",
+              background: filter===f.id ? C.accentBg : "rgba(255,255,255,0.03)",
+              border:`1px solid ${filter===f.id ? C.accent : C.border}`,
+              borderRadius:12, cursor:"pointer",
+              display:"flex", alignItems:"center", gap:4 }}>
+            <span style={{ color:filter===f.id?C.accent:C.muted, fontSize:9, fontFamily:C.fnt }}>
+              {f.label}
+            </span>
+            <span style={{ color:filter===f.id?C.accent:"#444", fontSize:8, fontFamily:C.fnt }}>
+              {f.count}
+            </span>
+          </div>
+        ))}
+        {/* Stats inline */}
+        <div style={{ marginLeft:"auto",flexShrink:0,display:"flex",alignItems:"center" }}>
+          <span style={{ color:C.muted,fontSize:7,fontFamily:C.fnt }}>
+            <span style={{ color:C.good }}>{nDispo}</span>✓{" "}
+            <span style={{ color:C.bad }}>{nVide}</span>✗
+          </span>
+        </div>
       </div>
 
       {/* ── Carte ────────────────────────────────────────── */}
@@ -940,8 +1083,8 @@ function MapScreen({ stations, sel, setSel, gpsPos }) {
           {/* Croquis SVG Luxembourg */}
           <LuxMap toXY={toXY}/>
 
-          {/* Stations — dot adaptatif selon zoom */}
-          {stations.map(s=>{
+          {/* Stations filtrées — dot adaptatif selon zoom */}
+          {displayed.map(s=>{
             const {x,y}=toXY(s.lat,s.lng);
             const col=bCol(s);
             const act=sel===s.id;
@@ -1077,6 +1220,35 @@ function MapScreen({ stations, sel, setSel, gpsPos }) {
               </div>
             ))}
           </div>
+          {/* Bouton Y aller → Google Maps pied (#12) */}
+          <div style={{ marginTop:10,display:"flex",gap:6 }}>
+            <a href={`https://www.google.com/maps/dir/?api=1&destination=${selStation.lat},${selStation.lng}&travelmode=walking`}
+              target="_blank" rel="noopener noreferrer"
+              style={{ flex:1,display:"flex",alignItems:"center",justifyContent:"center",gap:6,
+                background:"rgba(59,130,246,0.12)",border:`1px solid ${C.blue}55`,
+                borderRadius:6,padding:"8px 0",textDecoration:"none" }}>
+              <span style={{ fontSize:13 }}>🗺</span>
+              <span style={{ color:C.blue,fontSize:9,fontFamily:C.fnt,fontWeight:700,letterSpacing:1 }}>À PIED</span>
+            </a>
+            <a href={`https://www.google.com/maps/dir/?api=1&destination=${selStation.lat},${selStation.lng}&travelmode=bicycling`}
+              target="_blank" rel="noopener noreferrer"
+              style={{ flex:1,display:"flex",alignItems:"center",justifyContent:"center",gap:6,
+                background:C.accentBg,border:`1px solid ${C.accent}55`,
+                borderRadius:6,padding:"8px 0",textDecoration:"none" }}>
+              <span style={{ fontSize:13 }}>🚲</span>
+              <span style={{ color:C.accent,fontSize:9,fontFamily:C.fnt,fontWeight:700,letterSpacing:1 }}>EN VÉLO</span>
+            </a>
+            {/* Bouton démarrer trajet (#3) — si pas déjà en cours */}
+            {!trip&&selStation.bikes>0&&onStartTrip&&(
+              <div onPointerDown={()=>onStartTrip(selStation)}
+                style={{ flex:1,display:"flex",alignItems:"center",justifyContent:"center",gap:4,
+                  background:"rgba(46,204,143,0.12)",border:`1px solid ${C.good}55`,
+                  borderRadius:6,padding:"8px 0",cursor:"pointer" }}>
+                <span style={{ fontSize:11 }}>▶</span>
+                <span style={{ color:C.good,fontSize:9,fontFamily:C.fnt,fontWeight:700 }}>TRAJET</span>
+              </div>
+            )}
+          </div>
         </div>
       ) : (
         /* ── Légende compacte quand rien n'est sélectionné ── */
@@ -1118,12 +1290,18 @@ function AIScreen({ stations, claudeKey, aiHistory, setAiHistory, aiDisplay, set
 
   // FIX : systemPrompt dans useMemo — évite de recréer sendText à chaque render
   // et élimine le risque de closure stale sur une const recalculée inline.
-  const systemPrompt = useMemo(()=>`Tu es VELOH·AI, l'assistant de VelohNav pour le réseau Vel'OH! Luxembourg.
+  const systemPrompt = useMemo(()=>{
+    // Historique des 5 dernières stations visitées (#13)
+    const hist = getHistory().slice(0,5);
+    const histTxt = hist.length
+      ? `\nStations récemment visitées par l'utilisateur : ${hist.map(h=>h.name).join(", ")}.`
+      : "";
+    return `Tu es VELOH·AI, l'assistant de VelohNav pour le réseau Vel'OH! Luxembourg.
 Réponds en français, de façon concise (3-4 lignes max).
 Données actuelles (triées par distance) :
-${stations.map(s=>`• ${s.name} | ${s.bikes} vélos (⚡${s.elec} élec., 🔧${s.meca} méca.) | ${s.docks} docks | ${fDist(s.dist)} | ${bTag(s)}`).join("\n")}
-Réponds uniquement sur la mobilité Veloh, les itinéraires, ou l'app.`
-  ,[stations]);
+${stations.map(s=>`• ${s.name} | ${s.bikes} vélos (⚡${s.elec} élec., 🔧${s.meca} méca.) | ${s.docks} docks | ${fDist(s.dist)} | ${bTag(s)}`).join("\n")}${histTxt}
+Réponds uniquement sur la mobilité Veloh, les itinéraires, ou l'app.`;
+  },[stations]);
 
   const sendText = useCallback(async(text)=>{
     const q=(text||input).trim();
@@ -1386,68 +1564,166 @@ export default function App() {
   const [claudeKey,setClaudeKey] = useState(()=>localStorage.getItem("velohnav_claudeKey")||"");
   const [lnAddr,setLnAddr]     = useState(()=>localStorage.getItem("velohnav_lnAddr")||"");
   const [lnOn,setLnOn]         = useState(()=>localStorage.getItem("velohnav_lnOn")==="true");
-  const [ads,setAds]           = useState(()=>localStorage.getItem("velohnav_ads")!=="false");
+  // FIX #9 : ads=false par défaut (toggle était à true par défaut sans logique derrière)
+  const [ads,setAds]           = useState(()=>localStorage.getItem("velohnav_ads")==="true");
   const [stations,setStations] = useState(()=>enrich(FALLBACK,null));
   const [apiLive,setApiLive]   = useState(false);
   const [isMock,setIsMock]     = useState(true);
   const [gpsPos,setGpsPos]     = useState(null);
+  const [refreshing,setRefreshing] = useState(false);
 
-  // Lifted AI conversation state — survives tab switches
+  // FIX #3 : Système de trajet — départ/arrivée pour Sats Rewards
+  const [trip,setTrip] = useState(null); // null | { stationId, name, startAt }
+  const [satsResult,setSatsResult] = useState(null); // null | { ok, msg }
+
+  // Lifted AI conversation state
   const top0 = FALLBACK.find(s=>s.bikes>0);
   const [aiHistory, setAiHistory] = useState([]);
   const [aiDisplay, setAiDisplay] = useState([{ role:"ai",
     text: top0 ? `${FALLBACK.filter(s=>s.bikes>0).length}/${FALLBACK.length} stations dispos. Plus proche : ${top0.name} (${fDist(haversine(REF.lat,REF.lng,top0.lat,top0.lng))}, ${top0.bikes}🚲 ⚡${top0.elec}).` : "Chargement…"
   }]);
 
-  // Persist settings to localStorage
+  // Persist settings
   useEffect(()=>{ localStorage.setItem("velohnav_jcdKey",   apiKey);    },[apiKey]);
   useEffect(()=>{ localStorage.setItem("velohnav_claudeKey",claudeKey); },[claudeKey]);
   useEffect(()=>{ localStorage.setItem("velohnav_lnAddr",   lnAddr);    },[lnAddr]);
   useEffect(()=>{ localStorage.setItem("velohnav_lnOn",     lnOn);      },[lnOn]);
   useEffect(()=>{ localStorage.setItem("velohnav_ads",      ads);       },[ads]);
 
-  // GPS watch continu
+  // GPS
   useEffect(()=>{
     let stop=()=>{};
     startWatchingGPS(pos=>setGpsPos(pos)).then(fn=>{ if(fn) stop=fn; });
     return ()=>stop();
   },[]);
-
-  // Recalcul distances quand GPS change (sans re-fetch API)
-  useEffect(()=>{
-    setStations(prev=>enrich(prev,gpsPos));
-  },[gpsPos]);
-
-  // Ref pour que loadData lise la position GPS sans en dépendre
+  useEffect(()=>{ setStations(prev=>enrich(prev,gpsPos)); },[gpsPos]);
   const gpsRef = useRef(null);
   useEffect(()=>{ gpsRef.current = gpsPos; },[gpsPos]);
 
+  // Ref pour comparer stations prev/next → notifications (#14)
+  const prevStationsRef = useRef({});
+
   const loadData = useCallback(async()=>{
     const userPos = gpsRef.current;
+    let newStations = null;
     if (apiKey) {
       try {
         const raw = await fetchJCDecaux(apiKey);
         if (raw && Array.isArray(raw)) {
-          setStations(enrich(raw.map(parseStation), userPos));
-          setApiLive(true); setIsMock(false); return;
+          newStations = enrich(raw.map(parseStation), userPos);
+          setApiLive(true); setIsMock(false);
         }
       } catch(e) { console.warn("JCDecaux load:", e); }
+    }
+    if (!newStations) {
+      newStations = enrich(FALLBACK, userPos);
       setApiLive(false); setIsMock(true);
     }
-    setStations(enrich(FALLBACK, userPos));
-    setApiLive(false); setIsMock(true);
-  },[apiKey]); // ← gpsPos retiré : évite le re-fetch à chaque update GPS
+    // FIX #14 : Comparer avec les stations précédentes → notifier si vide/faible
+    newStations.forEach(s=>{
+      const prev = prevStationsRef.current[s.id];
+      if (prev !== undefined) notifyStation(s, prev);
+      prevStationsRef.current[s.id] = s.bikes;
+    });
+    setStations(newStations);
+  },[apiKey]);
 
   useEffect(()=>{ loadData(); },[loadData]);
+  // Refresh auto toutes les 60s
   useEffect(()=>{ const t=setInterval(loadData,60000); return()=>clearInterval(t); },[loadData]);
+  // FIX #8 : Refresh quand l'app revient au premier plan
+  useEffect(()=>{
+    const onFocus = ()=>loadData();
+    const onVisible = ()=>{ if(document.visibilityState==="visible") loadData(); };
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onVisible);
+    return ()=>{
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  },[loadData]);
+
+  // FIX #8 : Refresh manuel avec feedback visuel
+  const handleRefresh = useCallback(async()=>{
+    setRefreshing(true);
+    await loadData();
+    setTimeout(()=>setRefreshing(false), 600);
+  },[loadData]);
+
+  // FIX #13 : Ajouter à l'historique quand on sélectionne une station
+  useEffect(()=>{
+    if (sel) {
+      const s = stations.find(st=>st.id===sel);
+      if (s) addToHistory(s);
+    }
+  },[sel, stations]);
+
+  // FIX #3 : Démarrer un trajet
+  const startTrip = useCallback((station)=>{
+    setTrip({ stationId:station.id, name:station.name, startAt:Date.now() });
+    setSatsResult(null);
+  },[]);
+
+  // FIX #2 : Terminer un trajet → envoyer sats via LNURL-pay
+  const endTrip = useCallback(async()=>{
+    if (!trip) return;
+    const durMin = Math.round((Date.now()-trip.startAt)/60000);
+    const sats = Math.max(10, durMin * 2); // 2 sats/min, min 10 sats
+    setTrip(null);
+    if (lnOn && lnAddr) {
+      setSatsResult({ok:null, msg:"Envoi en cours…"});
+      const res = await payLnAddress(lnAddr, sats, `VelohNav trajet ${durMin}min depuis ${trip.name}`);
+      setSatsResult(res.ok
+        ? {ok:true,  msg:`⚡ ${sats} sats envoyés !`}
+        : {ok:false, msg:`⚠ ${res.error}`});
+      setTimeout(()=>setSatsResult(null), 4000);
+    }
+  },[trip, lnOn, lnAddr]);
+
+  // FIX #14 : Demander permission notifications au premier lancement
+  useEffect(()=>{ requestNotifPerm(); },[]);
 
   return (
     <div style={{ width:"100%",height:"100vh",display:"flex",flexDirection:"column",
       background:C.bg,overflow:"hidden",maxWidth:430,margin:"0 auto" }}>
-      <StatusBar tab={tab} gpsOk={!!gpsPos} apiLive={apiLive} isMock={isMock}/>
+      <StatusBar tab={tab} gpsOk={!!gpsPos} apiLive={apiLive} isMock={isMock}
+        onRefresh={handleRefresh} refreshing={refreshing}/>
+
+      {/* Banner trajet en cours (#3) */}
+      {trip&&(
+        <div style={{ background:"rgba(245,130,13,0.12)",borderBottom:`1px solid ${C.accent}44`,
+          padding:"7px 14px",display:"flex",alignItems:"center",gap:10,flexShrink:0 }}>
+          <span style={{ fontSize:14 }}>🚲</span>
+          <div style={{ flex:1 }}>
+            <div style={{ color:C.accent,fontSize:9,fontFamily:C.fnt,fontWeight:700 }}>TRAJET EN COURS</div>
+            <div style={{ color:C.muted,fontSize:8,fontFamily:C.fnt }}>
+              Depuis {trip.name} · {Math.round((Date.now()-trip.startAt)/60000)} min
+            </div>
+          </div>
+          <div onPointerDown={endTrip}
+            style={{ background:C.accentBg,border:`1px solid ${C.accent}`,borderRadius:5,
+              padding:"5px 12px",color:C.accent,fontSize:8,fontFamily:C.fnt,
+              fontWeight:700,cursor:"pointer" }}>
+            ARRIVER ✓
+          </div>
+        </div>
+      )}
+
+      {/* Toast résultat sats (#2) */}
+      {satsResult&&(
+        <div style={{ background:satsResult.ok===true?"rgba(46,204,143,0.15)":satsResult.ok===false?"rgba(224,62,62,0.12)":"rgba(245,130,13,0.1)",
+          borderBottom:`1px solid ${satsResult.ok===true?C.good:satsResult.ok===false?C.bad:C.accent}44`,
+          padding:"7px 14px",textAlign:"center",flexShrink:0 }}>
+          <span style={{ color:satsResult.ok===true?C.good:satsResult.ok===false?C.bad:C.warn,
+            fontSize:10,fontFamily:C.fnt }}>{satsResult.msg}</span>
+        </div>
+      )}
+
       <div style={{ flex:1,display:"flex",flexDirection:"column",overflow:"hidden",minHeight:0 }}>
-        {tab==="ar"       &&<ARScreen  stations={stations} sel={sel} setSel={setSel} gpsPos={gpsPos}/>}
-        {tab==="map"      &&<MapScreen stations={stations} sel={sel} setSel={setSel} gpsPos={gpsPos}/>}
+        {tab==="ar"       &&<ARScreen  stations={stations} sel={sel} setSel={setSel} gpsPos={gpsPos}
+          trip={trip} onStartTrip={startTrip}/>}
+        {tab==="map"      &&<MapScreen stations={stations} sel={sel} setSel={setSel} gpsPos={gpsPos}
+          trip={trip} onStartTrip={startTrip}/>}
         {tab==="ai"       &&<AIScreen  stations={stations} claudeKey={claudeKey}
           aiHistory={aiHistory} setAiHistory={setAiHistory}
           aiDisplay={aiDisplay} setAiDisplay={setAiDisplay}/>}
