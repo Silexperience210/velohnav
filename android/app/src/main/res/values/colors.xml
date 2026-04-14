@@ -1,10 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- Launcher icon background (also used by ic_launcher_background.xml) -->
-    <color name="ic_launcher_background">#FF080C0F</color>
-
-    <!-- Theme colors référencés par styles.xml / AppTheme AppCompat -->
-    <!-- Orange cyberpunk VelohNav -->
+    <!-- FIX : ic_launcher_background est défini dans ic_launcher_background.xml — ne pas dupliquer ici -->
+    <!-- Couleurs thème VelohNav référencées par styles.xml -->
     <color name="colorPrimary">#F5820D</color>
     <color name="colorPrimaryDark">#C06000</color>
     <color name="colorAccent">#F5820D</color>
