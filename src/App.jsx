@@ -4,24 +4,6 @@ import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 const IS_NATIVE = typeof window !== "undefined" &&
   !!(window.Capacitor?.isNativePlatform?.() || window.Capacitor?.platform === "android");
 
-async function getPositionOnce() {
-  if (IS_NATIVE) {
-    try {
-      const { Geolocation } = await import("@capacitor/geolocation");
-      await Geolocation.requestPermissions();
-      const pos = await Geolocation.getCurrentPosition({ enableHighAccuracy:true, timeout:10000 });
-      return { lat:pos.coords.latitude, lng:pos.coords.longitude, acc:Math.round(pos.coords.accuracy) };
-    } catch(e) { console.warn("Native GPS:", e); }
-  }
-  return new Promise((res, rej) => {
-    if (!navigator.geolocation) { rej(new Error("GPS indisponible")); return; }
-    navigator.geolocation.getCurrentPosition(
-      p => res({ lat:p.coords.latitude, lng:p.coords.longitude, acc:Math.round(p.coords.accuracy) }),
-      rej, { enableHighAccuracy:true, timeout:10000 }
-    );
-  });
-}
-
 async function startWatchingGPS(cb) {
   if (IS_NATIVE) {
     try {

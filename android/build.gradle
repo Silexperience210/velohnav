@@ -4,13 +4,11 @@ buildscript {
         mavenCentral()
     }
     dependencies {
-        // FIX FINAL : kotlinx-coroutines:1.10.2 et kotlin-stdlib:2.1.0 sont tirés
-        // en transitif par androidx.activity:1.11.0 et core:1.17.0.
-        // Kotlin 1.9.24 ne peut pas lire les métadonnées 2.1.0 → erreurs en cascade.
-        // Montée à Kotlin 2.1.0 : compatible stdlib 2.1.0 + coroutines 1.10.2.
+        // AGP 8.9.1 : minimum requis par androidx.activity:1.11.0 + core:1.17.0
         classpath 'com.android.tools.build:gradle:8.9.1'
         classpath 'com.google.gms:google-services:4.4.4'
-        classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:2.1.0"
+        // Kotlin 1.9.24 : stable, compatible Compose 1.5.14
+        classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:1.9.24"
     }
 }
 
@@ -23,7 +21,9 @@ allprojects {
     }
 }
 
-// Fix allWarningsAsErrors pour @capacitor/geolocation@8.2.0
+// @capacitor/geolocation@8.2.0 a allWarningsAsErrors=true dans son build.gradle.
+// Ce bloc le force à false pour tous les sous-projets (Capacitor inclus),
+// éliminant l'erreur SUSPEND_CALL_FROM_WRONG_CONTEXT.
 subprojects {
     afterEvaluate {
         tasks.withType(org.jetbrains.kotlin.gradle.tasks.KotlinCompile).configureEach {
@@ -32,4 +32,8 @@ subprojects {
             }
         }
     }
+}
+
+task clean(type: Delete) {
+    delete rootProject.buildDir
 }
