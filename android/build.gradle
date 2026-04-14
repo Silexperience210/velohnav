@@ -32,20 +32,5 @@ subprojects {
         }
     }
 }
-
-task clean(type: Delete) {
-    delete rootProject.buildDir
-}
-
-apply from: "variables.gradle"
-
-allprojects {
-    repositories {
-        google()
-        mavenCentral()
-    }
-}
-
-task clean(type: Delete) {
-    delete rootProject.buildDir
-}
+// NOTE : task clean retiré — Gradle 8.x le déclare automatiquement via l'Android
+// plugin. Le redéclarer lève DuplicateTaskException au configure time.
