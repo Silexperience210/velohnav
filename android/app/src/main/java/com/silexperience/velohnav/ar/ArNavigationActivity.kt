@@ -26,10 +26,8 @@ import com.silexperience.velohnav.ar.ui.VelohNavArTheme
 
 class ArNavigationActivity : ComponentActivity() {
     private val viewModel: ArNavigationViewModel by viewModels()
-    private lateinit var arView: ARSceneView
+    private var arView: ARSceneView? = null
 
-    // Paramètres de navigation stockés pour être utilisés dans startAr()
-    // (appelé après que l'utilisateur accorde les permissions)
     private var pendingDestLat: Double = 0.0
     private var pendingDestLng: Double = 0.0
     private var pendingDestName: String = "Destination"
@@ -47,36 +45,46 @@ class ArNavigationActivity : ComponentActivity() {
             hide(WindowInsetsCompat.Type.systemBars())
             systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
         }
-        pendingDestLat  = intent.getDoubleExtra("dest_lat", 0.0)
-        pendingDestLng  = intent.getDoubleExtra("dest_lng", 0.0)
-        pendingDestName = intent.getStringExtra("dest_name") ?: "Destination"
+        pendingDestLat    = intent.getDoubleExtra("dest_lat", 0.0)
+        pendingDestLng    = intent.getDoubleExtra("dest_lng", 0.0)
+        pendingDestName   = intent.getStringExtra("dest_name") ?: "Destination"
         pendingTravelMode = intent.getStringExtra("travel_mode") ?: "bicycling"
-        if (pendingDestLat == 0.0) { Toast.makeText(this, "Destination invalide", Toast.LENGTH_SHORT).show(); finish(); return }
+        if (pendingDestLat == 0.0) {
+            Toast.makeText(this, "Destination invalide", Toast.LENGTH_SHORT).show()
+            finish(); return
+        }
 
         setContent {
             VelohNavArTheme {
                 val state by viewModel.navState.collectAsState()
                 Box(Modifier.fillMaxSize()) {
                     AndroidView(factory = { ctx ->
-                        ARSceneView(ctx).also { v ->
-                            arView = v
-                            v.onSessionConfiguration = { _, config ->
-                                config.geospatialMode = Config.GeospatialMode.ENABLED
+                        // FIX SceneView 2.x : onSessionConfiguration n'est plus une propriété
+                        // settable après construction — il faut le passer au constructeur.
+                        ARSceneView(
+                            context = ctx,
+                            sessionConfiguration = { session, config ->
+                                config.geospatialMode      = Config.GeospatialMode.ENABLED
                                 config.lightEstimationMode = Config.LightEstimationMode.ENVIRONMENTAL_HDR
-                                config.planeFindingMode = Config.PlaneFindingMode.DISABLED
+                                config.planeFindingMode    = Config.PlaneFindingMode.DISABLED
                             }
+                        ).also { v ->
+                            arView = v
                             v.onSessionUpdated = { session, frame ->
                                 session.earth?.let { e ->
                                     if (e.trackingState == TrackingState.TRACKING)
                                         viewModel.onEarthTracking(e, frame)
                                 }
                             }
-                            // Premier lancement : si permissions déjà accordées, init directe.
-                            // Sinon, permLauncher → startAr() → initializeNavigation().
-                            checkPermissions { viewModel.initializeNavigation(v, pendingDestLat, pendingDestLng, pendingDestName, pendingTravelMode) }
+                            checkPermissions {
+                                viewModel.initializeNavigation(
+                                    v, pendingDestLat, pendingDestLng,
+                                    pendingDestName, pendingTravelMode
+                                )
+                            }
                         }
                     }, Modifier.fillMaxSize())
-                    NavigationHud(state=state, onClose={ finish() })
+                    NavigationHud(state = state, onClose = { finish() })
                 }
             }
         }
@@ -88,17 +96,15 @@ class ArNavigationActivity : ComponentActivity() {
         else permLauncher.launch(perms)
     }
 
-    /**
-     * FIX BUG CRITIQUE : cette méthode était vide.
-     * Appelée par permLauncher APRÈS que l'utilisateur accorde les permissions.
-     * Sans ce fix : la navigation ne démarrait JAMAIS lors d'un premier lancement
-     * (permissions non encore accordées au moment du onCreate).
-     */
     private fun startAr() {
         val v = arView ?: return
         viewModel.initializeNavigation(v, pendingDestLat, pendingDestLng, pendingDestName, pendingTravelMode)
     }
-    override fun onResume()  { super.onResume();  if (::arView.isInitialized) arView.resume() }
-    override fun onPause()   { super.onPause();   if (::arView.isInitialized) arView.pause() }
-    override fun onDestroy() { super.onDestroy(); if (::arView.isInitialized) arView.destroy(); viewModel.cleanup() }
+
+    // FIX SceneView 2.x : resume() et pause() n'existent plus — lifecycle géré automatiquement.
+    // onDestroy conservé pour cleanup du ViewModel.
+    override fun onDestroy() {
+        super.onDestroy()
+        viewModel.cleanup()
+    }
 }

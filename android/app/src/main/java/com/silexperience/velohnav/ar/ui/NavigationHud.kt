@@ -63,7 +63,7 @@ fun NavigationHud(state: NavState, onClose: () -> Unit) {
 
 @Composable
 private fun TopBar(state: NavState, onClose: () -> Unit, modifier: Modifier) {
-    Row(modifier.fillMaxWidth().background(Brush.verticalGradient(listOf(DarkBg, Color.Transparent))).padding(8.dp), Alignment.CenterVertically) {
+    Row(modifier.fillMaxWidth().background(Brush.verticalGradient(listOf(DarkBg, Color.Transparent))).padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
         IconButton(onClick=onClose, modifier=Modifier.size(40.dp).background(DarkCard,CircleShape).border(1.dp,OrangeDim,CircleShape)) {
             Icon(Icons.Filled.Close, null, tint=Orange)
         }
@@ -114,7 +114,7 @@ private fun LocalizingOverlay(status: NavStatus) {
     val label = when(status) { NavStatus.LOCATING -> "GPS…"; NavStatus.ROUTING -> "Calcul itinéraire…"; else -> "Localisation VPS…" }
     val inf = rememberInfiniteTransition(label="p")
     val a by inf.animateFloat(0.4f,1f, infiniteRepeatable(tween(800),RepeatMode.Reverse), label="a")
-    Column(Modifier.background(DarkCard,RoundedCornerShape(20.dp)).border(1.dp,OrangeDim,RoundedCornerShape(20.dp)).padding(32.dp), Alignment.CenterHorizontally) {
+    Column(Modifier.background(DarkCard,RoundedCornerShape(20.dp)).border(1.dp,OrangeDim,RoundedCornerShape(20.dp)).padding(32.dp), horizontalAlignment = Alignment.CenterHorizontally) {
         CircularProgressIndicator(color=Orange, modifier=Modifier.size(44.dp).alpha(a), strokeWidth=3.dp)
         Spacer(Modifier.height(14.dp))
         Text(label, color=Orange, fontWeight=FontWeight.Bold, fontFamily=FontFamily.Monospace)
@@ -124,7 +124,7 @@ private fun LocalizingOverlay(status: NavStatus) {
 
 @Composable
 private fun ArrivedCard(dest: String, onClose: () -> Unit) {
-    Column(Modifier.background(DarkCard,RoundedCornerShape(24.dp)).border(2.dp,Orange,RoundedCornerShape(24.dp)).padding(horizontal=32.dp,vertical=28.dp), Alignment.CenterHorizontally) {
+    Column(Modifier.background(DarkCard,RoundedCornerShape(24.dp)).border(2.dp,Orange,RoundedCornerShape(24.dp)).padding(horizontal=32.dp,vertical=28.dp), horizontalAlignment = Alignment.CenterHorizontally) {
         Text("🎯", fontSize=52.sp); Spacer(Modifier.height(8.dp))
         Text("ARRIVÉ", color=Orange, fontWeight=FontWeight.ExtraBold, fontFamily=FontFamily.Monospace, fontSize=26.sp, letterSpacing=6.sp)
         Text(dest, color=Color.White, fontSize=16.sp, textAlign=TextAlign.Center); Spacer(Modifier.height(20.dp))
@@ -136,7 +136,7 @@ private fun ArrivedCard(dest: String, onClose: () -> Unit) {
 
 @Composable
 private fun ErrorCard(msg: String, onClose: () -> Unit) {
-    Column(Modifier.padding(24.dp).background(DarkCard,RoundedCornerShape(16.dp)).border(1.dp,RedBad,RoundedCornerShape(16.dp)).padding(24.dp), Alignment.CenterHorizontally) {
+    Column(Modifier.padding(24.dp).background(DarkCard,RoundedCornerShape(16.dp)).border(1.dp,RedBad,RoundedCornerShape(16.dp)).padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
         Icon(Icons.Filled.Warning, null, tint=RedBad, modifier=Modifier.size(40.dp)); Spacer(Modifier.height(8.dp))
         Text("Erreur navigation", color=RedBad, fontWeight=FontWeight.Bold)
         Text(msg, color=GrayText, fontSize=13.sp, textAlign=TextAlign.Center); Spacer(Modifier.height(16.dp))

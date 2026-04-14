@@ -12,6 +12,7 @@ import com.google.ar.core.Earth
 import com.google.ar.core.Frame
 import io.github.sceneview.ar.ARSceneView
 import io.github.sceneview.ar.node.AnchorNode
+import io.github.sceneview.model.Model
 import io.github.sceneview.node.ModelNode
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -47,7 +48,9 @@ class ArNavigationViewModel(application: Application) : AndroidViewModel(applica
     private var route: NavigationRoute? = null
     private var currentStepIdx = 0
     private val arrowNodes = mutableMapOf<Int, AnchorNode>()
-    private var modelInstance: io.github.sceneview.model.ModelInstance? = null
+    // FIX SceneView 2.x : loadModelInstance → loadModelAsync retourne un ModelInstance directement.
+    // On stocke l'asset GLB pour créer des instances supplémentaires avec createInstance().
+    private var modelAsset: io.github.sceneview.model.Model? = null
     private var vpsReady = false
 
     fun initializeNavigation(arSceneView: ARSceneView, destLat: Double, destLng: Double, destName: String, travelMode: String) {
@@ -55,7 +58,8 @@ class ArNavigationViewModel(application: Application) : AndroidViewModel(applica
         _state.value = _state.value.copy(status = NavStatus.LOCATING, destName = destName)
         viewModelScope.launch {
             try {
-                modelInstance = arSceneView.modelLoader.loadModelInstance("models/arrow_navigation.glb")
+                // FIX : loadModelInstance → loadModelAsync (SceneView 2.x)
+                modelAsset = arSceneView.modelLoader.loadModel("models/arrow_navigation.glb")
             } catch (e: Exception) { Log.e(TAG, "GLB load error", e) }
         }
         viewModelScope.launch { locateAndRoute(destLat, destLng, travelMode) }
@@ -110,8 +114,12 @@ class ArNavigationViewModel(application: Application) : AndroidViewModel(applica
         val view = arView ?: return
         viewModelScope.launch {
             val anchorNode = AnchorNode(engine = view.engine, anchor = anchor)
-            modelInstance?.let { t ->
-                anchorNode.addChildNode(ModelNode(view.modelLoader.createInstance(t), scaleToUnits = 0.9f))
+            // FIX SceneView 2.x : createInstance(asset) — pas createInstance(modelInstance)
+            modelAsset?.let { asset ->
+                val instance = view.modelLoader.createInstance(asset)
+                if (instance != null) {
+                    anchorNode.addChildNode(ModelNode(instance, scaleToUnits = 0.9f))
+                }
             }
             view.addChildNode(anchorNode)
             arrowNodes[idx] = anchorNode
@@ -144,7 +152,7 @@ class ArNavigationViewModel(application: Application) : AndroidViewModel(applica
 
     fun cleanup() {
         arrowNodes.values.forEach { arView?.removeChildNode(it) }
-        arrowNodes.clear(); geo.cleanup(); modelInstance = null; arView = null
+        arrowNodes.clear(); geo.cleanup(); modelAsset = null; arView = null
     }
     override fun onCleared() { super.onCleared(); cleanup() }
 }
