@@ -743,21 +743,22 @@ function MapScreen({ stations, sel, setSel, gpsPos }) {
     </div>
   );
 
-  // ── Bounding box ────────────────────────────────────────────────
-  const margin=0.006;
+  // ── Bounding box avec marge généreuse → toutes les stations visibles d'emblée
+  const margin=0.012;
   const lats=stations.map(s=>s.lat), lngs=stations.map(s=>s.lng);
   const ltMin=Math.min(...lats)-margin, ltMax=Math.max(...lats)+margin;
   const lnMin=Math.min(...lngs)-margin, lnMax=Math.max(...lngs)+margin;
-  const toXY=(la,ln)=>({ x:(ln-lnMin)/(lnMax-lnMin)*88+6, y:(1-(la-ltMin)/(ltMax-ltMin))*86+5 });
+  // toXY en % avec padding interne 5% → les dots ne sortent jamais du bord
+  const toXY=(la,ln)=>({ x:(ln-lnMin)/(lnMax-lnMin)*90+5, y:(1-(la-ltMin)/(ltMax-ltMin))*90+5 });
   const ux=toXY(gpsPos?.lat??REF.lat, gpsPos?.lng??REF.lng);
 
   // ── Pan / Zoom state ────────────────────────────────────────────
   const [view,setView]=useState({x:0,y:0,s:1});
   const viewRef=useRef({x:0,y:0,s:1});
   const containerRef=useRef(null);
-  const ptrs=useRef(new Map());         // pointerId → [cx, cy]
-  const gesture=useRef(null);           // pan | pinch data
-  const didMove=useRef(false);          // true si drag >5px
+  const ptrs=useRef(new Map());
+  const gesture=useRef(null);
+  const didMove=useRef(false);
 
   const applyView=useCallback(v=>{
     viewRef.current=v;
@@ -768,45 +769,32 @@ function MapScreen({ stations, sel, setSel, gpsPos }) {
     e.currentTarget.setPointerCapture(e.pointerId);
     ptrs.current.set(e.pointerId,[e.clientX,e.clientY]);
     didMove.current=false;
-
     if(ptrs.current.size===1){
-      gesture.current={
-        type:"pan",
-        ox:e.clientX, oy:e.clientY,
-        vx:viewRef.current.x, vy:viewRef.current.y,
-      };
+      gesture.current={ type:"pan", ox:e.clientX, oy:e.clientY, vx:viewRef.current.x, vy:viewRef.current.y };
     } else if(ptrs.current.size===2){
       const [[x1,y1],[x2,y2]]=[...ptrs.current.values()];
-      gesture.current={
-        type:"pinch",
-        d0:Math.hypot(x2-x1,y2-y1),
-        s0:viewRef.current.s,
-        vx:viewRef.current.x, vy:viewRef.current.y,
-        cx:(x1+x2)/2, cy:(y1+y2)/2,
-      };
+      gesture.current={ type:"pinch", d0:Math.hypot(x2-x1,y2-y1), s0:viewRef.current.s,
+        vx:viewRef.current.x, vy:viewRef.current.y, cx:(x1+x2)/2, cy:(y1+y2)/2 };
     }
   },[]);
 
   const onPtrMove=useCallback(e=>{
     ptrs.current.set(e.pointerId,[e.clientX,e.clientY]);
     const g=gesture.current; if(!g) return;
-
     if(g.type==="pan"){
       const dx=e.clientX-g.ox, dy=e.clientY-g.oy;
       if(Math.hypot(dx,dy)>5) didMove.current=true;
       if(didMove.current) applyView({...viewRef.current, x:g.vx+dx, y:g.vy+dy});
-
     } else if(g.type==="pinch"){
       didMove.current=true;
       const [[x1,y1],[x2,y2]]=[...ptrs.current.values()];
       const d=Math.hypot(x2-x1,y2-y1);
-      const ns=Math.max(0.8,Math.min(5,g.s0*d/g.d0));
-      // Zoom vers le centre du pinch
+      const ns=Math.max(1,Math.min(8,g.s0*d/g.d0)); // min 1 = pas de dézoom sous vue totale
       const rect=containerRef.current?.getBoundingClientRect();
       if(!rect) return;
       const lx=g.cx-rect.left, ly=g.cy-rect.top;
-      const cx_content=(lx-g.vx)/g.s0, cy_content=(ly-g.vy)/g.s0;
-      applyView({ s:ns, x:lx-cx_content*ns, y:ly-cy_content*ns });
+      const cx_c=(lx-g.vx)/g.s0, cy_c=(ly-g.vy)/g.s0;
+      applyView({ s:ns, x:lx-cx_c*ns, y:ly-cy_c*ns });
     }
   },[applyView]);
 
@@ -814,24 +802,61 @@ function MapScreen({ stations, sel, setSel, gpsPos }) {
     ptrs.current.delete(e.pointerId);
     if(ptrs.current.size===0) gesture.current=null;
     else if(ptrs.current.size===1){
-      // Retour en mode pan après fin du pinch
-      const [pid,[cx,cy]]=[...ptrs.current.entries()][0];
-      gesture.current={
-        type:"pan",
-        ox:cx, oy:cy,
-        vx:viewRef.current.x, vy:viewRef.current.y,
-      };
+      const [,[cx,cy]]=[...ptrs.current.entries()][0];
+      gesture.current={ type:"pan", ox:cx, oy:cy, vx:viewRef.current.x, vy:viewRef.current.y };
     }
   },[]);
 
+  // Zoom buttons
+  const zoomIn  = useCallback(()=>{
+    const v=viewRef.current; const ns=Math.min(8,v.s*1.5);
+    const rect=containerRef.current?.getBoundingClientRect(); if(!rect) return;
+    const cx=rect.width/2, cy=rect.height/2;
+    applyView({ s:ns, x:cx-(cx-v.x)/v.s*ns, y:cy-(cy-v.y)/v.s*ns });
+  },[applyView]);
+  const zoomOut = useCallback(()=>{
+    const v=viewRef.current; const ns=Math.max(1,v.s/1.5);
+    if(ns===1){ applyView({x:0,y:0,s:1}); return; }
+    const rect=containerRef.current?.getBoundingClientRect(); if(!rect) return;
+    const cx=rect.width/2, cy=rect.height/2;
+    applyView({ s:ns, x:cx-(cx-v.x)/v.s*ns, y:cy-(cy-v.y)/v.s*ns });
+  },[applyView]);
   const resetView=useCallback(()=>applyView({x:0,y:0,s:1}),[applyView]);
-  const isPanned=Math.abs(view.x)>4||Math.abs(view.y)>4||Math.abs(view.s-1)>0.05;
+
+  // Centre sur la position utilisateur
+  const centerOnUser=useCallback(()=>{
+    const rect=containerRef.current?.getBoundingClientRect(); if(!rect) return;
+    const ns=3;
+    const px=ux.x/100*rect.width, py=ux.y/100*rect.height;
+    applyView({ s:ns, x:rect.width/2-px*ns, y:rect.height/2-py*ns });
+  },[applyView,ux]);
+
+  const isPanned=Math.abs(view.x)>4||Math.abs(view.y)>4||view.s>1.05;
+  const selStation=stations.find(s=>s.id===sel);
+
+  // Stats résumées
+  const nDispo=stations.filter(s=>s.bikes>0&&s.status==="OPEN").length;
+  const nVide=stations.filter(s=>s.bikes===0&&s.status==="OPEN").length;
+  const nFerme=stations.filter(s=>s.status==="CLOSED").length;
 
   return (
-    <div style={{ flex:1,display:"flex",flexDirection:"column",background:C.bg,minHeight:0 }}>
+    <div style={{ flex:1,display:"flex",flexDirection:"column",background:C.bg,minHeight:0,position:"relative" }}>
+
+      {/* ── Barre stats en haut ─────────────────────────── */}
+      <div style={{ display:"flex",gap:8,padding:"8px 14px 6px",flexShrink:0,alignItems:"center" }}>
+        <div style={{ color:C.muted,fontSize:7,fontFamily:C.fnt,flex:1 }}>
+          <span style={{ color:C.good,fontWeight:700 }}>{nDispo}</span> dispo ·{" "}
+          <span style={{ color:C.warn }}>{nVide}</span> vide ·{" "}
+          <span style={{ color:"#555" }}>{nFerme}</span> fermé ·{" "}
+          <span style={{ color:C.muted }}>{stations.length} total</span>
+        </div>
+        {gpsPos&&<div style={{ color:C.blue,fontSize:7,fontFamily:C.fnt }}>±{gpsPos.acc}m</div>}
+      </div>
+
+      {/* ── Carte ────────────────────────────────────────── */}
       <div ref={containerRef}
-        style={{ flex:1,position:"relative",margin:"8px 14px",
-          background:"rgba(0,0,0,0.5)",border:`1px solid ${C.border}`,borderRadius:8,
+        style={{ flex:1,position:"relative",margin:"0 10px 6px",
+          background:"rgba(4,8,12,0.95)",border:`1px solid ${C.border}`,borderRadius:10,
           overflow:"hidden",touchAction:"none",userSelect:"none" }}
         onPointerDown={onPtrDown}
         onPointerMove={onPtrMove}
@@ -842,78 +867,171 @@ function MapScreen({ stations, sel, setSel, gpsPos }) {
         <div style={{
           position:"absolute",inset:0,
           transform:`translate(${view.x}px,${view.y}px) scale(${view.s})`,
-          transformOrigin:"0 0",
-          willChange:"transform",
+          transformOrigin:"0 0", willChange:"transform",
         }}>
-          {/* Grille */}
-          <svg style={{ position:"absolute",inset:0,width:"100%",height:"100%",opacity:0.03,pointerEvents:"none" }}>
-            <defs><pattern id="mg" width="44" height="44" patternUnits="userSpaceOnUse">
-              <path d="M44 0L0 0 0 44" fill="none" stroke={C.accent} strokeWidth="0.5"/>
+          {/* Grille subtile */}
+          <svg style={{ position:"absolute",inset:0,width:"100%",height:"100%",opacity:0.025,pointerEvents:"none" }}>
+            <defs><pattern id="mg" width="40" height="40" patternUnits="userSpaceOnUse">
+              <path d="M40 0L0 0 0 40" fill="none" stroke={C.accent} strokeWidth="0.4"/>
             </pattern></defs>
             <rect width="100%" height="100%" fill="url(#mg)"/>
           </svg>
 
-          {/* Croquis SVG */}
+          {/* Croquis SVG Luxembourg */}
           <LuxMap toXY={toXY}/>
 
-          {/* Stations */}
+          {/* Stations — dot adaptatif selon zoom */}
           {stations.map(s=>{
-            const {x,y}=toXY(s.lat,s.lng); const col=bCol(s); const act=sel===s.id;
+            const {x,y}=toXY(s.lat,s.lng);
+            const col=bCol(s);
+            const act=sel===s.id;
+            // Taille inversement proportionnelle au zoom — reste lisible à toute échelle
+            const dotR = act ? 7 : Math.max(4, 7/view.s);
             return (
               <div key={s.id}
                 onPointerDown={e=>e.stopPropagation()}
                 onClick={()=>{ if(!didMove.current) setSel(act?null:s.id); }}
-                style={{ position:"absolute",left:`${x}%`,top:`${y}%`,
-                  transform:"translate(-50%,-50%)",width:36,height:36,
+                style={{ position:"absolute", left:`${x}%`, top:`${y}%`,
+                  transform:"translate(-50%,-50%)",
+                  width:Math.max(28,dotR*4), height:Math.max(28,dotR*4),
                   display:"flex",alignItems:"center",justifyContent:"center",
-                  cursor:"pointer",zIndex:act?15:8 }}>
-                {act&&<div style={{ position:"absolute",inset:4,borderRadius:"50%",
-                  border:`1.5px solid ${col}`,opacity:0.5 }}/>}
-                <div style={{ width:act?13:8,height:act?13:8,borderRadius:"50%",background:col,
-                  boxShadow:`0 0 6px ${col}`,border:`2px solid ${act?"#fff":"rgba(0,0,0,0.5)"}`,
-                  transition:"all 0.18s" }}/>
+                  cursor:"pointer", zIndex:act?20:8 }}>
+                {/* Pulse ring si sélectionné */}
+                {act&&<div style={{ position:"absolute", width:dotR*4, height:dotR*4,
+                  borderRadius:"50%", border:`1.5px solid ${col}`,
+                  animation:"pulse 1.2s ease-in-out infinite", opacity:0.6 }}/>}
+                {/* Dot principal */}
+                <div style={{
+                  width:dotR*2, height:dotR*2, borderRadius:"50%",
+                  background: act ? col : s.status==="CLOSED" ? "#333" : col,
+                  boxShadow: act ? `0 0 10px ${col}, 0 0 3px ${col}` : `0 0 ${dotR}px ${col}60`,
+                  border:`${act?2:1}px solid ${act?"#fff":col+"80"}`,
+                  transition:"all 0.15s",
+                }}/>
+                {/* Label au zoom ×3+ */}
+                {(view.s>=3||act)&&(
+                  <div style={{ position:"absolute", top:"100%", left:"50%",
+                    transform:"translateX(-50%)", marginTop:2,
+                    background:"rgba(6,10,14,0.92)", border:`1px solid ${col}44`,
+                    borderRadius:3, padding:"2px 5px", whiteSpace:"nowrap",
+                    pointerEvents:"none", zIndex:30 }}>
+                    <div style={{ color:act?col:C.text, fontSize:Math.max(7,9/view.s),
+                      fontFamily:C.fnt, fontWeight:700, lineHeight:1 }}>
+                      {s.name.length>18?s.name.slice(0,17)+"…":s.name}
+                    </div>
+                    <div style={{ color:col, fontSize:Math.max(6,8/view.s),
+                      fontFamily:C.fnt, lineHeight:1.2 }}>
+                      {s.bikes}🚲 {s.elec>0?`⚡${s.elec} `:""}{fDist(s.dist)}
+                    </div>
+                  </div>
+                )}
               </div>
             );
           })}
 
           {/* Position utilisateur */}
           <div style={{ position:"absolute",left:`${ux.x}%`,top:`${ux.y}%`,
-            transform:"translate(-50%,-50%)",zIndex:20,pointerEvents:"none" }}>
-            <div style={{ position:"absolute",inset:-8,borderRadius:"50%",border:"2px solid rgba(59,130,246,0.5)"}}/>
-            <div style={{ width:10,height:10,borderRadius:"50%",background:C.blue,boxShadow:`0 0 10px ${C.blue}` }}/>
+            transform:"translate(-50%,-50%)",zIndex:25,pointerEvents:"none" }}>
+            <div style={{ position:"absolute",width:20,height:20,borderRadius:"50%",
+              top:-5,left:-5,border:`1.5px solid ${C.blue}55`}}/>
+            <div style={{ width:10,height:10,borderRadius:"50%",background:C.blue,
+              boxShadow:`0 0 12px ${C.blue}` }}/>
           </div>
         </div>
 
-        {/* Bouton reset — visible si déplacé/zoomé */}
+        {/* ── Boutons zoom (fixe) ─────────────────── */}
+        <div style={{ position:"absolute",right:10,bottom:isPanned?50:14,zIndex:30,
+          display:"flex",flexDirection:"column",gap:4 }}>
+          {[["＋",zoomIn],["－",zoomOut]].map(([icon,fn])=>(
+            <div key={icon} onPointerDown={e=>{e.stopPropagation();fn();}}
+              style={{ width:32,height:32,background:"rgba(8,12,15,0.92)",
+                border:`1px solid ${C.border}`,borderRadius:6,cursor:"pointer",
+                display:"flex",alignItems:"center",justifyContent:"center",
+                color:C.text,fontSize:16,fontFamily:C.fnt,
+                boxShadow:"0 2px 8px rgba(0,0,0,0.5)" }}>
+              {icon}
+            </div>
+          ))}
+          {/* Centrer sur moi */}
+          {gpsPos&&<div onPointerDown={e=>{e.stopPropagation();centerOnUser();}}
+            style={{ width:32,height:32,background:"rgba(8,12,15,0.92)",
+              border:`1px solid ${C.blue}55`,borderRadius:6,cursor:"pointer",
+              display:"flex",alignItems:"center",justifyContent:"center",
+              fontSize:14, boxShadow:"0 2px 8px rgba(0,0,0,0.5)" }}>
+            📍
+          </div>}
+        </div>
+
+        {/* Bouton reset */}
         {isPanned&&(
           <div onPointerDown={e=>{e.stopPropagation();resetView();}}
-            style={{ position:"absolute",top:8,right:8,zIndex:30,
-              background:"rgba(8,12,15,0.90)",border:`1px solid ${C.accent}55`,
+            style={{ position:"absolute",bottom:14,right:10,zIndex:30,
+              background:"rgba(8,12,15,0.92)",border:`1px solid ${C.accent}55`,
               borderRadius:5,padding:"5px 10px",cursor:"pointer",
-              display:"flex",alignItems:"center",gap:5 }}>
-            <span style={{ color:C.accent,fontSize:9,fontFamily:C.fnt,letterSpacing:1 }}>⊙ RESET</span>
+              display:"flex",alignItems:"center",gap:4 }}>
+            <span style={{ color:C.accent,fontSize:8,fontFamily:C.fnt,letterSpacing:1 }}>⊙ TOUT</span>
           </div>
         )}
 
-        {/* Zoom indicator */}
-        {view.s>1.15&&(
-          <div style={{ position:"absolute",bottom:8,right:8,zIndex:30,pointerEvents:"none",
+        {/* Zoom level */}
+        {view.s>1.2&&(
+          <div style={{ position:"absolute",top:8,left:8,zIndex:30,pointerEvents:"none",
             background:"rgba(8,12,15,0.80)",border:`1px solid ${C.border}`,
-            borderRadius:4,padding:"3px 7px" }}>
+            borderRadius:4,padding:"2px 6px" }}>
             <span style={{ color:C.muted,fontSize:7,fontFamily:C.fnt }}>×{view.s.toFixed(1)}</span>
           </div>
         )}
       </div>
 
-      {/* Légende */}
-      <div style={{ display:"flex",gap:12,padding:"7px 14px 10px",borderTop:`1px solid ${C.border}` }}>
-        {[[C.good,"Dispo"],[C.warn,"Faible"],[C.bad,"Vide"],["#444","Fermé"],[C.blue,"Vous"]].map(([c,l])=>(
-          <div key={l} style={{ display:"flex",alignItems:"center",gap:4 }}>
-            <div style={{ width:7,height:7,borderRadius:"50%",background:c,boxShadow:`0 0 4px ${c}` }}/>
-            <span style={{ color:C.muted,fontSize:7,fontFamily:C.fnt }}>{l}</span>
+      {/* ── Panel station sélectionnée (bas) ─────── */}
+      {selStation ? (
+        <div style={{ flexShrink:0, margin:"0 10px 10px",
+          background:"rgba(8,12,15,0.97)", border:`1px solid ${C.border}`,
+          borderTop:`2px solid ${bCol(selStation)}`, borderRadius:8,
+          padding:"11px 14px" }}>
+          <div style={{ display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:8 }}>
+            <div>
+              <div style={{ color:C.muted,fontSize:7,fontFamily:C.fnt,letterSpacing:1.5,marginBottom:2 }}>
+                {bTag(selStation)} · {fDist(selStation.dist)} · {fWalk(selStation.dist)} à pied
+                {selStation._mock&&" · données simulées"}
+              </div>
+              <div style={{ color:C.text,fontSize:14,fontFamily:C.fnt,fontWeight:700 }}>{selStation.name}</div>
+            </div>
+            <div onPointerDown={()=>setSel(null)}
+              style={{ padding:"5px 8px",background:"rgba(255,255,255,0.04)",
+                border:`1px solid ${C.border}`,borderRadius:4,color:C.muted,
+                fontSize:11,cursor:"pointer",flexShrink:0 }}>✕</div>
           </div>
-        ))}
-      </div>
+          <div style={{ display:"flex",borderTop:`1px solid ${C.border}`,paddingTop:9 }}>
+            {[
+              {l:"VÉLOS",  v:selStation.bikes, col:bCol(selStation)},
+              {l:"⚡ÉLEC", v:selStation.elec,  col:"#60A5FA"},
+              {l:"🔧MÉCA", v:selStation.meca,  col:C.text},
+              {l:"DOCKS",  v:selStation.docks, col:C.good},
+              {l:"CAP.",   v:selStation.cap,   col:C.muted},
+            ].map((m,i)=>(
+              <div key={m.l} style={{ flex:1,textAlign:"center",
+                borderRight:i<4?`1px solid ${C.border}`:"none" }}>
+                <div style={{ color:m.col,fontSize:18,fontFamily:C.fnt,fontWeight:700 }}>{m.v}</div>
+                <div style={{ color:C.muted,fontSize:6,fontFamily:C.fnt,letterSpacing:0.5,marginTop:1 }}>{m.l}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : (
+        /* ── Légende compacte quand rien n'est sélectionné ── */
+        <div style={{ display:"flex",gap:10,padding:"5px 14px 10px",flexShrink:0,alignItems:"center" }}>
+          {[[C.good,"Dispo"],[C.warn,"Faible"],[C.bad,"Vide"],["#444","Fermé"],[C.blue,"Vous"]].map(([c,l])=>(
+            <div key={l} style={{ display:"flex",alignItems:"center",gap:3 }}>
+              <div style={{ width:6,height:6,borderRadius:"50%",background:c,boxShadow:`0 0 4px ${c}` }}/>
+              <span style={{ color:C.muted,fontSize:7,fontFamily:C.fnt }}>{l}</span>
+            </div>
+          ))}
+          <span style={{ color:C.muted,fontSize:7,fontFamily:C.fnt,marginLeft:"auto" }}>
+            Zoom ×3 → labels
+          </span>
+        </div>
+      )}
     </div>
   );
 }
