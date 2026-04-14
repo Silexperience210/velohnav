@@ -4,11 +4,13 @@ buildscript {
         mavenCentral()
     }
     dependencies {
-        // AGP 8.9.1 : minimum requis par androidx.activity:1.11.0 + core:1.17.0
+        // AGP 8.9.1 requis par androidx.activity:1.11.0 + core:1.17.0
         classpath 'com.android.tools.build:gradle:8.9.1'
         classpath 'com.google.gms:google-services:4.4.4'
-        // Kotlin 1.9.24 : stable, compatible Compose 1.5.14
-        classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:1.9.24"
+        // Kotlin 2.1.0 : compatible avec stdlib 2.1.0 et coroutines 1.10.2
+        // tirés en transitif. @capacitor/geolocation supprimé (Kotlin 1.9 interne
+        // incompatible avec stdlib 2.1.0, aucune config root ne peut l'overrider).
+        classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:2.1.0"
     }
 }
 
@@ -19,21 +21,4 @@ allprojects {
         google()
         mavenCentral()
     }
-}
-
-// @capacitor/geolocation@8.2.0 a allWarningsAsErrors=true dans son build.gradle.
-// Ce bloc le force à false pour tous les sous-projets (Capacitor inclus),
-// éliminant l'erreur SUSPEND_CALL_FROM_WRONG_CONTEXT.
-subprojects {
-    afterEvaluate {
-        tasks.withType(org.jetbrains.kotlin.gradle.tasks.KotlinCompile).configureEach {
-            kotlinOptions {
-                allWarningsAsErrors = false
-            }
-        }
-    }
-}
-
-task clean(type: Delete) {
-    delete rootProject.buildDir
 }

@@ -1,20 +1,12 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 
-// ── CAPACITOR DETECTION ───────────────────────────────────────────
-const IS_NATIVE = typeof window !== "undefined" &&
-  !!(window.Capacitor?.isNativePlatform?.() || window.Capacitor?.platform === "android");
+// ── GPS ───────────────────────────────────────────────────────────
+// @capacitor/geolocation supprimé : son Kotlin 1.9 interne est incompatible
+// avec stdlib 2.1.0 tirée en transitif → build impossible.
+// navigator.geolocation fonctionne nativement dans le WebView Capacitor Android
+// (permissions ACCESS_FINE_LOCATION déjà dans AndroidManifest.xml).
 
 async function startWatchingGPS(cb) {
-  if (IS_NATIVE) {
-    try {
-      const { Geolocation } = await import("@capacitor/geolocation");
-      await Geolocation.requestPermissions();
-      const id = await Geolocation.watchPosition({ enableHighAccuracy:true }, (pos) => {
-        if (pos?.coords) cb({ lat:pos.coords.latitude, lng:pos.coords.longitude, acc:Math.round(pos.coords.accuracy) });
-      });
-      return () => Geolocation.clearWatch({ id });
-    } catch(e) { console.warn("Native GPS watch:", e); }
-  }
   if (!navigator.geolocation) return () => {};
   const id = navigator.geolocation.watchPosition(
     p => cb({ lat:p.coords.latitude, lng:p.coords.longitude, acc:Math.round(p.coords.accuracy) }),
@@ -24,19 +16,18 @@ async function startWatchingGPS(cb) {
   return () => navigator.geolocation.clearWatch(id);
 }
 
-// JCDecaux — fetch direct en natif, proxy CORS en web prototype
+// JCDecaux — fetch direct, fallback proxy CORS si bloqué (prototype web)
 async function fetchJCDecaux(apiKey) {
   const url = `https://api.jcdecaux.com/vls/v3/stations?contract=Luxembourg&apiKey=${apiKey}`;
   try {
     const r = await fetch(url);
     if (r.ok) return await r.json();
   } catch {}
-  if (!IS_NATIVE) {
-    try {
-      const r = await fetch(`https://corsproxy.io/?${encodeURIComponent(url)}`);
-      if (r.ok) return await r.json();
-    } catch {}
-  }
+  // Fallback proxy CORS pour prototype web (ne pas utiliser en prod — expose la clé)
+  try {
+    const r = await fetch(`https://corsproxy.io/?${encodeURIComponent(url)}`);
+    if (r.ok) return await r.json();
+  } catch {}
   return null;
 }
 
