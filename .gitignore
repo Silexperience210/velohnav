@@ -10,8 +10,15 @@ android/app/build/
 android/.gradle/
 android/local.properties
 
+# SÉCURITÉ : fichiers sensibles à ne JAMAIS commiter
+android/app/google-services.json
+android/app/src/main/assets/google-services.json
+
 # env
 .env
 .env.local
 .DS_Store
 *.local
+
+# Répertoires dupliqués / parasites
+velohnav-main/

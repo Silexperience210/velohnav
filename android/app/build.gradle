@@ -24,8 +24,13 @@ android {
 
     buildTypes {
         release {
+            // FIX : minifyEnabled activé → R8 réduit l'APK et obfusque le code en prod
+            minifyEnabled true
+            shrinkResources true
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+        debug {
             minifyEnabled false
-            proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
         }
     }
 
@@ -65,6 +70,8 @@ dependencies {
     implementation "androidx.appcompat:appcompat:$androidxAppCompatVersion"
     implementation "androidx.coordinatorlayout:coordinatorlayout:$androidxCoordinatorLayoutVersion"
     implementation "androidx.core:core-splashscreen:$coreSplashScreenVersion"
+    // FIX : requis pour Theme.Material3.DayNight.NoActionBar dans styles.xml
+    implementation 'com.google.android.material:material:1.12.0'
     implementation project(':capacitor-android')
     implementation project(':capacitor-cordova-android-plugins')
     testImplementation "junit:junit:$junitVersion"

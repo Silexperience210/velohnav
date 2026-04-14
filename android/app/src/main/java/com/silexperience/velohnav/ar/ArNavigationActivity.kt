@@ -28,6 +28,13 @@ class ArNavigationActivity : ComponentActivity() {
     private val viewModel: ArNavigationViewModel by viewModels()
     private lateinit var arView: ARSceneView
 
+    // Paramètres de navigation stockés pour être utilisés dans startAr()
+    // (appelé après que l'utilisateur accorde les permissions)
+    private var pendingDestLat: Double = 0.0
+    private var pendingDestLng: Double = 0.0
+    private var pendingDestName: String = "Destination"
+    private var pendingTravelMode: String = "bicycling"
+
     private val permLauncher = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { results ->
         if (results.all { it.value }) startAr()
         else { Toast.makeText(this, "Caméra et localisation requis", Toast.LENGTH_LONG).show(); finish() }
@@ -40,11 +47,11 @@ class ArNavigationActivity : ComponentActivity() {
             hide(WindowInsetsCompat.Type.systemBars())
             systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
         }
-        val destLat = intent.getDoubleExtra("dest_lat", 0.0)
-        val destLng = intent.getDoubleExtra("dest_lng", 0.0)
-        val destName = intent.getStringExtra("dest_name") ?: "Destination"
-        val mode = intent.getStringExtra("travel_mode") ?: "bicycling"
-        if (destLat == 0.0) { Toast.makeText(this, "Destination invalide", Toast.LENGTH_SHORT).show(); finish(); return }
+        pendingDestLat  = intent.getDoubleExtra("dest_lat", 0.0)
+        pendingDestLng  = intent.getDoubleExtra("dest_lng", 0.0)
+        pendingDestName = intent.getStringExtra("dest_name") ?: "Destination"
+        pendingTravelMode = intent.getStringExtra("travel_mode") ?: "bicycling"
+        if (pendingDestLat == 0.0) { Toast.makeText(this, "Destination invalide", Toast.LENGTH_SHORT).show(); finish(); return }
 
         setContent {
             VelohNavArTheme {
@@ -64,7 +71,9 @@ class ArNavigationActivity : ComponentActivity() {
                                         viewModel.onEarthTracking(e, frame)
                                 }
                             }
-                            checkPermissions { viewModel.initializeNavigation(v, destLat, destLng, destName, mode) }
+                            // Premier lancement : si permissions déjà accordées, init directe.
+                            // Sinon, permLauncher → startAr() → initializeNavigation().
+                            checkPermissions { viewModel.initializeNavigation(v, pendingDestLat, pendingDestLng, pendingDestName, pendingTravelMode) }
                         }
                     }, Modifier.fillMaxSize())
                     NavigationHud(state=state, onClose={ finish() })
@@ -78,7 +87,17 @@ class ArNavigationActivity : ComponentActivity() {
         if (perms.all { ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED }) onGranted()
         else permLauncher.launch(perms)
     }
-    private fun startAr() { /* permissions ok */ }
+
+    /**
+     * FIX BUG CRITIQUE : cette méthode était vide.
+     * Appelée par permLauncher APRÈS que l'utilisateur accorde les permissions.
+     * Sans ce fix : la navigation ne démarrait JAMAIS lors d'un premier lancement
+     * (permissions non encore accordées au moment du onCreate).
+     */
+    private fun startAr() {
+        val v = arView ?: return
+        viewModel.initializeNavigation(v, pendingDestLat, pendingDestLng, pendingDestName, pendingTravelMode)
+    }
     override fun onResume()  { super.onResume();  if (::arView.isInitialized) arView.resume() }
     override fun onPause()   { super.onPause();   if (::arView.isInitialized) arView.pause() }
     override fun onDestroy() { super.onDestroy(); if (::arView.isInitialized) arView.destroy(); viewModel.cleanup() }

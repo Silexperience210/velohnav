@@ -80,21 +80,26 @@ function getBearing(la1,ln1,la2,ln2){
   return(Math.atan2(y,x)*180/Math.PI+360)%360;
 }
 const fDist = m => m<1000 ? `${m}m` : `${(m/1000).toFixed(1)}km`;
-const fWalk = m => `${Math.round(m/80)} min`;
+// FIX : Math.round(0/80) = 0 → affichait "0 min". Math.ceil + seuil < 1 min.
+const fWalk = m => m < 40 ? "< 1 min" : `${Math.ceil(m/80)} min`;
 const bCol  = s => s.status==="CLOSED"?"#444":s.bikes===0?C.bad:s.bikes<=2?C.warn:C.good;
 const bTag  = s => s.status==="CLOSED"?"FERMÉ":s.bikes===0?"VIDE":s.bikes<=2?"FAIBLE":"DISPO";
 
 function parseStation(raw) {
   const av = raw.totalStands?.availabilities ?? {};
+  // FIX : meca était toujours 0. JCDecaux v3 expose bien mechanicalBikes.
+  const elec  = av.electricalBikes ?? av.electricalInternalBatteryBikes ?? av.electricalExternalBatteryBikes ?? 0;
+  const bikes = av.bikes ?? raw.available_bikes ?? 0;
+  const meca  = av.mechanicalBikes ?? Math.max(0, bikes - elec);
   return {
     id:    raw.number,
     name:  (raw.name||"").replace(/^\d+[\s\-]+/,"").trim(),
     lat:   raw.position?.latitude  ?? raw.position?.lat,
     lng:   raw.position?.longitude ?? raw.position?.lng,
     cap:   raw.totalStands?.capacity ?? raw.bike_stands ?? 0,
-    bikes: av.bikes ?? raw.available_bikes ?? 0,
-    elec:  av.electricalBikes ?? av.electricalInternalBatteryBikes ?? 0,
-    meca:  0,
+    bikes,
+    elec,
+    meca,
     docks: av.stands ?? raw.available_bike_stands ?? 0,
     status: raw.status==="OPEN" ? "OPEN" : "CLOSED",
     _mock: false,
@@ -622,8 +627,9 @@ function ARScreen({ stations, sel, setSel, gpsPos }) {
             <div style={{display:"flex",borderTop:`1px solid ${C.border}`,paddingTop:11}}>
               {[
                 {l:"VÉLOS",v:navStation.bikes,col:bCol(navStation)},
-                {l:"ÉLEC.", v:navStation.elec, col:"#60A5FA"},
-                {l:"DOCKS",v:navStation.docks,col:C.text},
+                {l:"⚡ ÉLEC.",v:navStation.elec, col:"#60A5FA"},
+                {l:"🔧 MÉCA.",v:navStation.meca, col:C.text},
+                {l:"DOCKS",v:navStation.docks,col:C.good},
                 {l:"CAP.",  v:navStation.cap,  col:C.muted},
               ].map((m,i)=>(
                 <div key={m.l} style={{flex:1,textAlign:"center",borderRight:i<3?`1px solid ${C.border}`:"none"}}>
@@ -951,7 +957,7 @@ function AIScreen({ stations, claudeKey, aiHistory, setAiHistory, aiDisplay, set
   const endRef = useRef();
   useEffect(()=>endRef.current?.scrollIntoView({behavior:"smooth"}),[aiDisplay]);
 
-  // Update greeting when stations switch from mock to live
+  // Mise à jour du message d'accueil quand les données passent de mock → live
   useEffect(()=>{
     if (aiHistory.length === 0) {
       setAiDisplay([{ role:"ai", text:initMsg }]);
@@ -959,11 +965,14 @@ function AIScreen({ stations, claudeKey, aiHistory, setAiHistory, aiDisplay, set
   // eslint-disable-next-line react-hooks/exhaustive-deps
   },[stations]);
 
-  const systemPrompt = `Tu es VELOH·AI, l'assistant de VelohNav pour le réseau Vel'OH! Luxembourg.
+  // FIX : systemPrompt dans useMemo — évite de recréer sendText à chaque render
+  // et élimine le risque de closure stale sur une const recalculée inline.
+  const systemPrompt = useMemo(()=>`Tu es VELOH·AI, l'assistant de VelohNav pour le réseau Vel'OH! Luxembourg.
 Réponds en français, de façon concise (3-4 lignes max).
 Données actuelles (triées par distance) :
-${stations.map(s=>`• ${s.name} | ${s.bikes} vélos (⚡${s.elec} élec.) | ${s.docks} docks | ${fDist(s.dist)} | ${bTag(s)}`).join("\n")}
-Réponds uniquement sur la mobilité Veloh, les itinéraires, ou l'app.`;
+${stations.map(s=>`• ${s.name} | ${s.bikes} vélos (⚡${s.elec} élec., 🔧${s.meca} méca.) | ${s.docks} docks | ${fDist(s.dist)} | ${bTag(s)}`).join("\n")}
+Réponds uniquement sur la mobilité Veloh, les itinéraires, ou l'app.`
+  ,[stations]);
 
   const sendText = useCallback(async(text)=>{
     const q=(text||input).trim();
@@ -974,7 +983,8 @@ Réponds uniquement sur la mobilité Veloh, les itinéraires, ou l'app.`;
     }
     setInput(""); setBusy(true);
     setAiDisplay(d=>[...d,{role:"user",text:q}]);
-    const hist=[...aiHistory,{role:"user",content:q}];
+    // FIX : historique borné à 20 messages max → évite de dépasser le context window Claude
+    const hist = [...aiHistory,{role:"user",content:q}].slice(-20);
     try {
       const r = await fetch("https://api.anthropic.com/v1/messages",{
         method:"POST",
@@ -989,14 +999,19 @@ Réponds uniquement sur la mobilité Veloh, les itinéraires, ou l'app.`;
       });
       const data = await r.json();
       if (!r.ok) {
-        const errMsg = data?.error?.message ?? `Erreur API (${r.status})`;
+        // FIX : cas spécial 401 → message clair pour l'utilisateur
+        const errMsg = r.status === 401
+          ? "Clé Claude invalide — vérifie-la dans OPT."
+          : data?.error?.message ?? `Erreur API (${r.status})`;
         setAiDisplay(d=>[...d,{role:"ai",text:`⚠ ${errMsg}`}]);
       } else {
         const reply = data.content?.[0]?.text ?? "Erreur de réponse.";
         setAiHistory([...hist,{role:"assistant",content:reply}]);
         setAiDisplay(d=>[...d,{role:"ai",text:reply}]);
       }
-    } catch { setAiDisplay(d=>[...d,{role:"ai",text:"Erreur réseau."}]); }
+    } catch(e) {
+      setAiDisplay(d=>[...d,{role:"ai",text:`Erreur réseau : ${e.message ?? "connexion impossible"}.`}]);
+    }
     setBusy(false);
   },[input,busy,aiHistory,claudeKey,systemPrompt,setAiHistory,setAiDisplay]);
 
@@ -1071,7 +1086,14 @@ function SettingsScreen({ apiKey, setApiKey, claudeKey, setClaudeKey, onRefresh,
 
   const saveKey=()=>{ setApiKey(draft.trim()); setSaved(true); setTimeout(()=>{ setSaved(false); onRefresh(); },1200); };
   const saveClaudeKey=()=>{ setClaudeKey(claudeDraft.trim()); setClaudeSaved(true); setTimeout(()=>setClaudeSaved(false),1500); };
-  const saveLn=()=>{ setLnSaved(true); setTimeout(()=>setLnSaved(false),1500); };
+  // FIX : validation format Lightning Address (user@domain) avant sauvegarde
+  const [lnError, setLnError] = useState("");
+  const saveLn=()=>{
+    const addr = lnAddr.trim();
+    const valid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(addr);
+    if (addr && !valid) { setLnError("Format invalide — ex: toi@getalby.com"); return; }
+    setLnError(""); setLnSaved(true); setTimeout(()=>setLnSaved(false),1500);
+  };
 
   const Toggle=({label,sub,val,set})=>(
     <div style={{ display:"flex",justifyContent:"space-between",alignItems:"center",
@@ -1160,8 +1182,9 @@ function SettingsScreen({ apiKey, setApiKey, claudeKey, setClaudeKey, onRefresh,
           {lnOn&&<div style={{ paddingBottom:14 }}>
             <div style={{ color:C.muted,fontSize:8,fontFamily:C.fnt,letterSpacing:2,margin:"10px 0 6px" }}>LIGHTNING ADDRESS</div>
             <div style={{ display:"flex",gap:8 }}>
-              <input value={lnAddr} onChange={e=>setLnAddr(e.target.value)} placeholder="toi@getalby.com"
-                style={{ flex:1,background:"rgba(0,0,0,0.4)",border:`1px solid ${C.border}`,
+              <input value={lnAddr} onChange={e=>{setLnAddr(e.target.value);setLnError("");}} placeholder="toi@getalby.com"
+                style={{ flex:1,background:"rgba(0,0,0,0.4)",
+                  border:`1px solid ${lnError?C.bad:C.border}`,
                   borderRadius:4,padding:"8px 10px",color:"#FCD34D",fontSize:11,fontFamily:C.fnt,outline:"none" }}/>
               <div onPointerDown={saveLn} style={{
                 background:lnSaved?"rgba(46,204,143,0.15)":C.accentBg,border:`1px solid ${lnSaved?C.good:C.accent}`,
@@ -1170,6 +1193,7 @@ function SettingsScreen({ apiKey, setApiKey, claudeKey, setClaudeKey, onRefresh,
                 {lnSaved?"✓ OK":"SAVE"}
               </div>
             </div>
+            {lnError&&<div style={{ color:C.bad,fontSize:8,fontFamily:C.fnt,marginTop:4 }}>⚠ {lnError}</div>}
             <div style={{ color:C.muted,fontSize:8,fontFamily:C.fnt,marginTop:7,lineHeight:1.8 }}>
               Alby · WoS · Phoenix · Blink · Zeus{"\n"}LNURL-pay · self-custodial · zéro serveur
             </div>
