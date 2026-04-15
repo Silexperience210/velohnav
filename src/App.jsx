@@ -1,11 +1,35 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import { useI18n, t } from "./i18n.js";
 
 // ── ROUTING — OSRM (gratuit) + fallback Google Directions ────────
 const OSRM_BASE = "https://router.project-osrm.org/route/v1";
+// Clé de cache localStorage : "velohnav_route_{from}_{to}_{mode}"
+const ROUTE_CACHE_TTL = 24 * 60 * 60 * 1000; // 24h
+
+function routeCacheKey(fromLat, fromLng, toLat, toLng, mode) {
+  // Arrondi à 4 décimales (~11m de précision) pour éviter des clés trop granulaires
+  return `velohnav_route_${fromLat.toFixed(4)}_${fromLng.toFixed(4)}_${toLat.toFixed(4)}_${toLng.toFixed(4)}_${mode}`;
+}
+function getRouteCache(key) {
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return null;
+    const { data, ts } = JSON.parse(raw);
+    if (Date.now() - ts > ROUTE_CACHE_TTL) { localStorage.removeItem(key); return null; }
+    return data;
+  } catch { return null; }
+}
+function setRouteCache(key, data) {
+  try { localStorage.setItem(key, JSON.stringify({ data, ts: Date.now() })); } catch {}
+}
 
 async function fetchOSRM(fromLat, fromLng, toLat, toLng, mode="cycling") {
-  // mode : cycling | walking | driving
   const profile = mode==="walking" ? "foot" : mode==="driving" ? "car" : "cycling";
+  const cacheKey = routeCacheKey(fromLat, fromLng, toLat, toLng, mode);
+  // Vérifier le cache local d'abord (itinéraires valides 24h)
+  const cached = getRouteCache(cacheKey);
+  if (cached) return cached;
+
   const url = `${OSRM_BASE}/${profile}/${fromLng},${fromLat};${toLng},${toLat}?overview=full&geometries=geojson&steps=true`;
   try {
     const r = await fetch(url);
@@ -13,20 +37,28 @@ async function fetchOSRM(fromLat, fromLng, toLat, toLng, mode="cycling") {
     const data = await r.json();
     if (data.code !== "Ok") return null;
     const leg = data.routes[0].legs[0];
-    // Waypoints depuis les steps
     const waypoints = leg.steps.map(s=>({
       lat: s.maneuver.location[1],
       lng: s.maneuver.location[0],
-      instruction: s.maneuver.type, // turn, arrive, depart...
+      instruction: s.maneuver.type,
       modifier:    s.maneuver.modifier ?? "straight",
       distMeters:  Math.round(s.distance),
     }));
-    // Coordonnées complètes de la trace (pour le corridor)
     const coords = data.routes[0].geometry.coordinates.map(([lng,lat])=>({lat,lng}));
-    return { waypoints, coords,
+    const result = { waypoints, coords,
       totalDist: Math.round(data.routes[0].distance),
       totalTime: Math.round(data.routes[0].duration) };
-  } catch { return null; }
+    // Mettre en cache pour utilisation offline
+    setRouteCache(cacheKey, result);
+    return result;
+  } catch {
+    // Réseau indisponible → tenter le cache expiré en dernier recours
+    try {
+      const raw = localStorage.getItem(cacheKey);
+      if (raw) return JSON.parse(raw).data;
+    } catch {}
+    return null;
+  }
 }
 
 async function fetchGoogleRoute(fromLat, fromLng, toLat, toLng, mode="bicycling", apiKey) {
@@ -1062,11 +1094,13 @@ function ARScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey=""
     if(perm==="requesting") return{label:"INITIALISATION…",col:C.warn};
     if(perm==="denied")     return{label:"BOUSSOLE REFUSÉE",col:C.bad};
     if(perm==="unavailable")return{label:"CAPTEUR INDISPONIBLE",col:C.bad};
-    if(perm==="nosignal")   return{label:"AUCUN SIGNAL — PAGE EN HTTPS ?",col:C.bad};
+    if(perm==="nosignal")   return{label:"CALIBRATION REQUISE — voir indicateur",col:C.bad};
     if(heading===null)      return{label:"ATTENTE CAPTEUR…",col:C.warn};
     return{label:`AR ACTIF · ${hdg}° ${cardLabel}`,col:C.good};
   };
   const cs=compassStatus();
+  // Afficher l'aide calibration si nosignal et caméra active
+  const showCalib = perm==="nosignal" || (perm==="granted" && heading===null && cam==="active");
 
   return (
     <div style={{position:"relative",flex:1,overflow:"hidden",minHeight:0,background:"#000"}}>
@@ -1188,6 +1222,45 @@ function ARScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey=""
             borderRadius:3,padding:"3px 8px"}}>
             <span style={{color:cs.col,fontSize:7,fontFamily:C.fnt,letterSpacing:1}}>{cs.label}</span>
           </div>
+        </div>
+      )}
+
+      {/* Overlay calibration boussole — affiché si pas de signal après 4s */}
+      {showCalib&&cam==="active"&&(
+        <div style={{
+          position:"absolute",top:"28%",left:"50%",
+          transform:"translate(-50%,-50%)",
+          zIndex:32,
+          background:"rgba(8,12,15,0.93)",
+          border:`1px solid ${C.accent}66`,
+          borderRadius:12,padding:"18px 22px",
+          textAlign:"center",maxWidth:260,
+          boxShadow:`0 0 30px rgba(0,0,0,0.7)`,
+        }}>
+          {/* Animation figure en 8 SVG */}
+          <svg width="60" height="44" viewBox="0 0 60 44" style={{marginBottom:8}}>
+            <path d="M30,22 C30,22 10,4 10,14 C10,24 30,22 30,22 C30,22 50,20 50,30 C50,40 30,22 30,22 Z"
+              fill="none" stroke={C.accent} strokeWidth="2" strokeLinecap="round" opacity="0.8">
+              <animate attributeName="stroke-dashoffset" from="200" to="0" dur="2s" repeatCount="indefinite"/>
+              <animate attributeName="stroke-dasharray" from="0 200" to="200 0" dur="2s" repeatCount="indefinite"/>
+            </path>
+            <text x="30" y="44" textAnchor="middle" fill={C.accent} fontSize="9"
+              fontFamily="'Courier New',monospace">∞</text>
+          </svg>
+          <div style={{color:C.accent,fontSize:10,fontFamily:C.fnt,fontWeight:700,
+            letterSpacing:1.5,marginBottom:6}}>
+            CALIBRATION REQUISE
+          </div>
+          <div style={{color:C.muted,fontSize:8,fontFamily:C.fnt,lineHeight:1.7}}>
+            Trace un grand <span style={{color:C.text}}>chiffre 8</span> dans l'air{"\n"}
+            avec ton téléphone, lentement{"\n"}
+            <span style={{color:C.text}}>3 à 5 fois</span> jusqu'à ce que la boussole s'active.
+          </div>
+          {perm==="nosignal"&&(
+            <div style={{color:"#666",fontSize:7,fontFamily:C.fnt,marginTop:8}}>
+              Vérifier aussi : HTTPS requis · Capteur magnétique activé
+            </div>
+          )}
         </div>
       )}
 
@@ -1842,7 +1915,8 @@ Réponds uniquement sur la mobilité Veloh, les itinéraires, ou l'app.`;
           "anthropic-version": "2023-06-01",
           "anthropic-dangerous-direct-browser-access": "true",
         },
-        body:JSON.stringify({ model:"claude-sonnet-4-20250514", max_tokens:400,
+        // max_tokens 400 → 800 : évite les réponses tronquées sur itinéraires complexes
+        body:JSON.stringify({ model:"claude-haiku-4-5-20251001", max_tokens:800,
           system:systemPrompt, messages:hist }),
       });
       const data = await r.json();
@@ -1929,6 +2003,8 @@ function SettingsScreen({ apiKey, setApiKey, claudeKey, setClaudeKey, onRefresh,
   const [mapsDraft,setMapsDraft]=useState(mapsKey||"");
   const [mapsSaved,setMapsSaved]=useState(false);
   const [lnSaved,setLnSaved]=useState(false);
+  // i18n
+  const { lang, setLanguage } = useI18n();
 
   useEffect(()=>{ setDraft(apiKey); },[apiKey]);
   useEffect(()=>{ setClaudeDraft(claudeKey); },[claudeKey]);
@@ -2080,6 +2156,26 @@ function SettingsScreen({ apiKey, setApiKey, claudeKey, setClaudeKey, onRefresh,
         <div style={{ color:C.muted,fontSize:8,fontFamily:C.fnt,letterSpacing:2,marginBottom:10 }}>APPLICATION</div>
         <div style={{ background:"rgba(255,255,255,0.02)",border:`1px solid ${C.border}`,borderRadius:8,padding:"0 14px" }}>
           <Toggle label="Publicités AR" sub="Overlays sponsors dans la vue caméra" val={ads} set={setAds}/>
+          {/* Sélecteur de langue */}
+          <div style={{ display:"flex",justifyContent:"space-between",alignItems:"center",
+            padding:"11px 0",borderBottom:`1px solid ${C.border}` }}>
+            <div>
+              <div style={{ color:C.text,fontSize:11,fontFamily:C.fnt }}>🌐 Langue / Language</div>
+              <div style={{ color:C.muted,fontSize:8,fontFamily:C.fnt,marginTop:2 }}>Détection automatique au premier lancement</div>
+            </div>
+            <div style={{ display:"flex",gap:6 }}>
+              {[["fr","FR 🇫🇷"],["en","EN 🇬🇧"]].map(([code,label])=>(
+                <div key={code} onPointerDown={()=>setLanguage(code)}
+                  style={{ padding:"5px 10px",borderRadius:6,cursor:"pointer",
+                    background: lang===code ? C.accentBg : "rgba(255,255,255,0.04)",
+                    border:`1px solid ${lang===code ? C.accent : C.border}`,
+                    color: lang===code ? C.accent : C.muted,
+                    fontSize:9, fontFamily:C.fnt, fontWeight:lang===code?700:400 }}>
+                  {label}
+                </div>
+              ))}
+            </div>
+          </div>
         </div>
       </div>
       <div style={{ height:20 }}/>

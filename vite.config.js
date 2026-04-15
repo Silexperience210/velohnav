@@ -7,13 +7,10 @@ export default defineConfig({
     react(),
     VitePWA({
       registerType: 'autoUpdate',
-      // base './' obligatoire pour Capacitor Android (assets en chemin relatif)
       base: './',
-      // Ne pas injecter dans index.html — on gère manuellement pour compatibilité Capacitor
       injectRegister: 'auto',
       workbox: {
         globPatterns: ['**/*.{js,css,html,svg,png,woff2}'],
-        // Cache JCDecaux API responses (stale-while-revalidate, 5min)
         runtimeCaching: [
           {
             urlPattern: /^https:\/\/api\.jcdecaux\.com\/.*/i,
@@ -36,7 +33,7 @@ export default defineConfig({
       manifest: {
         name: 'VelohNav',
         short_name: 'VelohNav',
-        description: 'AR bike-sharing — Luxembourg Vel\'OH!',
+        description: "AR bike-sharing — Luxembourg Vel'OH!",
         theme_color: '#080c0f',
         background_color: '#080c0f',
         display: 'standalone',
@@ -50,4 +47,10 @@ export default defineConfig({
     }),
   ],
   base: './',
+  // Vitest — tests unitaires sans lancer le navigateur
+  test: {
+    environment: 'node',
+    globals: true,
+    include: ['src/**/*.test.js', 'src/**/*.spec.js'],
+  },
 })

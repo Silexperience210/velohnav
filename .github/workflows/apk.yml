@@ -38,6 +38,9 @@ jobs:
       - name: Install JS dependencies
         run: npm ci
 
+      - name: Run unit tests
+        run: npx vitest run
+
       - name: Build web assets (Vite)
         run: npm run build
 
@@ -56,14 +59,42 @@ jobs:
         working-directory: android
         run: ./gradlew assembleDebug --no-daemon --stacktrace
 
-      - name: Upload APK
+      # ── Release APK signé (seulement si KEYSTORE_BASE64 est configuré) ──
+      - name: Build release APK (signé)
+        if: ${{ secrets.KEYSTORE_BASE64 != '' }}
+        working-directory: android
+        env:
+          KEYSTORE_BASE64:    ${{ secrets.KEYSTORE_BASE64 }}
+          KEY_ALIAS:          ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD:       ${{ secrets.KEY_PASSWORD }}
+          STORE_PASSWORD:     ${{ secrets.STORE_PASSWORD }}
+        run: |
+          echo "$KEYSTORE_BASE64" | base64 --decode > app/velohnav-release.jks
+          ./gradlew assembleRelease \
+            -Pandroid.injected.signing.store.file=$PWD/app/velohnav-release.jks \
+            -Pandroid.injected.signing.store.password=$STORE_PASSWORD \
+            -Pandroid.injected.signing.key.alias=$KEY_ALIAS \
+            -Pandroid.injected.signing.key.password=$KEY_PASSWORD \
+            --no-daemon
+          rm -f app/velohnav-release.jks
+
+      - name: Upload debug APK
         uses: actions/upload-artifact@v4
         with:
           name: VelohNav-AR-debug
           path: android/app/build/outputs/apk/debug/app-debug.apk
           retention-days: 30
 
+      - name: Upload release APK (si signé)
+        if: ${{ secrets.KEYSTORE_BASE64 != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: VelohNav-AR-release
+          path: android/app/build/outputs/apk/release/app-release.apk
+          retention-days: 90
+
       - name: APK size
         run: |
-          APK=android/app/build/outputs/apk/debug/app-debug.apk
-          echo "✅ APK built — $(du -h $APK | cut -f1)"
+          echo "=== Debug ===" && du -h android/app/build/outputs/apk/debug/app-debug.apk
+          [ -f android/app/build/outputs/apk/release/app-release.apk ] && \
+            echo "=== Release ===" && du -h android/app/build/outputs/apk/release/app-release.apk || true
