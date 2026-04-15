@@ -9,10 +9,19 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.Button
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
@@ -29,15 +38,15 @@ import kotlinx.coroutines.launch
 class ArNavigationActivity : ComponentActivity() {
     private val viewModel: ArNavigationViewModel by viewModels()
     private var arView: ARSceneView? = null
-    private var pendingDestLat: Double = 0.0
-    private var pendingDestLng: Double = 0.0
-    private var pendingDestName: String = ""
-    private var pendingTravelMode: String = ""
-    private var pendingMapsKey: String = ""
+    private var destLat: Double = 0.0
+    private var destLng: Double = 0.0
+    private var destName: String = ""
+    private var travelMode: String = ""
+    private var mapsKey: String = ""
 
     private val permLauncher = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { results ->
         if (results.all { it.value }) startAr() else { 
-            Toast.makeText(this, "Caméra et localisation requis", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, "Permissions requises", Toast.LENGTH_LONG).show()
             finish() 
         }
     }
@@ -45,13 +54,13 @@ class ArNavigationActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         
-        pendingDestLat = savedInstanceState?.getDouble("dest_lat") ?: intent.getDoubleExtra("dest_lat", 0.0)
-        pendingDestLng = savedInstanceState?.getDouble("dest_lon") ?: intent.getDoubleExtra("dest_lon", 0.0)
-        pendingDestName = savedInstanceState?.getString("dest_name") ?: intent.getStringExtra("dest_name") ?: "Destination"
-        pendingTravelMode = savedInstanceState?.getString("travel_mode") ?: intent.getStringExtra("travel_mode") ?: "bicycling"
-        pendingMapsKey = savedInstanceState?.getString("maps_key") ?: intent.getStringExtra("maps_key") ?: ""
+        destLat = savedInstanceState?.getDouble("dest_lat") ?: intent.getDoubleExtra("dest_lat", 0.0)
+        destLng = savedInstanceState?.getDouble("dest_lon") ?: intent.getDoubleExtra("dest_lon", 0.0)
+        destName = savedInstanceState?.getString("dest_name") ?: intent.getStringExtra("dest_name") ?: "Destination"
+        travelMode = savedInstanceState?.getString("travel_mode") ?: intent.getStringExtra("travel_mode") ?: "bicycling"
+        mapsKey = savedInstanceState?.getString("maps_key") ?: intent.getStringExtra("maps_key") ?: ""
 
-        if (pendingDestLat == 0.0) {
+        if (destLat == 0.0) {
             Toast.makeText(this, "Destination invalide", Toast.LENGTH_SHORT).show()
             finish()
             return
@@ -60,36 +69,71 @@ class ArNavigationActivity : ComponentActivity() {
         WindowCompat.setDecorFitsSystemWindows(window, false)
         WindowInsetsControllerCompat(window, window.decorView).apply {
             hide(WindowInsetsCompat.Type.systemBars())
-            systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
         }
 
         setContent {
-            val state by viewModel.navState.collectAsState()
-            Box(Modifier.fillMaxSize()) {
-                AndroidView(
-                    factory = { ctx ->
-                        ARSceneView(
-                            context = ctx,
-                            sessionConfiguration = { session, config ->
-                                config.geospatialMode = Config.GeospatialMode.ENABLED
-                                config.lightEstimationMode = Config.LightEstimationMode.ENVIRONMENTAL_HDR
-                                config.planeFindingMode = Config.PlaneFindingMode.DISABLED
-                            }
-                        ).also { v ->
-                            arView = v
-                            v.onSessionUpdated = { session, frame ->
-                                session.earth?.let { e ->
-                                    if (e.trackingState == TrackingState.TRACKING)
-                                        viewModel.onEarthTracking(e, frame)
+            MaterialTheme {
+                Surface(modifier = Modifier.fillMaxSize()) {
+                    val state by viewModel.navState.collectAsState()
+                    
+                    Box(modifier = Modifier.fillMaxSize()) {
+                        // Vue AR
+                        AndroidView(
+                            factory = { ctx ->
+                                ARSceneView(
+                                    context = ctx,
+                                    sessionConfiguration = { session, config ->
+                                        config.geospatialMode = Config.GeospatialMode.ENABLED
+                                        config.lightEstimationMode = Config.LightEstimationMode.ENVIRONMENTAL_HDR
+                                        config.planeFindingMode = Config.PlaneFindingMode.DISABLED
+                                    }
+                                ).also { v ->
+                                    arView = v
+                                    v.onSessionUpdated = { session, frame ->
+                                        session.earth?.let { e ->
+                                            if (e.trackingState == TrackingState.TRACKING)
+                                                viewModel.onEarthTracking(e, frame)
+                                        }
+                                    }
+                                    checkPermissions {
+                                        viewModel.initializeNavigation(v, destLat, destLng, destName, travelMode, mapsKey)
+                                    }
+                                }
+                            }, 
+                            modifier = Modifier.fillMaxSize()
+                        )
+                        
+                        // HUD minimal
+                        Column(
+                            modifier = Modifier
+                                .align(Alignment.TopStart)
+                                .padding(16.dp)
+                        ) {
+                            Text(
+                                text = when (state.status) {
+                                    NavStatus.IDLE -> "Prêt"
+                                    NavStatus.LOCATING -> "Localisation..."
+                                    NavStatus.ROUTING -> "Calcul route..."
+                                    NavStatus.LOCALIZING -> "Localisation AR..."
+                                    NavStatus.NAVIGATING -> "Navigation AR"
+                                    NavStatus.ARRIVED -> "Arrivé !"
+                                    NavStatus.ERROR -> "Erreur: ${state.errorMessage ?: "Inconnue"}"
+                                },
+                                color = MaterialTheme.colorScheme.onSurface,
+                                style = MaterialTheme.typography.bodyLarge
+                            )
+                            
+                            if (state.status == NavStatus.ERROR) {
+                                Button(
+                                    onClick = { finish() },
+                                    modifier = Modifier.padding(top = 8.dp)
+                                ) {
+                                    Text("Retour")
                                 }
                             }
-                            checkPermissions {
-                                initializeNavigation(v)
-                            }
                         }
-                    }, 
-                    modifier = Modifier.fillMaxSize()
-                )
+                    }
+                }
             }
         }
 
@@ -106,18 +150,15 @@ class ArNavigationActivity : ComponentActivity() {
 
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
-        outState.putDouble("dest_lat", pendingDestLat)
-        outState.putDouble("dest_lon", pendingDestLng)
-        outState.putString("dest_name", pendingDestName)
-        outState.putString("travel_mode", pendingTravelMode)
-        outState.putString("maps_key", pendingMapsKey)
+        outState.putDouble("dest_lat", destLat)
+        outState.putDouble("dest_lon", destLng)
+        outState.putString("dest_name", destName)
+        outState.putString("travel_mode", travelMode)
+        outState.putString("maps_key", mapsKey)
     }
 
     private fun checkPermissions(onGranted: () -> Unit) {
-        val perms = arrayOf(
-            Manifest.permission.CAMERA, 
-            Manifest.permission.ACCESS_FINE_LOCATION
-        )
+        val perms = arrayOf(Manifest.permission.CAMERA, Manifest.permission.ACCESS_FINE_LOCATION)
         if (perms.all { ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED }) {
             onGranted()
         } else {
@@ -125,19 +166,10 @@ class ArNavigationActivity : ComponentActivity() {
         }
     }
 
-    private fun initializeNavigation(arSceneView: ARSceneView) {
-        viewModel.initializeNavigation(
-            arSceneView, 
-            pendingDestLat, 
-            pendingDestLng,
-            pendingDestName, 
-            pendingTravelMode, 
-            pendingMapsKey
-        )
-    }
-
     private fun startAr() {
-        arView?.let { initializeNavigation(it) }
+        arView?.let { 
+            viewModel.initializeNavigation(it, destLat, destLng, destName, travelMode, mapsKey) 
+        }
     }
 
     override fun onPause() {
@@ -147,12 +179,8 @@ class ArNavigationActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
-        try { 
-            arView?.resume() 
-        } catch (e: Exception) { 
-            Toast.makeText(this, "Caméra AR indisponible", Toast.LENGTH_SHORT).show()
-            finish() 
-        }
+        try { arView?.resume() } 
+        catch (e: Exception) { finish() }
     }
 
     override fun onDestroy() {
