@@ -444,31 +444,26 @@ function enrich(list, pos) {
     .sort((a,b)=>a.dist-b.dist);
 }
 
-// FIX #10 : fakePins orientés — si heading connu, projette les stations réelles
-// dans le FOV de la caméra; sinon fallback positions fixes nord-sud
+// pins() — projette les stations réelles dans le FOV via bearing+heading.
+// Retourne [] si heading ou gpsPos manquants — on n'affiche JAMAIS de faux pins hardcodés.
 function pins(stations, heading=null, gpsPos=null) {
-  if (heading !== null && gpsPos) {
-    const FOV_=68;
-    return stations
-      .filter(s=>s.lat&&s.lng&&s.dist<15000)
-      .map(s=>{
-        const bear=getBearing(gpsPos.lat,gpsPos.lng,s.lat,s.lng);
-        const rel=((bear-heading+540)%360)-180;
-        if(Math.abs(rel)>FOV_/2+8) return null;
-        const x=50+(rel/(FOV_/2))*50;
-        const dc=Math.min(s.dist,12000);
-        const y=70-(1-dc/12000)*44;
-        const scale=Math.max(0.3,1-dc/14000);
-        return{...s,x,y,scale,labelRight:rel<0,rel};
-      })
-      .filter(Boolean)
-      .sort((a,b)=>b.dist-a.dist)
-      .slice(0,8);
-  }
-  // Fallback statique : 6 stations les plus proches en grille 3×2
-  return stations.slice(0,6).map((s,i)=>({
-    ...s, x:13+(i%3)*34, y:28+Math.floor(i/3)*38, labelRight:(i%3)<2, scale:1,
-  }));
+  if (heading === null || !gpsPos) return []; // pas de boussole → pas de pins
+  const FOV_=68;
+  return stations
+    .filter(s=>s.lat&&s.lng&&s.dist<15000)
+    .map(s=>{
+      const bear=getBearing(gpsPos.lat,gpsPos.lng,s.lat,s.lng);
+      const rel=((bear-heading+540)%360)-180;
+      if(Math.abs(rel)>FOV_/2+8) return null;
+      const x=50+(rel/(FOV_/2))*50;
+      const dc=Math.min(s.dist,12000);
+      const y=70-(1-dc/12000)*44;
+      const scale=Math.max(0.3,1-dc/14000);
+      return{...s,x,y,scale,labelRight:rel<0,rel};
+    })
+    .filter(Boolean)
+    .sort((a,b)=>b.dist-a.dist)
+    .slice(0,8);
 }
 
 // ── HISTORIQUE STATIONS (feature #13) ────────────────────────────
@@ -1336,8 +1331,10 @@ function ARScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey=""
             borderRadius:8,padding:"11px 15px",textAlign:"center"}}>
             <div style={{color:C.muted,fontSize:8,fontFamily:C.fnt,letterSpacing:2}}>
               {arPins
-                ?`${arPins.length} STATIONS EN VUE · TOURNE-TOI POUR SCANNER`
-                :`${stations.filter(s=>s.bikes>0).length}/${stations.length} DISPO · TOUCHE UN PIN`}
+                ? `${arPins.length} STATIONS EN VUE · TOURNE-TOI POUR SCANNER`
+                : cam==="active"
+                  ? "BOUSSOLE REQUISE · ACTIVE AR POUR VOIR LES PINS"
+                  : `${stations.filter(s=>s.bikes>0).length}/${stations.length} DISPO · ACTIVE LA CAMÉRA`}
             </div>
           </div>
         )}
