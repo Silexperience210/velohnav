@@ -16,8 +16,10 @@ class ArNavigationPlugin : Plugin() {
         val destLng    = call.getDouble("destLng")    ?: return call.reject("destLng requis")
         val destName   = call.getString("destName")   ?: "Destination"
         val travelMode = call.getString("travelMode") ?: "bicycling"
-        // Clé Google Maps transmise depuis le localStorage web — prioritaire sur BuildConfig
-        val mapsKey    = call.getString("mapsKey")    ?: BuildConfig.MAPS_API_KEY ?: ""
+        // Cle Maps depuis le localStorage web, fallback sur la valeur compilee dans l'APK
+        val mapsKey = call.getString("mapsKey")?.takeIf { it.isNotBlank() }
+                      ?: BuildConfig.MAPS_API_KEY.takeIf { it.isNotBlank() }
+                      ?: ""
 
         val intent = Intent(activity, ArNavigationActivity::class.java).apply {
             putExtra("dest_lat",    destLat)
