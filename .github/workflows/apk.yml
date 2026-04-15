@@ -59,22 +59,25 @@ jobs:
         working-directory: android
         run: ./gradlew assembleDebug --no-daemon --stacktrace
 
-      # ── Release APK signé (seulement si KEYSTORE_BASE64 est configuré) ──
       - name: Build release APK (signé)
-        if: ${{ secrets.KEYSTORE_BASE64 != '' }}
         working-directory: android
         env:
-          KEYSTORE_BASE64:    ${{ secrets.KEYSTORE_BASE64 }}
-          KEY_ALIAS:          ${{ secrets.KEY_ALIAS }}
-          KEY_PASSWORD:       ${{ secrets.KEY_PASSWORD }}
-          STORE_PASSWORD:     ${{ secrets.STORE_PASSWORD }}
+          KEYSTORE_B64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEY_ALIAS:    ${{ secrets.KEY_ALIAS }}
+          KEY_PWD:      ${{ secrets.KEY_PASSWORD }}
+          STORE_PWD:    ${{ secrets.STORE_PASSWORD }}
         run: |
-          echo "$KEYSTORE_BASE64" | base64 --decode > app/velohnav-release.jks
+          # Ne signe que si le secret keystore est configuré
+          if [ -z "$KEYSTORE_B64" ]; then
+            echo "KEYSTORE_BASE64 non configuré — build release ignoré"
+            exit 0
+          fi
+          echo "$KEYSTORE_B64" | base64 --decode > app/velohnav-release.jks
           ./gradlew assembleRelease \
-            -Pandroid.injected.signing.store.file=$PWD/app/velohnav-release.jks \
-            -Pandroid.injected.signing.store.password=$STORE_PASSWORD \
-            -Pandroid.injected.signing.key.alias=$KEY_ALIAS \
-            -Pandroid.injected.signing.key.password=$KEY_PASSWORD \
+            -Pandroid.injected.signing.store.file="$PWD/app/velohnav-release.jks" \
+            -Pandroid.injected.signing.store.password="$STORE_PWD" \
+            -Pandroid.injected.signing.key.alias="$KEY_ALIAS" \
+            -Pandroid.injected.signing.key.password="$KEY_PWD" \
             --no-daemon
           rm -f app/velohnav-release.jks
 
@@ -85,9 +88,9 @@ jobs:
           path: android/app/build/outputs/apk/debug/app-debug.apk
           retention-days: 30
 
-      - name: Upload release APK (si signé)
-        if: ${{ secrets.KEYSTORE_BASE64 != '' }}
+      - name: Upload release APK
         uses: actions/upload-artifact@v4
+        if: hashFiles('android/app/build/outputs/apk/release/app-release.apk') != ''
         with:
           name: VelohNav-AR-release
           path: android/app/build/outputs/apk/release/app-release.apk
