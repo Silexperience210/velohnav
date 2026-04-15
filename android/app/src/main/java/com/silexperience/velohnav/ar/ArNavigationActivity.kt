@@ -24,8 +24,6 @@ import androidx.lifecycle.repeatOnLifecycle
 import com.google.ar.core.Config
 import com.google.ar.core.TrackingState
 import io.github.sceneview.ar.ARSceneView
-import com.silexperience.velohnav.ar.ui.NavigationHud
-import com.silexperience.velohnav.ar.ui.VelohNavArTheme
 import kotlinx.coroutines.launch
 
 class ArNavigationActivity : ComponentActivity() {
@@ -38,41 +36,72 @@ class ArNavigationActivity : ComponentActivity() {
     private var pendingMapsKey: String = ""
 
     private val permLauncher = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { results ->
-        if (results.all { it.value }) startAr() else { Toast.makeText(this, "Caméra requise", Toast.LENGTH_LONG).show(); finish() }
+        if (results.all { it.value }) startAr() else { 
+            Toast.makeText(this, "Caméra et localisation requis", Toast.LENGTH_LONG).show()
+            finish() 
+        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        
         pendingDestLat = savedInstanceState?.getDouble("dest_lat") ?: intent.getDoubleExtra("dest_lat", 0.0)
         pendingDestLng = savedInstanceState?.getDouble("dest_lon") ?: intent.getDoubleExtra("dest_lon", 0.0)
         pendingDestName = savedInstanceState?.getString("dest_name") ?: intent.getStringExtra("dest_name") ?: "Destination"
         pendingTravelMode = savedInstanceState?.getString("travel_mode") ?: intent.getStringExtra("travel_mode") ?: "bicycling"
         pendingMapsKey = savedInstanceState?.getString("maps_key") ?: intent.getStringExtra("maps_key") ?: ""
-        if (pendingDestLat == 0.0) { finish(); return }
+
+        if (pendingDestLat == 0.0) {
+            Toast.makeText(this, "Destination invalide", Toast.LENGTH_SHORT).show()
+            finish()
+            return
+        }
 
         WindowCompat.setDecorFitsSystemWindows(window, false)
-        WindowInsetsControllerCompat(window, window.decorView).apply { hide(WindowInsetsCompat.Type.systemBars()) }
+        WindowInsetsControllerCompat(window, window.decorView).apply {
+            hide(WindowInsetsCompat.Type.systemBars())
+            systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        }
 
         setContent {
-            VelohNavArTheme {
-                val state by viewModel.navState.collectAsState()
-                Box(Modifier.fillMaxSize()) {
-                    AndroidView(factory = { ctx ->
-                        ARSceneView(context = ctx, sessionConfiguration = { session, config ->
-                            config.geospatialMode = Config.GeospatialMode.ENABLED
-                            config.lightEstimationMode = Config.LightEstimationMode.ENVIRONMENTAL_HDR
-                            config.planeFindingMode = Config.PlaneFindingMode.DISABLED
-                        }).also { v ->
+            val state by viewModel.navState.collectAsState()
+            Box(Modifier.fillMaxSize()) {
+                AndroidView(
+                    factory = { ctx ->
+                        ARSceneView(
+                            context = ctx,
+                            sessionConfiguration = { session, config ->
+                                config.geospatialMode = Config.GeospatialMode.ENABLED
+                                config.lightEstimationMode = Config.LightEstimationMode.ENVIRONMENTAL_HDR
+                                config.planeFindingMode = Config.PlaneFindingMode.DISABLED
+                            }
+                        ).also { v ->
                             arView = v
-                            v.onSessionUpdated = { session, frame -> session.earth?.let { e -> if (e.trackingState == TrackingState.TRACKING) viewModel.onEarthTracking(e, frame) } }
-                            checkPermissions { initializeNavigation(v) }
+                            v.onSessionUpdated = { session, frame ->
+                                session.earth?.let { e ->
+                                    if (e.trackingState == TrackingState.TRACKING)
+                                        viewModel.onEarthTracking(e, frame)
+                                }
+                            }
+                            checkPermissions {
+                                initializeNavigation(v)
+                            }
                         }
-                    }, modifier = Modifier.fillMaxSize())
-                    NavigationHud(state = state, onClose = { finish() })
+                    }, 
+                    modifier = Modifier.fillMaxSize()
+                )
+            }
+        }
+
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                viewModel.navState.collect { state ->
+                    if (state.status == NavStatus.ERROR && state.errorMessage != null) {
+                        Toast.makeText(this@ArNavigationActivity, state.errorMessage, Toast.LENGTH_LONG).show()
+                    }
                 }
             }
         }
-        lifecycleScope.launch { repeatOnLifecycle(Lifecycle.State.STARTED) { viewModel.navState.collect { if (it.status == NavStatus.ERROR && it.errorMessage != null) Toast.makeText(this@ArNavigationActivity, it.errorMessage, Toast.LENGTH_LONG).show() } } }
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
@@ -85,13 +114,51 @@ class ArNavigationActivity : ComponentActivity() {
     }
 
     private fun checkPermissions(onGranted: () -> Unit) {
-        val perms = arrayOf(Manifest.permission.CAMERA, Manifest.permission.ACCESS_FINE_LOCATION)
-        if (perms.all { ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED }) onGranted() else permLauncher.launch(perms)
+        val perms = arrayOf(
+            Manifest.permission.CAMERA, 
+            Manifest.permission.ACCESS_FINE_LOCATION
+        )
+        if (perms.all { ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED }) {
+            onGranted()
+        } else {
+            permLauncher.launch(perms)
+        }
     }
 
-    private fun initializeNavigation(arSceneView: ARSceneView) { viewModel.initializeNavigation(arSceneView, pendingDestLat, pendingDestLng, pendingDestName, pendingTravelMode, pendingMapsKey) }
-    private fun startAr() { arView?.let { initializeNavigation(it) } }
-    override fun onPause() { super.onPause(); arView?.pause() }
-    override fun onResume() { super.onResume(); try { arView?.resume() } catch (e: Exception) { finish() } }
-    override fun onDestroy() { super.onDestroy(); viewModel.cleanup(); arView?.destroy(); arView = null }
+    private fun initializeNavigation(arSceneView: ARSceneView) {
+        viewModel.initializeNavigation(
+            arSceneView, 
+            pendingDestLat, 
+            pendingDestLng,
+            pendingDestName, 
+            pendingTravelMode, 
+            pendingMapsKey
+        )
+    }
+
+    private fun startAr() {
+        arView?.let { initializeNavigation(it) }
+    }
+
+    override fun onPause() {
+        super.onPause()
+        arView?.pause()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        try { 
+            arView?.resume() 
+        } catch (e: Exception) { 
+            Toast.makeText(this, "Caméra AR indisponible", Toast.LENGTH_SHORT).show()
+            finish() 
+        }
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        viewModel.cleanup()
+        arView?.destroy()
+        arView = null
+    }
 }
