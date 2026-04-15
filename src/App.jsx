@@ -100,7 +100,248 @@ function decodePolyline(encoded) {
   return pts;
 }
 
-// Hook routing — tente OSRM, fallback Google
+// ── MÉTÉO + RECOMMANDATION MULTIMODALE ───────────────────────────
+// OpenMeteo : gratuit, sans clé, CORS-friendly, précision ~1km Luxembourg.
+// WMO weather codes : 0-3 clair, 45-48 brouillard, 51-67 pluie, 71-77 neige,
+//                     80-82 averses, 85-86 averses neige, 95-99 orage
+const WMO_LABEL = {
+  0:"Ciel clair", 1:"Peu nuageux", 2:"Partiellement nuageux", 3:"Couvert",
+  45:"Brouillard", 48:"Brouillard givrant",
+  51:"Bruine légère", 53:"Bruine modérée", 55:"Bruine dense",
+  61:"Pluie légère", 63:"Pluie modérée", 65:"Pluie forte",
+  71:"Neige légère", 73:"Neige modérée", 75:"Neige forte",
+  80:"Averses légères", 81:"Averses modérées", 82:"Averses violentes",
+  85:"Averses de neige légères", 86:"Averses de neige fortes",
+  95:"Orage", 96:"Orage avec grêle", 99:"Orage violent avec grêle",
+};
+const WMO_ICON = {
+  0:"☀️", 1:"🌤", 2:"⛅", 3:"☁️", 45:"🌫", 48:"🌫",
+  51:"🌦", 53:"🌦", 55:"🌧", 61:"🌧", 63:"🌧", 65:"🌧",
+  71:"🌨", 73:"❄️", 75:"❄️", 80:"🌦", 81:"🌧", 82:"⛈",
+  85:"🌨", 86:"❄️", 95:"⛈", 96:"⛈", 99:"⛈",
+};
+
+async function fetchWeather(lat, lng) {
+  try {
+    const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lng}` +
+      `&current=temperature_2m,precipitation,wind_speed_10m,weather_code` +
+      `&wind_speed_unit=kmh&precipitation_unit=mm&timezone=Europe/Luxembourg&forecast_days=1`;
+    const r = await fetch(url);
+    if (!r.ok) return null;
+    const data = await r.json();
+    const c = data.current;
+    return {
+      temp:   Math.round(c.temperature_2m),
+      rain:   c.precipitation,           // mm dans l'heure courante
+      wind:   Math.round(c.wind_speed_10m),
+      code:   c.weather_code,
+      label:  WMO_LABEL[c.weather_code] ?? "Météo inconnue",
+      icon:   WMO_ICON[c.weather_code]  ?? "🌡",
+    };
+  } catch { return null; }
+}
+
+// Logique de décision : bike | transit | mixed
+// Seuils : pluie > 0.5mm/h OU vent > 35km/h OU neige OU orage
+function getWeatherAdvice(weather) {
+  if (!weather) return { mode:"bike", reason:null };
+  const { rain, wind, code } = weather;
+  const isStorm = code >= 95;
+  const isSnow  = (code >= 71 && code <= 77) || code === 85 || code === 86;
+  const heavyRain = rain > 2.0;
+  const lightRain = rain > 0.5;
+  const strongWind = wind > 35;
+  const mildWind   = wind > 25;
+
+  if (isStorm || isSnow || heavyRain || (strongWind && lightRain)) {
+    return { mode:"transit", reason: isStorm?"orage": isSnow?"neige": heavyRain?"pluie forte":"vent fort + pluie" };
+  }
+  if (lightRain || mildWind) {
+    return { mode:"mixed", reason: lightRain?"pluie légère":"vent modéré" };
+  }
+  return { mode:"bike", reason:null };
+}
+
+// Hook météo — rafraîchissement toutes les 10min, lié à la position GPS
+function useWeather(gpsPos) {
+  const [weather, setWeather] = useState(null);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(()=>{
+    if (!gpsPos) return;
+    let cancelled = false;
+    const load = async () => {
+      setLoading(true);
+      const w = await fetchWeather(gpsPos.lat, gpsPos.lng);
+      if (!cancelled) { setWeather(w); setLoading(false); }
+    };
+    load();
+    const t = setInterval(load, 10 * 60 * 1000); // refresh 10min
+    return () => { cancelled = true; clearInterval(t); };
+  }, [gpsPos?.lat?.toFixed(2), gpsPos?.lng?.toFixed(2)]); // re-fetch seulement si position change de >1km
+
+  return { weather, loading };
+}
+
+// ── ARRÊTS TRAM & BUS MAJEURS — Luxembourg-Ville ─────────────────
+// Source : mobiliteit.lu — 22 arrêts stratégiques couvrant le réseau
+const TRANSIT_STOPS = [
+  // Tram ligne 1
+  { id:"T01", name:"Luxexpo",            lat:49.6267, lng:6.1651, lines:["T1"],         type:"tram" },
+  { id:"T02", name:"Kirchberg P+R",      lat:49.6248, lng:6.1588, lines:["T1"],         type:"tram" },
+  { id:"T03", name:"Philharmonie MUDAM", lat:49.6219, lng:6.1520, lines:["T1"],         type:"tram" },
+  { id:"T04", name:"Européen",           lat:49.6183, lng:6.1432, lines:["T1"],         type:"tram" },
+  { id:"T05", name:"Alphonse Weicker",   lat:49.6154, lng:6.1378, lines:["T1"],         type:"tram" },
+  { id:"T06", name:"Hamilius",           lat:49.6118, lng:6.1299, lines:["T1","1","2"], type:"tram" },
+  { id:"T07", name:"Place de Paris",     lat:49.6073, lng:6.1285, lines:["T1","16"],    type:"tram" },
+  { id:"T08", name:"Stade de Lux.",      lat:49.6019, lng:6.1260, lines:["T1"],         type:"tram" },
+  { id:"T09", name:"Lycée Bouneweg",     lat:49.5979, lng:6.1252, lines:["T1"],         type:"tram" },
+  { id:"T10", name:"Gare Centrale",      lat:49.5998, lng:6.1340, lines:["T1","bus"],   type:"tram" },
+  // Bus + Gare
+  { id:"B01", name:"Gare Routière",      lat:49.6005, lng:6.1320, lines:["1","2","3","4","5","16","18"],type:"bus" },
+  { id:"B02", name:"Cloche d'Or",        lat:49.5817, lng:6.1333, lines:["1","25"],     type:"bus" },
+  { id:"B03", name:"Limpertsberg",       lat:49.6153, lng:6.1243, lines:["3","4"],      type:"bus" },
+  { id:"B04", name:"Belair Résidence",   lat:49.6092, lng:6.1175, lines:["5"],          type:"bus" },
+  { id:"B05", name:"Clausen Bierger",    lat:49.6107, lng:6.1442, lines:["9"],          type:"bus" },
+  { id:"B06", name:"Bonnevoie Hollerich",lat:49.5948, lng:6.1322, lines:["2"],          type:"bus" },
+  { id:"B07", name:"Merl Betzenberg",    lat:49.6078, lng:6.1082, lines:["6"],          type:"bus" },
+  { id:"B08", name:"Cents Schleed",      lat:49.6152, lng:6.1624, lines:["14"],         type:"bus" },
+  { id:"B09", name:"Kirchberg Campus",   lat:49.6196, lng:6.1558, lines:["27"],         type:"bus" },
+  { id:"B10", name:"Grund Pfaffenthal",  lat:49.6082, lng:6.1394, lines:["9"],          type:"bus" },
+  { id:"B11", name:"Verlorenkost",       lat:49.6133, lng:6.1205, lines:["4"],          type:"bus" },
+  { id:"B12", name:"Cessange",           lat:49.5905, lng:6.1204, lines:["1","4"],      type:"bus" },
+];
+
+// Trouver l'arrêt TC le plus proche d'une position
+function nearestStop(lat, lng) {
+  let best = null, bestDist = Infinity;
+  TRANSIT_STOPS.forEach(s => {
+    const d = Math.sqrt((s.lat-lat)**2 + (s.lng-lng)**2) * 111000; // approx mètres
+    if (d < bestDist) { bestDist = d; best = { ...s, distM: Math.round(d) }; }
+  });
+  return best;
+}
+
+// Composant bandeau météo + recommandation multimodale
+function WeatherBanner({ weather, advice, nearStop, station }) {
+  const [expanded, setExpanded] = useState(false);
+  if (!weather) return null;
+
+  const modeColor = advice.mode==="bike" ? C.good : advice.mode==="transit" ? "#A78BFA" : C.warn;
+  const modeIcon  = advice.mode==="bike" ? "🚲" : advice.mode==="transit" ? "🚌" : "🚲→🚌";
+  const modeLabel = advice.mode==="bike"
+    ? "CONDITIONS IDÉALES POUR LE VÉLO"
+    : advice.mode==="transit"
+    ? "PRÉFÉRER LES TRANSPORTS EN COMMUN"
+    : "CONDITIONS MIXTES — VÉLO OU TC";
+
+  return (
+    <div style={{ marginTop:8, borderRadius:7, overflow:"hidden",
+      border:`1px solid ${modeColor}33`, background:`rgba(8,12,15,0.95)` }}>
+
+      {/* Ligne principale — tap pour expandre */}
+      <div onPointerDown={()=>setExpanded(e=>!e)}
+        style={{ display:"flex", alignItems:"center", gap:8,
+          padding:"9px 12px", cursor:"pointer" }}>
+        {/* Icône météo + temp */}
+        <div style={{ fontSize:20, lineHeight:1 }}>{weather.icon}</div>
+        <div style={{ flex:1 }}>
+          <div style={{ color:modeColor, fontSize:8, fontFamily:C.fnt,
+            fontWeight:700, letterSpacing:1.5 }}>{modeLabel}</div>
+          <div style={{ color:C.muted, fontSize:7, fontFamily:C.fnt, marginTop:1 }}>
+            {weather.temp}°C · {weather.label}
+            {weather.rain > 0 && ` · 💧${weather.rain}mm/h`}
+            {weather.wind > 15 && ` · 💨${weather.wind}km/h`}
+          </div>
+        </div>
+        <div style={{ color:C.muted, fontSize:10 }}>{expanded?"▲":"▼"}</div>
+      </div>
+
+      {/* Détail expandable */}
+      {expanded && (
+        <div style={{ borderTop:`1px solid ${C.border}`, padding:"10px 12px" }}>
+
+          {advice.mode === "bike" && (
+            <div style={{ color:C.muted, fontSize:8, fontFamily:C.fnt, lineHeight:1.8 }}>
+              ✅ Pas de pluie, vent faible.{"\n"}
+              <span style={{ color:C.good }}>Trajet vélo recommandé</span> depuis {station?.name ?? "cette station"}.
+            </div>
+          )}
+
+          {advice.mode === "transit" && nearStop && (
+            <div>
+              <div style={{ color:C.muted, fontSize:8, fontFamily:C.fnt,
+                lineHeight:1.8, marginBottom:8 }}>
+                ⚠️ {advice.reason} — le vélo est déconseillé.{"\n"}
+                Arrêt TC le plus proche de ta destination :
+              </div>
+              <div style={{ display:"flex", alignItems:"center", gap:8,
+                background:"rgba(167,139,250,0.08)", border:"1px solid rgba(167,139,250,0.25)",
+                borderRadius:6, padding:"8px 10px" }}>
+                <span style={{ fontSize:16 }}>{nearStop.type==="tram"?"🚊":"🚌"}</span>
+                <div style={{ flex:1 }}>
+                  <div style={{ color:"#A78BFA", fontSize:10, fontFamily:C.fnt, fontWeight:700 }}>
+                    {nearStop.name}
+                  </div>
+                  <div style={{ color:C.muted, fontSize:7, fontFamily:C.fnt }}>
+                    {nearStop.lines.join(" · ")} · à {nearStop.distM < 1000
+                      ? `${nearStop.distM}m`
+                      : `${(nearStop.distM/1000).toFixed(1)}km`}
+                  </div>
+                </div>
+                {/* Lien Google Maps vers l'arrêt */}
+                <a href={`https://maps.google.com/?q=${nearStop.lat},${nearStop.lng}`}
+                  target="_blank" rel="noopener noreferrer"
+                  style={{ color:"#A78BFA", fontSize:14, textDecoration:"none" }}>🗺</a>
+              </div>
+              <div style={{ color:C.muted, fontSize:7, fontFamily:C.fnt,
+                marginTop:6, lineHeight:1.6 }}>
+                💡 Prends un Vel'OH! jusqu'à cet arrêt, puis continue en TC.{"\n"}
+                Horaires en temps réel : mobiliteit.lu
+              </div>
+            </div>
+          )}
+
+          {advice.mode === "mixed" && nearStop && (
+            <div>
+              <div style={{ color:C.muted, fontSize:8, fontFamily:C.fnt,
+                lineHeight:1.8, marginBottom:8 }}>
+                ⚡ {advice.reason} — conditions acceptables mais changeantes.{"\n"}
+                Si tu préfères éviter le risque :
+              </div>
+              <div style={{ display:"flex", gap:8 }}>
+                <div style={{ flex:1, background:C.accentBg,
+                  border:`1px solid ${C.accent}44`, borderRadius:6,
+                  padding:"7px 8px", textAlign:"center" }}>
+                  <div style={{ fontSize:14 }}>🚲</div>
+                  <div style={{ color:C.accent, fontSize:7, fontFamily:C.fnt,
+                    fontWeight:700, marginTop:2 }}>VÉLO OK</div>
+                  <div style={{ color:C.muted, fontSize:6, fontFamily:C.fnt }}>
+                    Vêtements imperméables conseillés
+                  </div>
+                </div>
+                <div style={{ flex:1, background:"rgba(167,139,250,0.08)",
+                  border:"1px solid rgba(167,139,250,0.25)", borderRadius:6,
+                  padding:"7px 8px", textAlign:"center" }}>
+                  <div style={{ fontSize:14 }}>{nearStop.type==="tram"?"🚊":"🚌"}</div>
+                  <div style={{ color:"#A78BFA", fontSize:7, fontFamily:C.fnt,
+                    fontWeight:700, marginTop:2 }}>{nearStop.name}</div>
+                  <div style={{ color:C.muted, fontSize:6, fontFamily:C.fnt }}>
+                    {nearStop.lines.join(" · ")} · {nearStop.distM < 1000
+                      ? `${nearStop.distM}m`
+                      : `${(nearStop.distM/1000).toFixed(1)}km`}
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+
 function useRoute(fromPos, toStation, mode, mapsApiKey) {
   const [route,    setRoute]    = useState(null);
   const [loading,  setLoading]  = useState(false);
@@ -1452,7 +1693,7 @@ function LuxMap({ toXY }) {
 }
 
 // ── MAP SCREEN ────────────────────────────────────────────────────
-function MapScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey, onTabChange }) {
+function MapScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey, onTabChange, weather }) {
   const [filter, setFilter] = useState("all"); // all | bikes | docks | elec
   const [search, setSearch] = useState("");
 
@@ -1838,19 +2079,44 @@ function MapScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey, 
               </div>
             )}
           </div>
+
+          {/* ── Bandeau météo + recommandation multimodale ── */}
+          {(()=>{
+            if (!weather) return null;
+            const advice  = getWeatherAdvice(weather);
+            const near    = selStation
+              ? nearestStop(selStation.lat, selStation.lng)
+              : null;
+            return (
+              <WeatherBanner
+                weather={weather}
+                advice={advice}
+                nearStop={near}
+                station={selStation}
+              />
+            );
+          })()}
         </div>
       ) : (
-        /* ── Légende compacte quand rien n'est sélectionné ── */
-        <div style={{ display:"flex",gap:10,padding:"5px 14px 10px",flexShrink:0,alignItems:"center" }}>
+        /* ── Légende compacte + météo inline quand rien n'est sélectionné ── */
+        <div style={{ display:"flex",gap:10,padding:"5px 14px 10px",flexShrink:0,alignItems:"center",flexWrap:"wrap" }}>
           {[[C.good,"Dispo"],[C.warn,"Faible"],[C.bad,"Vide"],["#444","Fermé"],[C.blue,"Vous"]].map(([c,l])=>(
             <div key={l} style={{ display:"flex",alignItems:"center",gap:3 }}>
               <div style={{ width:6,height:6,borderRadius:"50%",background:c,boxShadow:`0 0 4px ${c}` }}/>
               <span style={{ color:C.muted,fontSize:7,fontFamily:C.fnt }}>{l}</span>
             </div>
           ))}
-          <span style={{ color:C.muted,fontSize:7,fontFamily:C.fnt,marginLeft:"auto" }}>
-            Zoom ×3 → labels
-          </span>
+          {/* Météo mini dans la légende */}
+          {weather&&(()=>{
+            const advice = getWeatherAdvice(weather);
+            const col = advice.mode==="bike"?C.good:advice.mode==="transit"?"#A78BFA":C.warn;
+            return (
+              <span style={{ color:col, fontSize:8, fontFamily:C.fnt,
+                marginLeft:"auto", fontWeight:700 }}>
+                {weather.icon} {weather.temp}°C
+              </span>
+            );
+          })()}
         </div>
       )}
     </div>
@@ -2212,6 +2478,9 @@ export default function App() {
   const [gpsPos,setGpsPos]     = useState(null);
   const [refreshing,setRefreshing] = useState(false);
 
+  // Météo OpenMeteo — hook réactif à la position GPS
+  const { weather } = useWeather(gpsPos);
+
   // FIX #3 : Système de trajet — départ/arrivée pour Sats Rewards
   const [trip,setTrip] = useState(null); // null | { stationId, name, startAt }
   const [satsResult,setSatsResult] = useState(null);
@@ -2372,7 +2641,7 @@ export default function App() {
           trip={trip} onStartTrip={startTrip} mapsKey={mapsKey}/>}
         {tab==="map"      &&<MapScreen stations={stations} sel={sel} setSel={setSel} gpsPos={gpsPos}
           trip={trip} onStartTrip={startTrip}
-          mapsKey={mapsKey}
+          mapsKey={mapsKey} weather={weather}
           onTabChange={setTab}/>}
         {tab==="ai"       &&<AIScreen  stations={stations} claudeKey={claudeKey}
           aiHistory={aiHistory} setAiHistory={setAiHistory}
