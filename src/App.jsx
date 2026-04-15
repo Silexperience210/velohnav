@@ -690,8 +690,7 @@ function NavOverlay({ relBear, dist, name }) {
 }
 
 // ── CITY BG ───────────────────────────────────────────────────────
-function CityBG({ off }) {
-  const s = off % 80;
+function CityBG() {
   return (
     <svg style={{ position:"absolute",inset:0,width:"100%",height:"100%" }}
       viewBox="0 0 400 600" preserveAspectRatio="xMidYMid slice">
@@ -710,7 +709,7 @@ function CityBG({ off }) {
         fill={`rgba(10,${25+i*5},12,0.9)`} stroke="rgba(50,100,50,0.15)" strokeWidth="0.5"/>)}
       {[0,1,2].map(i=><rect key={`r${i}`} x={290+i*35} y={160+i*15} width={28} height={220-i*15}
         fill={`rgba(8,${20+i*4},10,0.9)`} stroke="rgba(50,100,50,0.12)" strokeWidth="0.5"/>)}
-      {[0,1,2,3].map(i=><rect key={`m${i}`} x={197} y={420+i*50-(s*0.6)%50} width={6} height={28}
+      {[0,1,2,3].map(i=><rect key={`m${i}`} x={197} y={420+i*50} width={6} height={28}
         fill="rgba(255,140,0,0.2)" rx="1"/>)}
       <rect width="400" height="600" fill="rgba(0,0,0,0.22)"/>
     </svg>
@@ -816,42 +815,96 @@ function CheckeredFlag({ scale=1, col="#fff", isSel=false }) {
 function ARPin({ s, sel, setSel, pulse }) {
   const col=bCol(s), isSel=sel===s.id;
   const scale=s.scale??1;
-  const dotSize=Math.round((isSel?14:9)*scale);
-  return (
-    <div onPointerDown={()=>setSel(isSel?null:s.id)}
-      style={{ position:"absolute", left:`${s.x}%`, top:`${s.y}%`,
-        transform:"translate(-50%,-50%)", cursor:"pointer",
-        zIndex:isSel?25:14, padding:14, margin:-14 }}>
+  const isCluster = !!s.cluster;
 
-      {/* Drapeau damier au-dessus du dot */}
-      <div style={{ position:"absolute", bottom:"50%", left:"50%",
-        transform:"translateX(-50%)", pointerEvents:"none", zIndex:3 }}>
-        <CheckeredFlag scale={scale} col={col} isSel={isSel}/>
-      </div>
+  // Taille : cluster plus gros, pin normal ou sélectionné encore plus
+  const dotSize = isCluster
+    ? Math.round(18*scale)
+    : Math.round((isSel?14:9)*scale);
+
+  const clusterCol = s.cluster?.bikes > 0 ? C.good : C.bad;
+
+  return (
+    <div onPointerDown={()=>{ if (!isCluster) setSel(isSel?null:s.id); }}
+      style={{ position:"absolute", left:`${s.x}%`, top:`${s.y}%`,
+        transform:"translate(-50%,-50%)", cursor: isCluster?"default":"pointer",
+        zIndex:isSel?25:isCluster?10:14, padding:14, margin:-14 }}>
+
+      {/* Drapeau damier au-dessus (seulement sur pins individuels) */}
+      {!isCluster&&(
+        <div style={{ position:"absolute", bottom:"50%", left:"50%",
+          transform:"translateX(-50%)", pointerEvents:"none", zIndex:3 }}>
+          <CheckeredFlag scale={scale} col={col} isSel={isSel}/>
+        </div>
+      )}
 
       {/* Pulse ring */}
-      <div style={{ position:"absolute", top:14, left:14, width:dotSize, height:dotSize, borderRadius:"50%",
-        boxShadow:`0 0 0 ${pulse?10:3}px ${col}22`, transition:"box-shadow 1s", pointerEvents:"none" }}/>
-      {/* Dot */}
-      <div style={{ width:dotSize, height:dotSize, borderRadius:"50%", background:col,
-        border:`2px solid ${isSel?"#fff":"rgba(0,0,0,0.55)"}`, boxShadow:`0 0 ${8*scale}px ${col}`,
-        transform:isSel?"scale(1.4)":"scale(1)", transition:"transform 0.15s",
-        position:"relative", zIndex:2 }}/>
-      {/* Distance badge */}
-      <div style={{
-        position:"absolute", top:"50%", transform:"translateY(-50%)",
-        ...(s.labelRight?{left:dotSize+6}:{right:dotSize+6}),
-        background:"rgba(6,10,14,0.88)", border:`1px solid ${isSel?col:col+"44"}`,
-        borderRadius:4, padding:"3px 7px", whiteSpace:"nowrap", pointerEvents:"none",
-        boxShadow:isSel?`0 0 14px ${col}40`:"none", transition:"border-color 0.15s",
-      }}>
-        <div style={{ color:isSel?col:C.text, fontSize:9, fontFamily:C.fnt, fontWeight:700 }}>{s.name}</div>
-        <div style={{ display:"flex", gap:5, marginTop:1, alignItems:"center" }}>
-          <span style={{ color:col, fontSize:12, fontFamily:C.fnt, fontWeight:900 }}>{s.bikes}</span>
-          {s.elec>0&&<span style={{ color:"#60A5FA", fontSize:7 }}>⚡{s.elec}</span>}
-          <span style={{ color:C.muted, fontSize:7 }}>{fDist(s.dist)}</span>
+      {!isCluster&&(
+        <div style={{ position:"absolute", top:14, left:14, width:dotSize, height:dotSize,
+          borderRadius:"50%", boxShadow:`0 0 0 ${pulse?10:3}px ${col}22`,
+          transition:"box-shadow 1s", pointerEvents:"none" }}/>
+      )}
+
+      {isCluster ? (
+        /* ── Cluster badge ── */
+        <div style={{
+          width:dotSize*2, height:dotSize*2, borderRadius:"50%",
+          background:"rgba(8,12,15,0.88)",
+          border:`2px solid ${clusterCol}`,
+          boxShadow:`0 0 ${12*scale}px ${clusterCol}60`,
+          display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center",
+          position:"relative", zIndex:2,
+        }}>
+          <div style={{ color:clusterCol, fontSize:Math.round(11*scale), fontFamily:C.fnt, fontWeight:700, lineHeight:1 }}>
+            {s.cluster.count}
+          </div>
+          <div style={{ color:C.muted, fontSize:Math.round(6*scale), fontFamily:C.fnt, lineHeight:1 }}>
+            stations
+          </div>
+          {s.cluster.bikes > 0 && (
+            <div style={{ color:C.good, fontSize:Math.round(7*scale), fontFamily:C.fnt }}>
+              {s.cluster.bikes}🚲
+            </div>
+          )}
         </div>
-      </div>
+      ) : (
+        /* ── Dot individuel ── */
+        <div style={{ width:dotSize, height:dotSize, borderRadius:"50%", background:col,
+          border:`2px solid ${isSel?"#fff":"rgba(0,0,0,0.55)"}`,
+          boxShadow:`0 0 ${8*scale}px ${col}`,
+          transform:isSel?"scale(1.4)":"scale(1)", transition:"transform 0.15s",
+          position:"relative", zIndex:2 }}/>
+      )}
+
+      {/* Distance badge (pins individuels uniquement) */}
+      {!isCluster&&(
+        <div style={{
+          position:"absolute", top:"50%", transform:"translateY(-50%)",
+          ...(s.labelRight?{left:dotSize+6}:{right:dotSize+6}),
+          background:"rgba(6,10,14,0.88)", border:`1px solid ${isSel?col:col+"44"}`,
+          borderRadius:4, padding:"3px 7px", whiteSpace:"nowrap", pointerEvents:"none",
+          boxShadow:isSel?`0 0 14px ${col}40`:"none", transition:"border-color 0.15s",
+        }}>
+          <div style={{ color:isSel?col:C.text, fontSize:9, fontFamily:C.fnt, fontWeight:700 }}>{s.name}</div>
+          <div style={{ display:"flex", gap:5, marginTop:1, alignItems:"center" }}>
+            <span style={{ color:col, fontSize:12, fontFamily:C.fnt, fontWeight:900 }}>{s.bikes}</span>
+            {s.elec>0&&<span style={{ color:"#60A5FA", fontSize:7 }}>⚡{s.elec}</span>}
+            <span style={{ color:C.muted, fontSize:7 }}>{fDist(s.dist)}</span>
+          </div>
+        </div>
+      )}
+
+      {/* Distance cluster */}
+      {isCluster&&(
+        <div style={{
+          position:"absolute", top:"50%", left:"50%",
+          transform:"translate(-50%, calc(-50% - " + (dotSize+8) + "px))",
+          background:"rgba(6,10,14,0.75)", border:`1px solid ${clusterCol}33`,
+          borderRadius:3, padding:"2px 5px", whiteSpace:"nowrap", pointerEvents:"none",
+        }}>
+          <span style={{ color:C.muted, fontSize:7, fontFamily:C.fnt }}>{fDist(s.cluster.dist)}</span>
+        </div>
+      )}
     </div>
   );
 }
@@ -860,19 +913,16 @@ function ARPin({ s, sel, setSel, pulse }) {
 const COMPASS_LABELS=["N","NE","E","SE","S","SO","O","NO"];
 const FOV=68;
 
-function ARScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip }) {
+function ARScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey="" }) {
   const vidRef=useRef(null);
   const [cam,   setCam]  =useState("idle");
-  const [bgOff, setBgOff]=useState(0);
   const [pulse, setPulse]=useState(false);
   const {heading,perm,start:startCompass}=useCompass();
 
   // ── Navigation AR ───────────────────────────────────────────────
   const [navMode, setNavMode] = useState(null);   // null | "cycling" | "walking"
   const navStation = stations.find(s=>s.id===sel);
-  // Clé Maps depuis localStorage (injectée par SettingsScreen → Root)
-  const mapsKey = typeof localStorage !== "undefined"
-    ? localStorage.getItem("velohnav_mapsKey")||"" : "";
+  // mapsKey reçu en prop depuis Root (réactif si l'utilisateur le change dans Settings)
   const { route, loading: routeLoading, error: routeError } =
     useRoute(gpsPos, navMode ? navStation : null, navMode||"cycling", mapsKey);
 
@@ -889,9 +939,24 @@ function ARScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip }) {
 
   const stopNav = useCallback(()=>setNavMode(null),[]);
 
+  // Auto-démarrer la nav si l'utilisateur vient de taper AR VÉLO/PIED depuis MAP
   useEffect(()=>{
-    const t=setInterval(()=>setBgOff(o=>o+0.5),50);
-    return()=>clearInterval(t);
+    const pendingMode = localStorage.getItem("velohnav_pendingNavMode");
+    const pendingId   = localStorage.getItem("velohnav_pendingNavId");
+    if (pendingMode && pendingId) {
+      localStorage.removeItem("velohnav_pendingNavMode");
+      localStorage.removeItem("velohnav_pendingNavId");
+      // Déclencher la navigation (startNav vérifie navStation via sel)
+      // On attend que la caméra soit prête, sinon on démarre la nav silencieusement
+      const station = stations.find(s=>String(s.id)===pendingId);
+      if (station) {
+        setSel(station.id);
+        // Petit délai pour que navStation soit bien à jour
+        const t = setTimeout(()=>startNav(pendingMode === "walking" ? "walking" : "cycling"), 300);
+        return ()=>clearTimeout(t);
+      }
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   },[]);
   useEffect(()=>{
     const t=setInterval(()=>setPulse(p=>!p),1100);
@@ -937,7 +1002,49 @@ function ARScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip }) {
   },[heading,gpsPos,stations]);
 
   const fakePins=useMemo(()=>pins(stations,heading,gpsPos),[stations,heading,gpsPos]);
-  const visiblePins=arPins??fakePins;
+
+  // ── Clustering — groupe les stations proches dans le FOV ──────────
+  // Évite la surcharge visuelle quand beaucoup de pins se superposent.
+  // En dessous de 500m : pins individuels. Au-delà : clusters si ≥2 stations dans un rayon de 6% écran.
+  const clusteredPins = useMemo(()=>{
+    const raw = arPins ?? fakePins;
+    if (!raw.length) return [];
+
+    const CLUSTER_R = 6; // % écran — rayon de regroupement
+    const used = new Set();
+    const result = [];
+
+    raw.forEach((pin, i) => {
+      if (used.has(i)) return;
+      // Stations à moins de 500m → toujours individuelles
+      if (pin.dist < 500) { result.push({ ...pin, cluster: null }); return; }
+      // Chercher les voisins dans le FOV
+      const neighbors = raw.filter((p2, j) => {
+        if (j === i || used.has(j)) return false;
+        const dx = Math.abs(p2.x - pin.x), dy = Math.abs(p2.y - pin.y);
+        return Math.hypot(dx, dy) < CLUSTER_R;
+      });
+      if (neighbors.length === 0) {
+        result.push({ ...pin, cluster: null });
+      } else {
+        // Créer un cluster centré sur le pin le plus proche
+        const all = [pin, ...neighbors];
+        neighbors.forEach((_, j) => used.add(raw.indexOf(neighbors[j])));
+        used.add(i);
+        const cx = all.reduce((s,p)=>s+p.x,0)/all.length;
+        const cy = all.reduce((s,p)=>s+p.y,0)/all.length;
+        const totalBikes = all.reduce((s,p)=>s+p.bikes,0);
+        const minDist = Math.min(...all.map(p=>p.dist));
+        result.push({
+          ...pin, x:cx, y:cy, scale:pin.scale,
+          cluster: { count: all.length, bikes: totalBikes, dist: minDist },
+        });
+      }
+    });
+    return result;
+  },[arPins, fakePins]);
+
+  const visiblePins = clusteredPins;
 
   // ── Nav overlay ────────────────────────────────────────────────
   const navRel=useMemo(()=>{
@@ -967,7 +1074,7 @@ function ARScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip }) {
       <video ref={vidRef} muted playsInline autoPlay style={{
         position:"absolute",inset:0,width:"100%",height:"100%",objectFit:"cover",zIndex:1,
         opacity:cam==="active"?1:0,transition:"opacity 0.5s"}}/>
-      {cam!=="active"&&<div style={{position:"absolute",inset:0,zIndex:2}}><CityBG off={bgOff}/></div>}
+      {cam!=="active"&&<div style={{position:"absolute",inset:0,zIndex:2}}><CityBG/></div>}
 
       <div style={{position:"absolute",inset:0,zIndex:5,pointerEvents:"none"}}>
         <div style={{position:"absolute",inset:0,background:"radial-gradient(ellipse at center,transparent 30%,rgba(0,0,0,0.35) 100%)"}}/>
@@ -980,6 +1087,7 @@ function ARScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip }) {
       {/* Route AR overlay — tracé OSRM/Google projeté sur caméra */}
       {navMode&&(
         <RouteOverlay
+          key={`${navStation?.id}-${navMode}`}
           route={route} gpsPos={gpsPos} heading={heading}
           mode={navMode} onClose={stopNav}
         />
@@ -1274,9 +1382,20 @@ function LuxMap({ toXY }) {
 }
 
 // ── MAP SCREEN ────────────────────────────────────────────────────
-function MapScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip }) {
+function MapScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey, onTabChange }) {
   const [filter, setFilter] = useState("all"); // all | bikes | docks | elec
   const [search, setSearch] = useState("");
+
+  // Lancer navigation AR : sélectionner la station + switcher vers l'onglet AR
+  // ARScreen lit velohnav_pendingNavMode au montage pour auto-démarrer la nav
+  const launchArNav = useCallback((station, mode)=>{
+    setSel(station.id);
+    if (typeof localStorage !== "undefined") {
+      localStorage.setItem("velohnav_pendingNavMode", mode);
+      localStorage.setItem("velohnav_pendingNavId", String(station.id));
+    }
+    onTabChange?.("ar");
+  },[setSel, onTabChange]);
 
   // Stations filtrées pour affichage
   const displayed = useMemo(()=>{
@@ -1607,32 +1726,45 @@ function MapScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip }) {
               </div>
             ))}
           </div>
-          {/* Bouton Y aller → Google Maps pied (#12) */}
-          <div style={{ marginTop:10,display:"flex",gap:6 }}>
+          {/* Boutons navigation */}
+          <div style={{ marginTop:10,display:"flex",gap:6,flexWrap:"wrap" }}>
+            {/* Primaires : AR nav (lance ARCore ou web AR) */}
+            <div onPointerDown={()=>launchArNav(selStation,"cycling")}
+              style={{ flex:1,display:"flex",alignItems:"center",justifyContent:"center",gap:5,
+                background:"rgba(59,130,246,0.15)",border:`1px solid #3B82F655`,
+                borderRadius:6,padding:"9px 0",cursor:"pointer",minWidth:80 }}>
+              <span style={{ fontSize:14 }}>🚲</span>
+              <div>
+                <div style={{ color:"#3B82F6",fontSize:9,fontFamily:C.fnt,fontWeight:700 }}>AR VÉLO</div>
+                <div style={{ color:C.muted,fontSize:6,fontFamily:C.fnt }}>itinéraire AR</div>
+              </div>
+            </div>
+            <div onPointerDown={()=>launchArNav(selStation,"walking")}
+              style={{ flex:1,display:"flex",alignItems:"center",justifyContent:"center",gap:5,
+                background:"rgba(167,139,250,0.15)",border:`1px solid #A78BFA55`,
+                borderRadius:6,padding:"9px 0",cursor:"pointer",minWidth:80 }}>
+              <span style={{ fontSize:14 }}>🚶</span>
+              <div>
+                <div style={{ color:"#A78BFA",fontSize:9,fontFamily:C.fnt,fontWeight:700 }}>AR PIED</div>
+                <div style={{ color:C.muted,fontSize:6,fontFamily:C.fnt }}>itinéraire AR</div>
+              </div>
+            </div>
+            {/* Secondaire : Google Maps externe */}
             <a href={`https://www.google.com/maps/dir/?api=1&destination=${selStation.lat},${selStation.lng}&travelmode=walking`}
               target="_blank" rel="noopener noreferrer"
-              style={{ flex:1,display:"flex",alignItems:"center",justifyContent:"center",gap:6,
-                background:"rgba(59,130,246,0.12)",border:`1px solid ${C.blue}55`,
-                borderRadius:6,padding:"8px 0",textDecoration:"none" }}>
-              <span style={{ fontSize:13 }}>🗺</span>
-              <span style={{ color:C.blue,fontSize:9,fontFamily:C.fnt,fontWeight:700,letterSpacing:1 }}>À PIED</span>
+              style={{ display:"flex",alignItems:"center",justifyContent:"center",
+                background:"rgba(255,255,255,0.04)",border:`1px solid ${C.border}`,
+                borderRadius:6,padding:"9px 12px",textDecoration:"none" }}>
+              <span style={{ fontSize:14 }}>🗺</span>
             </a>
-            <a href={`https://www.google.com/maps/dir/?api=1&destination=${selStation.lat},${selStation.lng}&travelmode=bicycling`}
-              target="_blank" rel="noopener noreferrer"
-              style={{ flex:1,display:"flex",alignItems:"center",justifyContent:"center",gap:6,
-                background:C.accentBg,border:`1px solid ${C.accent}55`,
-                borderRadius:6,padding:"8px 0",textDecoration:"none" }}>
-              <span style={{ fontSize:13 }}>🚲</span>
-              <span style={{ color:C.accent,fontSize:9,fontFamily:C.fnt,fontWeight:700,letterSpacing:1 }}>EN VÉLO</span>
-            </a>
-            {/* Bouton démarrer trajet (#3) — si pas déjà en cours */}
+            {/* Bouton démarrer trajet */}
             {!trip&&selStation.bikes>0&&onStartTrip&&(
               <div onPointerDown={()=>onStartTrip(selStation)}
-                style={{ flex:1,display:"flex",alignItems:"center",justifyContent:"center",gap:4,
+                style={{ display:"flex",alignItems:"center",justifyContent:"center",gap:4,
                   background:"rgba(46,204,143,0.12)",border:`1px solid ${C.good}55`,
-                  borderRadius:6,padding:"8px 0",cursor:"pointer" }}>
-                <span style={{ fontSize:11 }}>▶</span>
-                <span style={{ color:C.good,fontSize:9,fontFamily:C.fnt,fontWeight:700 }}>TRAJET</span>
+                  borderRadius:6,padding:"9px 12px",cursor:"pointer" }}>
+                <span style={{ fontSize:12 }}>▶</span>
+                <span style={{ color:C.good,fontSize:8,fontFamily:C.fnt,fontWeight:700 }}>TRAJET</span>
               </div>
             )}
           </div>
@@ -1789,19 +1921,22 @@ Réponds uniquement sur la mobilité Veloh, les itinéraires, ou l'app.`;
 }
 
 // ── SETTINGS ──────────────────────────────────────────────────────
-function SettingsScreen({ apiKey, setApiKey, claudeKey, setClaudeKey, onRefresh, apiLive, isMock, gpsPos, lnAddr, setLnAddr, lnOn, setLnOn, ads, setAds }) {
+function SettingsScreen({ apiKey, setApiKey, claudeKey, setClaudeKey, onRefresh, apiLive, isMock, gpsPos, lnAddr, setLnAddr, lnOn, setLnOn, ads, setAds, mapsKey, setMapsKey }) {
   const [draft,setDraft]=useState(apiKey);
   const [saved,setSaved]=useState(false);
   const [claudeDraft,setClaudeDraft]=useState(claudeKey);
   const [claudeSaved,setClaudeSaved]=useState(false);
+  const [mapsDraft,setMapsDraft]=useState(mapsKey||"");
+  const [mapsSaved,setMapsSaved]=useState(false);
   const [lnSaved,setLnSaved]=useState(false);
 
-  // Keep draft in sync if apiKey is loaded externally (e.g. from localStorage)
   useEffect(()=>{ setDraft(apiKey); },[apiKey]);
   useEffect(()=>{ setClaudeDraft(claudeKey); },[claudeKey]);
+  useEffect(()=>{ setMapsDraft(mapsKey||""); },[mapsKey]);
 
   const saveKey=()=>{ setApiKey(draft.trim()); setSaved(true); setTimeout(()=>{ setSaved(false); onRefresh(); },1200); };
   const saveClaudeKey=()=>{ setClaudeKey(claudeDraft.trim()); setClaudeSaved(true); setTimeout(()=>setClaudeSaved(false),1500); };
+  const saveMapsKey=()=>{ setMapsKey?.(mapsDraft.trim()); setMapsSaved(true); setTimeout(()=>setMapsSaved(false),1500); };
   // FIX : validation format Lightning Address (user@domain) avant sauvegarde
   const [lnError, setLnError] = useState("");
   const saveLn=()=>{
@@ -1917,6 +2052,30 @@ function SettingsScreen({ apiKey, setApiKey, claudeKey, setClaudeKey, onRefresh,
         </div>
       </div>
 
+      <div style={{ padding:"14px 14px 0" }}>
+        <div style={{ color:C.muted,fontSize:8,fontFamily:C.fnt,letterSpacing:2,marginBottom:10 }}>🗺 CLÉ GOOGLE MAPS (optionnel)</div>
+        <div style={{ background:"rgba(255,255,255,0.02)",border:`1px solid ${C.border}`,borderRadius:8,padding:"14px" }}>
+          <div style={{ background:"rgba(59,130,246,0.06)",border:`1px solid ${C.blue}33`,borderRadius:4,padding:"7px 10px",marginBottom:10 }}>
+            <div style={{ color:C.blue,fontSize:9,fontFamily:C.fnt }}>
+              {mapsKey?"✓ Clé Maps configurée — fallback navigation actif":"ℹ Fallback si OSRM indisponible"}
+            </div>
+            <div style={{ color:C.muted,fontSize:8,fontFamily:C.fnt,marginTop:2 }}>
+              Utilisé si OSRM échoue · console.cloud.google.com → Directions API
+            </div>
+          </div>
+          <div style={{ display:"flex",gap:8 }}>
+            <input value={mapsDraft} onChange={e=>setMapsDraft(e.target.value)} placeholder="AIza..." type="password"
+              style={{ flex:1,background:"rgba(0,0,0,0.4)",border:`1px solid ${C.border}`,
+                borderRadius:4,padding:"8px 10px",color:C.text,fontSize:11,fontFamily:C.fnt,outline:"none" }}/>
+            <div onPointerDown={saveMapsKey} style={{ background:mapsSaved?"rgba(46,204,143,0.15)":C.accentBg,
+              border:`1px solid ${mapsSaved?C.good:C.accent}`,color:mapsSaved?C.good:C.accent,
+              borderRadius:4,padding:"8px 12px",fontSize:9,fontFamily:C.fnt,cursor:"pointer",fontWeight:700,whiteSpace:"nowrap" }}>
+              {mapsSaved?"✓ OK":"APPLIQUER"}
+            </div>
+          </div>
+        </div>
+      </div>
+
       <div style={{ padding:"14px" }}>
         <div style={{ color:C.muted,fontSize:8,fontFamily:C.fnt,letterSpacing:2,marginBottom:10 }}>APPLICATION</div>
         <div style={{ background:"rgba(255,255,255,0.02)",border:`1px solid ${C.border}`,borderRadius:8,padding:"0 14px" }}>
@@ -1951,8 +2110,9 @@ export default function App() {
   const [claudeKey,setClaudeKey] = useState(()=>localStorage.getItem("velohnav_claudeKey")||"");
   const [lnAddr,setLnAddr]     = useState(()=>localStorage.getItem("velohnav_lnAddr")||"");
   const [lnOn,setLnOn]         = useState(()=>localStorage.getItem("velohnav_lnOn")==="true");
-  // FIX #9 : ads=false par défaut (toggle était à true par défaut sans logique derrière)
   const [ads,setAds]           = useState(()=>localStorage.getItem("velohnav_ads")==="true");
+  // BUG-1/BUG-4 fix: mapsKey géré en state React → réactif + exposé dans Settings
+  const [mapsKey,setMapsKey]   = useState(()=>localStorage.getItem("velohnav_mapsKey")||"");
   const [stations,setStations] = useState(()=>enrich(FALLBACK,null));
   const [apiLive,setApiLive]   = useState(false);
   const [isMock,setIsMock]     = useState(true);
@@ -1961,7 +2121,14 @@ export default function App() {
 
   // FIX #3 : Système de trajet — départ/arrivée pour Sats Rewards
   const [trip,setTrip] = useState(null); // null | { stationId, name, startAt }
-  const [satsResult,setSatsResult] = useState(null); // null | { ok, msg }
+  const [satsResult,setSatsResult] = useState(null);
+  // BUG-2 fix: timer qui force un re-render chaque minute quand un trajet est en cours
+  const [, setTick] = useState(0);
+  useEffect(()=>{
+    if (!trip) return;
+    const t = setInterval(()=>setTick(n=>n+1), 30000); // re-render toutes les 30s
+    return ()=>clearInterval(t);
+  },[trip]);
 
   // Lifted AI conversation state
   const top0 = FALLBACK.find(s=>s.bikes>0);
@@ -1976,6 +2143,7 @@ export default function App() {
   useEffect(()=>{ localStorage.setItem("velohnav_lnAddr",   lnAddr);    },[lnAddr]);
   useEffect(()=>{ localStorage.setItem("velohnav_lnOn",     lnOn);      },[lnOn]);
   useEffect(()=>{ localStorage.setItem("velohnav_ads",      ads);       },[ads]);
+  useEffect(()=>{ localStorage.setItem("velohnav_mapsKey",  mapsKey);   },[mapsKey]);
 
   // GPS
   useEffect(()=>{
@@ -2108,9 +2276,11 @@ export default function App() {
 
       <div style={{ flex:1,display:"flex",flexDirection:"column",overflow:"hidden",minHeight:0 }}>
         {tab==="ar"       &&<ARScreen  stations={stations} sel={sel} setSel={setSel} gpsPos={gpsPos}
-          trip={trip} onStartTrip={startTrip}/>}
+          trip={trip} onStartTrip={startTrip} mapsKey={mapsKey}/>}
         {tab==="map"      &&<MapScreen stations={stations} sel={sel} setSel={setSel} gpsPos={gpsPos}
-          trip={trip} onStartTrip={startTrip}/>}
+          trip={trip} onStartTrip={startTrip}
+          mapsKey={mapsKey}
+          onTabChange={setTab}/>}
         {tab==="ai"       &&<AIScreen  stations={stations} claudeKey={claudeKey}
           aiHistory={aiHistory} setAiHistory={setAiHistory}
           aiDisplay={aiDisplay} setAiDisplay={setAiDisplay}/>}
@@ -2120,6 +2290,7 @@ export default function App() {
           lnAddr={lnAddr}    setLnAddr={setLnAddr}
           lnOn={lnOn}        setLnOn={setLnOn}
           ads={ads}          setAds={setAds}
+          mapsKey={mapsKey}  setMapsKey={setMapsKey}
           onRefresh={loadData} apiLive={apiLive} isMock={isMock} gpsPos={gpsPos}/>}
       </div>
       <NavBar tab={tab} setTab={setTab}/>
