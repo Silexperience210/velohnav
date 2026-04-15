@@ -42,7 +42,9 @@ class ArNavigationViewModel(application: Application) : AndroidViewModel(applica
     val navState: StateFlow<NavState> = _state.asStateFlow()
 
     private val geo = GeospatialManager()
-    private val routeManager = RouteManager(BuildConfig.MAPS_API_KEY)
+    // RouteManager instancié avec la clé Maps transmise au moment du lancement
+    // (pas BuildConfig — la clé vient du localStorage web via le plugin Capacitor)
+    private var routeManager: RouteManager = RouteManager("")
     private val fusedLocation = LocationServices.getFusedLocationProviderClient(application)
     private var arView: ARSceneView? = null
     private var route: NavigationRoute? = null
@@ -53,8 +55,15 @@ class ArNavigationViewModel(application: Application) : AndroidViewModel(applica
     private var modelAsset: io.github.sceneview.model.Model? = null
     private var vpsReady = false
 
-    fun initializeNavigation(arSceneView: ARSceneView, destLat: Double, destLng: Double, destName: String, travelMode: String) {
+    fun initializeNavigation(
+        arSceneView: ARSceneView,
+        destLat: Double, destLng: Double,
+        destName: String, travelMode: String,
+        mapsKey: String = ""
+    ) {
         arView = arSceneView
+        // Réinitialiser RouteManager avec la clé Maps reçue depuis le web
+        routeManager = RouteManager(mapsKey)
         _state.value = _state.value.copy(status = NavStatus.LOCATING, destName = destName)
         viewModelScope.launch {
             try {

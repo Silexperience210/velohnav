@@ -341,11 +341,11 @@ function RouteOverlay({ route, gpsPos, heading, mode, onClose }) {
 
 // ── BRIDGE CAPACITOR → ArNavigationActivity (Android natif) ──────
 // Déclenche ARCore Geospatial si on est dans l'app native, sinon no-op.
-async function launchNativeArNav(destLat, destLng, destName, mode="bicycling") {
+async function launchNativeArNav(destLat, destLng, destName, mode="bicycling", mapsKey="") {
   try {
     const { registerPlugin } = await import("@capacitor/core");
     const ArNav = registerPlugin("ArNavigation");
-    await ArNav.startNavigation({ destLat, destLng, destName, travelMode: mode });
+    await ArNav.startNavigation({ destLat, destLng, destName, travelMode: mode, mapsKey });
     return true;
   } catch { return false; }
 }
@@ -954,15 +954,15 @@ function ARScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey=""
     useRoute(gpsPos, navMode ? navStation : null, navMode||"cycling", mapsKey);
 
   const startNav = useCallback(async(mode)=>{
-    // Tenter d'abord le mode natif ARCore (Android app)
     if (navStation) {
       const native = await launchNativeArNav(
         navStation.lat, navStation.lng, navStation.name,
-        mode === "walking" ? "walking" : "bicycling"
+        mode === "walking" ? "walking" : "bicycling",
+        mapsKey   // transmis au module ARCore natif
       );
       if (!native) setNavMode(mode); // fallback web AR
     }
-  },[navStation]);
+  },[navStation, mapsKey]);
 
   const stopNav = useCallback(()=>setNavMode(null),[]);
 

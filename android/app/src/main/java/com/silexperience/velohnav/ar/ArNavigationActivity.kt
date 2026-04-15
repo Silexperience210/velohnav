@@ -32,6 +32,7 @@ class ArNavigationActivity : ComponentActivity() {
     private var pendingDestLng: Double = 0.0
     private var pendingDestName: String = "Destination"
     private var pendingTravelMode: String = "bicycling"
+    private var pendingMapsKey: String = ""
 
     private val permLauncher = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { results ->
         if (results.all { it.value }) startAr()
@@ -49,6 +50,9 @@ class ArNavigationActivity : ComponentActivity() {
         pendingDestLng    = intent.getDoubleExtra("dest_lng", 0.0)
         pendingDestName   = intent.getStringExtra("dest_name") ?: "Destination"
         pendingTravelMode = intent.getStringExtra("travel_mode") ?: "bicycling"
+        // Clé Maps transmise depuis le localStorage web via le plugin Capacitor
+        pendingMapsKey    = intent.getStringExtra("maps_key") ?: ""
+
         if (pendingDestLat == 0.0) {
             Toast.makeText(this, "Destination invalide", Toast.LENGTH_SHORT).show()
             finish(); return
@@ -59,8 +63,6 @@ class ArNavigationActivity : ComponentActivity() {
                 val state by viewModel.navState.collectAsState()
                 Box(Modifier.fillMaxSize()) {
                     AndroidView(factory = { ctx ->
-                        // FIX SceneView 2.x : onSessionConfiguration n'est plus une propriété
-                        // settable après construction — il faut le passer au constructeur.
                         ARSceneView(
                             context = ctx,
                             sessionConfiguration = { session, config ->
@@ -79,7 +81,7 @@ class ArNavigationActivity : ComponentActivity() {
                             checkPermissions {
                                 viewModel.initializeNavigation(
                                     v, pendingDestLat, pendingDestLng,
-                                    pendingDestName, pendingTravelMode
+                                    pendingDestName, pendingTravelMode, pendingMapsKey
                                 )
                             }
                         }
@@ -98,11 +100,12 @@ class ArNavigationActivity : ComponentActivity() {
 
     private fun startAr() {
         val v = arView ?: return
-        viewModel.initializeNavigation(v, pendingDestLat, pendingDestLng, pendingDestName, pendingTravelMode)
+        viewModel.initializeNavigation(
+            v, pendingDestLat, pendingDestLng,
+            pendingDestName, pendingTravelMode, pendingMapsKey
+        )
     }
 
-    // FIX SceneView 2.x : resume() et pause() n'existent plus — lifecycle géré automatiquement.
-    // onDestroy conservé pour cleanup du ViewModel.
     override fun onDestroy() {
         super.onDestroy()
         viewModel.cleanup()
