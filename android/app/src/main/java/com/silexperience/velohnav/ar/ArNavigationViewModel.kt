@@ -1,7 +1,6 @@
 package com.silexperience.velohnav.ar
 
 import android.app.Application
-import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.google.android.gms.location.LocationServices
@@ -29,7 +28,7 @@ data class NavState(
     val distanceToNextTurnMeters: Double = 0.0,
     val totalRemainingMeters: Int = 0,
     val etaSeconds: Int = 0,
-    val vpsAccuracy: VpsAccuracy? = null,  // FIX: Ajouté ici
+    val vpsAccuracy: VpsAccuracy? = null,
     val destName: String = "",
     val errorMessage: String? = null
 )
@@ -55,7 +54,7 @@ class ArNavigationViewModel(application: Application) : AndroidViewModel(applica
         navigationJob?.cancel()
         arView = arSceneView
         routeManager = RouteManager(mapsKey)
-        _state.value = NavState(status = NavStatus.LOCATING, destName = destName)
+        _state.value = NavState(status = NavStatus.LOCATING, destName: destName)
         
         navigationJob = viewModelScope.launch {
             locateAndRoute(destLat, destLng, travelMode)
@@ -96,12 +95,11 @@ class ArNavigationViewModel(application: Application) : AndroidViewModel(applica
 
     fun onEarthTracking(earth: Earth, frame: Frame) {
         if (!viewModelScope.isActive) return
-        geo.onFrame(earth, frame)
         
-        // FIX: Récupération accuracy depuis GeospatialManager
+        val pose = earth.cameraGeospatialPose
         val acc = VpsAccuracy(
-            horizontal = earth.cameraGeospatialPose.horizontalAccuracy,
-            orientation = earth.cameraGeospatialPose.orientationYawAccuracy
+            horizontal = pose.horizontalAccuracy,
+            orientation = pose.orientationYawAccuracy
         )
         _state.value = _state.value.copy(vpsAccuracy = acc)
         
@@ -125,7 +123,7 @@ class ArNavigationViewModel(application: Application) : AndroidViewModel(applica
         
         val pose = earth.cameraGeospatialPose
         val step = r.steps[currentStepIdx]
-        val dist = geo.distanceMeters(pose.latitude, pose.longitude, step.endLat, step.endLng)
+        val dist = distanceMeters(pose.latitude, pose.longitude, step.endLat, step.endLng)
         
         if (dist < 15.0) { 
             currentStepIdx++
@@ -144,13 +142,23 @@ class ArNavigationViewModel(application: Application) : AndroidViewModel(applica
         )
     }
 
+    private fun distanceMeters(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {
+        val R = 6371000.0
+        val dLat = Math.toRadians(lat2 - lat1)
+        val dLon = Math.toRadians(lon2 - lon1)
+        val a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+                Math.cos(Math.toRadians(lat1)) * Math.cos(Math.toRadians(lat2)) *
+                Math.sin(dLon / 2) * Math.sin(dLon / 2)
+        val c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))
+        return R * c
+    }
+
     private fun setState(status: NavStatus, msg: String? = null) {
         _state.value = _state.value.copy(status = status, errorMessage = msg)
     }
 
     fun cleanup() {
         navigationJob?.cancel()
-        geo.cleanup()
         arView = null
     }
     

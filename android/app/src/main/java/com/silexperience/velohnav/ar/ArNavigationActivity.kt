@@ -75,7 +75,6 @@ class ArNavigationActivity : ComponentActivity() {
             MaterialTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
                     val state by viewModel.navState.collectAsState()
-                    
                     Box(modifier = Modifier.fillMaxSize()) {
                         AndroidView(
                             factory = { ctx ->
@@ -101,8 +100,7 @@ class ArNavigationActivity : ComponentActivity() {
                             }, 
                             modifier = Modifier.fillMaxSize()
                         )
-                        
-                        SimpleHud(state = state, onClose = { finish() })
+                        HudContent(state = state, onClose = { finish() })
                     }
                 }
             }
@@ -120,21 +118,20 @@ class ArNavigationActivity : ComponentActivity() {
     }
 
     @Composable
-    fun SimpleHud(state: NavState, onClose: () -> Unit) {
+    fun HudContent(state: NavState, onClose: () -> Unit) {
         Column(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(16.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            // Status en haut
             Text(
                 text = when (state.status) {
                     NavStatus.IDLE -> "Prêt"
                     NavStatus.LOCATING -> "Localisation GPS..."
                     NavStatus.ROUTING -> "Calcul itinéraire..."
                     NavStatus.LOCALIZING -> "Localisation AR..."
-                    NavStatus.NAVIGATING -> "Navigation AR active"
+                    NavStatus.NAVIGATING -> "Navigation AR active (${state.stepIndex + 1}/${state.totalSteps})"
                     NavStatus.ARRIVED -> "Destination atteinte !"
                     NavStatus.ERROR -> "Erreur: ${state.errorMessage ?: "Inconnue"}"
                 },
@@ -142,27 +139,20 @@ class ArNavigationActivity : ComponentActivity() {
                 color = MaterialTheme.colorScheme.primary
             )
             
-            if (state.currentStep != null) {
+            state.currentStep?.let { step ->
                 Text(
-                    text = "${state.stepIndex + 1}/${state.totalSteps} - ${state.currentStep.instruction}",
+                    text = step.instruction,
                     style = MaterialTheme.typography.bodyMedium,
                     modifier = Modifier.padding(top = 8.dp)
                 )
                 Text(
-                    text = "${state.distanceToNextTurnMeters.toInt()}m restants",
-                    style = MaterialTheme.typography.bodySmall
+                    text = "${state.distanceToNextTurnMeters.toInt()}m",
+                    style = MaterialTheme.typography.bodyLarge
                 )
             }
             
-            if (state.status == NavStatus.ERROR) {
-                Button(onClick = onClose, modifier = Modifier.padding(top = 16.dp)) {
-                    Text("Retour")
-                }
-            }
-            
-            // Bouton fermer toujours visible
-            Button(onClick = onClose, modifier = Modifier.padding(top = 8.dp)) {
-                Text("✕ Fermer AR")
+            Button(onClick = onClose, modifier = Modifier.padding(top = 16.dp)) {
+                Text("✕ Fermer")
             }
         }
     }
@@ -186,12 +176,9 @@ class ArNavigationActivity : ComponentActivity() {
     }
 
     private fun startAr() {
-        arView?.let { 
-            viewModel.initializeNavigation(it, destLat, destLng, destName, travelMode, mapsKey) 
-        }
+        arView?.let { viewModel.initializeNavigation(it, destLat, destLng, destName, travelMode, mapsKey) }
     }
 
-    // FIX: SceneView 2.x gère le cycle de vie automatiquement, pas besoin de pause/resume manuel
     override fun onDestroy() {
         super.onDestroy()
         viewModel.cleanup()
