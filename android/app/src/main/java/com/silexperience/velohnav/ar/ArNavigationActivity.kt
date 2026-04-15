@@ -77,7 +77,6 @@ class ArNavigationActivity : ComponentActivity() {
                     val state by viewModel.navState.collectAsState()
                     
                     Box(modifier = Modifier.fillMaxSize()) {
-                        // Vue AR
                         AndroidView(
                             factory = { ctx ->
                                 ARSceneView(
@@ -103,35 +102,7 @@ class ArNavigationActivity : ComponentActivity() {
                             modifier = Modifier.fillMaxSize()
                         )
                         
-                        // HUD minimal
-                        Column(
-                            modifier = Modifier
-                                .align(Alignment.TopStart)
-                                .padding(16.dp)
-                        ) {
-                            Text(
-                                text = when (state.status) {
-                                    NavStatus.IDLE -> "Prêt"
-                                    NavStatus.LOCATING -> "Localisation..."
-                                    NavStatus.ROUTING -> "Calcul route..."
-                                    NavStatus.LOCALIZING -> "Localisation AR..."
-                                    NavStatus.NAVIGATING -> "Navigation AR"
-                                    NavStatus.ARRIVED -> "Arrivé !"
-                                    NavStatus.ERROR -> "Erreur: ${state.errorMessage ?: "Inconnue"}"
-                                },
-                                color = MaterialTheme.colorScheme.onSurface,
-                                style = MaterialTheme.typography.bodyLarge
-                            )
-                            
-                            if (state.status == NavStatus.ERROR) {
-                                Button(
-                                    onClick = { finish() },
-                                    modifier = Modifier.padding(top = 8.dp)
-                                ) {
-                                    Text("Retour")
-                                }
-                            }
-                        }
+                        SimpleHud(state = state, onClose = { finish() })
                     }
                 }
             }
@@ -144,6 +115,54 @@ class ArNavigationActivity : ComponentActivity() {
                         Toast.makeText(this@ArNavigationActivity, state.errorMessage, Toast.LENGTH_LONG).show()
                     }
                 }
+            }
+        }
+    }
+
+    @Composable
+    fun SimpleHud(state: NavState, onClose: () -> Unit) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(16.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            // Status en haut
+            Text(
+                text = when (state.status) {
+                    NavStatus.IDLE -> "Prêt"
+                    NavStatus.LOCATING -> "Localisation GPS..."
+                    NavStatus.ROUTING -> "Calcul itinéraire..."
+                    NavStatus.LOCALIZING -> "Localisation AR..."
+                    NavStatus.NAVIGATING -> "Navigation AR active"
+                    NavStatus.ARRIVED -> "Destination atteinte !"
+                    NavStatus.ERROR -> "Erreur: ${state.errorMessage ?: "Inconnue"}"
+                },
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.primary
+            )
+            
+            if (state.currentStep != null) {
+                Text(
+                    text = "${state.stepIndex + 1}/${state.totalSteps} - ${state.currentStep.instruction}",
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.padding(top = 8.dp)
+                )
+                Text(
+                    text = "${state.distanceToNextTurnMeters.toInt()}m restants",
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
+            
+            if (state.status == NavStatus.ERROR) {
+                Button(onClick = onClose, modifier = Modifier.padding(top = 16.dp)) {
+                    Text("Retour")
+                }
+            }
+            
+            // Bouton fermer toujours visible
+            Button(onClick = onClose, modifier = Modifier.padding(top = 8.dp)) {
+                Text("✕ Fermer AR")
             }
         }
     }
@@ -172,21 +191,10 @@ class ArNavigationActivity : ComponentActivity() {
         }
     }
 
-    override fun onPause() {
-        super.onPause()
-        arView?.pause()
-    }
-
-    override fun onResume() {
-        super.onResume()
-        try { arView?.resume() } 
-        catch (e: Exception) { finish() }
-    }
-
+    // FIX: SceneView 2.x gère le cycle de vie automatiquement, pas besoin de pause/resume manuel
     override fun onDestroy() {
         super.onDestroy()
         viewModel.cleanup()
-        arView?.destroy()
         arView = null
     }
 }
