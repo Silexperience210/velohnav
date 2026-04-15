@@ -16,7 +16,8 @@ class ArNavigationPlugin : Plugin() {
         val destName = call.getString("destName") ?: "Destination"
         val travelMode = call.getString("travelMode") ?: "bicycling"
         
-        val webMapsKey = call.getString("mapsKey")?.takeIf { it.isNotBlank() && !it.contains("null") && it.length > 10 }
+        // FIX CRITIQUE : Validation des clés
+        val webMapsKey = call.getString("mapsKey")?.takeIf { it.isNotBlank() && it.length > 10 && !it.contains("null") }
         val nativeKey = BuildConfig.MAPS_API_KEY.takeIf { it.isNotBlank() && it != "null" && it.length > 10 }
         
         if (webMapsKey == null && nativeKey == null) {
@@ -24,6 +25,7 @@ class ArNavigationPlugin : Plugin() {
         }
         
         val finalKey = webMapsKey ?: nativeKey!!
+
         val intent = Intent(activity, ArNavigationActivity::class.java).apply {
             putExtra("dest_lat", destLat)
             putExtra("dest_lon", destLng)
