@@ -263,7 +263,7 @@ export default function App() {
           aiHistory={aiHistory} setAiHistory={setAiHistory}
           aiDisplay={aiDisplay} setAiDisplay={setAiDisplay}
           gpsPos={gpsPos} mapsKey={mapsKey}
-          onLaunchAR={nav=>launchNativeArNav(nav.lat,nav.lng,nav.name,nav.mode,mapsKey)}/>}
+          onLaunchAR={async nav=>{ return await launchNativeArNav(nav.lat,nav.lng,nav.name,nav.mode,mapsKey); }}/>}
         {tab==="settings" &&<SettingsScreen
           apiKey={apiKey}    setApiKey={setApiKey}
           claudeKey={claudeKey} setClaudeKey={setClaudeKey}

@@ -32,26 +32,29 @@ class ArNavigationPlugin : Plugin() {
         val nativeKey  = BuildConfig.MAPS_API_KEY.takeIf { it.isNotBlank() && it != "null" && it.length > 10 }
         val finalKey   = webMapsKey ?: nativeKey ?: ""
 
-        android.util.Log.d("ArNavPlugin", "  → startActivity ArNavigationActivity (main thread)")
+        android.util.Log.d("ArNavPlugin", "  → startActivity ArNavigationActivity")
 
-        // startActivity DOIT être sur le main thread — Capacitor exécute les plugins
-        // sur un thread background par défaut, ce qui cause un crash silencieux
+        // Préparer l'intent sur le thread courant
+        val intent = Intent(activity, ArNavigationActivity::class.java).apply {
+            putExtra("dest_lat",    destLat)
+            putExtra("dest_lng",    destLng)
+            putExtra("dest_name",   destName)
+            putExtra("travel_mode", travelMode)
+            putExtra("maps_key",    finalKey)
+        }
+
+        // Résoudre la Promise Capacitor immédiatement (sur le thread Capacitor)
+        call.resolve()
+        android.util.Log.d("ArNavPlugin", "  call.resolve() OK")
+
+        // Lancer l'Activity sur le main thread (UI thread obligatoire)
         activity.runOnUiThread {
             try {
                 android.widget.Toast.makeText(activity, "AR Nav → $destName", android.widget.Toast.LENGTH_SHORT).show()
-                val intent = Intent(activity, ArNavigationActivity::class.java).apply {
-                    putExtra("dest_lat",    destLat)
-                    putExtra("dest_lng",    destLng)
-                    putExtra("dest_name",   destName)
-                    putExtra("travel_mode", travelMode)
-                    putExtra("maps_key",    finalKey)
-                }
                 activity.startActivity(intent)
                 android.util.Log.d("ArNavPlugin", "  startActivity OK")
-                call.resolve()
             } catch (e: Exception) {
                 android.util.Log.e("ArNavPlugin", "  startActivity FAILED: ${e.message}", e)
-                call.reject("Erreur lancement AR: ${e.message}")
             }
         }
     }

@@ -247,14 +247,20 @@ Ne l'utilise pas pour de simples informations ou conseils.`;
   const [launching, setLaunching] = useState(false);
 
   // ── Lancer la nav AR depuis le bouton ─────────────────────────────
+  const [navError, setNavError] = useState(null);
+
   const launchNav = useCallback(async(nav)=>{
     if (!nav || launching) return;
     setLaunching(true);
+    setNavError(null);
     try {
-      if (onLaunchAR) await onLaunchAR(nav);
-      else await launchNativeArNav(nav.lat, nav.lng, nav.name, nav.mode, mapsKey);
+      let ok = false;
+      if (onLaunchAR) ok = await onLaunchAR(nav) !== false;
+      else ok = await launchNativeArNav(nav.lat, nav.lng, nav.name, nav.mode, mapsKey);
+      if (!ok) setNavError("Capacitor indisponible — vérifiez que vous utilisez l'APK Android");
     } catch(e) {
       console.error("[AIScreen] launchNav error:", e);
+      setNavError(String(e?.message || e));
     }
     setLaunching(false);
   },[mapsKey, onLaunchAR, launching]);
@@ -356,11 +362,11 @@ Ne l'utilise pas pour de simples informations ou conseils.`;
                     opacity: launching ? 0.7 : 1 }}>
                   <span style={{ fontSize:16 }}>{launching ? "⏳" : "🗺"}</span>
                   <div>
-                    <div style={{ color:C.accent, fontSize:9, fontFamily:C.fnt, fontWeight:700 }}>
-                      {launching ? "OUVERTURE AR…" : "NAVIGUER EN AR"}
+                    <div style={{ color: navError ? "#E03E3E" : C.accent, fontSize:9, fontFamily:C.fnt, fontWeight:700 }}>
+                      {launching ? "OUVERTURE AR…" : navError ? "ERREUR ↓" : "NAVIGUER EN AR"}
                     </div>
                     <div style={{ color:C.muted, fontSize:7, fontFamily:C.fnt }}>
-                      → {m.nav.name} · {m.nav.mode==="walking"?"à pied":"vélo"}
+                      {navError ? navError : `→ ${m.nav.name} · ${m.nav.mode==="walking"?"à pied":"vélo"}`}
                     </div>
                   </div>
                   <div style={{ marginLeft:"auto", color:C.accent, fontSize:12 }}>▶</div>
