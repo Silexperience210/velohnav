@@ -158,14 +158,7 @@ let _ArNav = null; // singleton — registerPlugin ne doit être appelé qu'une 
 
 export async function launchNativeArNav(destLat, destLng, destName, mode="bicycling", mapsKey="") {
   try {
-    // Vérifier que Capacitor est disponible (Android natif uniquement)
-    if (!window.Capacitor?.isNativePlatform?.()) {
-      console.warn("[ArNav] Capacitor non disponible — web browser détecté");
-      alert(`Navigation AR vers ${destName}\n(disponible uniquement sur l'APK Android)`);
-      return false;
-    }
-
-    // Initialiser le plugin une seule fois
+    // Initialiser le plugin — si Capacitor n'est pas disponible l'import échouera
     if (!_ArNav) {
       const { registerPlugin } = await import(/* @vite-ignore */ "@capacitor/core");
       _ArNav = registerPlugin("ArNavigation");
