@@ -53,6 +53,7 @@
             android:name=".ar.ArNavigationActivity"
             android:exported="false"
             android:screenOrientation="portrait"
+            android:configChanges="orientation|screenSize|keyboardHidden"
             android:theme="@style/AppTheme.NoActionBar"
             android:hardwareAccelerated="true" />
 
