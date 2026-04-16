@@ -5,6 +5,9 @@ import { haversine, getBearing, fDist, fWalk, bCol, bTag, pins, nearestStop } fr
 import { getWeatherAdvice } from "../hooks/useWeather.js";
 import WeatherBanner from "./WeatherBanner.jsx";
 
+// Helper i18n pour le label de statut station
+const statusKey = s => s.status==="CLOSED"?"station.closed":s.bikes===0?"station.empty":s.bikes<=2?"station.low":"station.available";
+
 function LuxMap({ toXY }) {
   // Converts [lat,lng] array → "x,y x,y …" for polyline/polygon
   const pts = coords => coords.map(([la,ln])=>{ const {x,y}=toXY(la,ln); return `${x},${y}`; }).join(" ");
@@ -433,8 +436,8 @@ function MapScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey, 
           <div style={{ display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:8 }}>
             <div>
               <div style={{ color:C.muted,fontSize:7,fontFamily:C.fnt,letterSpacing:1.5,marginBottom:2 }}>
-                {bTag(selStation)} · {fDist(selStation.dist)} · {fWalk(selStation.dist)} à pied
-                {selStation._mock&&" · données simulées"}
+                {t(statusKey(selStation))} · {fDist(selStation.dist)} · {fWalk(selStation.dist)} à pied
+                {selStation._mock&&" · " + t("ai.simulated")}
               </div>
               <div style={{ color:C.text,fontSize:14,fontFamily:C.fnt,fontWeight:700 }}>{selStation.name}</div>
             </div>

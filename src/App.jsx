@@ -206,7 +206,7 @@ export default function App() {
       setSatsResult({ok:null, msg:t("trip.sats_sending")});
       const res = await payLnAddress(lnAddr, sats, `VelohNav trajet ${durMin}min depuis ${trip.name}`);
       setSatsResult(res.ok
-        ? {ok:true,  msg:`⚡ ${sats} sats envoyés !`}
+        ? {ok:true,  msg:t("trip.sats_sent", {n: sats})}
         : {ok:false, msg:`⚠ ${res.error}`});
       setTimeout(()=>setSatsResult(null), 4000);
     }
@@ -236,7 +236,7 @@ export default function App() {
             style={{ background:C.accentBg,border:`1px solid ${C.accent}`,borderRadius:5,
               padding:"5px 12px",color:C.accent,fontSize:8,fontFamily:C.fnt,
               fontWeight:700,cursor:"pointer" }}>
-            ARRIVER ✓
+            {t("trip.arrive")}
           </div>
         </div>
       )}

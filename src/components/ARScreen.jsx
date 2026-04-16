@@ -694,7 +694,7 @@ function ARScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey=""
     if(perm==="unavailable")return{label:t("ar.compass_unavail"),col:C.bad};
     if(perm==="nosignal")   return{label:t("ar.compass_nosignal"),col:C.bad};
     if(heading===null)      return{label:t("ar.compass_waiting"),col:C.warn};
-    return{label:`AR ACTIF · ${hdg}° ${cardLabel}`,col:C.good};
+    return{label:`${t("ar.active")} · ${hdg}° ${cardLabel}`,col:C.good};
   };
   const cs=compassStatus();
   // Afficher l'aide calibration si nosignal et caméra active
