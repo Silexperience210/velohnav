@@ -78,32 +78,49 @@ function LuxMap({ toXY }) {
   const lblCol = `rgba(255,255,255,0.52)`;   // labels — blanc lisible
 
 
-  // ── Ligne de tram T1 Luxembourg ───────────────────────────────
-  // Tracé : Luxexpo → Kirchberg → Pont GD Charlotte → Hamilius → Gare Centrale
-  // (Le prolongement Gare → Cloche d'Or est omis : projection SVG imprécise
-  //  dans cette zone, ligne confondue avec le quartier Bonnevoie)
+  // ── Ligne T1 Luxembourg — tracé complet (24 arrêts, mars 2025) ──
+  // Findel Airport → Kirchberg → Hamilius → Gare → Bonnevoie → Howald → Stadion
   const tramT1 = [
-    // Luxexpo / Kirchberg Nord
-    [49.6262, 6.1641],[49.6248, 6.1598],[49.6231, 6.1563],
-    [49.6215, 6.1532],[49.6198, 6.1502],
-    // Pont Grande-Duchesse Charlotte → Ville-Haute
-    [49.6180, 6.1468],[49.6163, 6.1435],[49.6148, 6.1408],
-    [49.6132, 6.1379],[49.6118, 6.1355],
-    // Hamilius / Centre
-    [49.6112, 6.1340],[49.6105, 6.1325],
-    // Vers Gare Centrale
-    [49.6092, 6.1335],[49.6078, 6.1338],[49.6062, 6.1340],
-    [49.6045, 6.1340],[49.6028, 6.1340],
-    // Terminus Gare Centrale
-    [49.6010, 6.1340],[49.5998, 6.1340],
+    [49.6335, 6.2198],[49.6313, 6.2101],[49.6285, 6.1980], // Findel → Héienhaff
+    [49.6268, 6.1860],[49.6262, 6.1760],[49.6262, 6.1641], // → Luxexpo
+    [49.6254, 6.1590],[49.6244, 6.1545],[49.6232, 6.1508], // Kirchberg Nord
+    [49.6218, 6.1476],[49.6200, 6.1448],[49.6183, 6.1415], // Kirchberg Central
+    [49.6165, 6.1383],[49.6148, 6.1358],                    // Rout Bréck / Pont
+    [49.6134, 6.1340],[49.6118, 6.1332],                    // Théâtre, Faïencerie
+    [49.6103, 6.1316],[49.6112, 6.1296],                    // Étoile, Hamilius
+    [49.6100, 6.1285],[49.6063, 6.1303],                    // Pl. Metz, Pl. Paris
+    [49.6000, 6.1340],[49.5963, 6.1360],[49.5930, 6.1358], // Gare → Bonnevoie
+    [49.5882, 6.1330],[49.5850, 6.1295],                    // Howald
+    [49.5808, 6.1252],[49.5782, 6.1228],[49.5755, 6.1205], // Gasperich → Stadion
   ];
 
-  const tramCol  = "rgba(0,160,220,0.85)";
-  const tramStop = "rgba(0,160,220,0.9)";
+  const tramCol  = "rgba(0,160,220,0.9)";
+  const tramStop = "rgba(0,160,220,1)";
   const tramStations = [
+    [49.6335, 6.2198, "Findel"],
+    [49.6313, 6.2101, "Héienhaff"],
     [49.6262, 6.1641, "Luxexpo"],
-    [49.6118, 6.1355, "Hamilius"],
-    [49.5998, 6.1340, "Gare"],
+    [49.6254, 6.1590, "A. Weicker"],
+    [49.6244, 6.1545, "Bibliothèque"],
+    [49.6232, 6.1508, "Université"],
+    [49.6218, 6.1476, "Coque"],
+    [49.6200, 6.1448, "Parlement"],
+    [49.6183, 6.1415, "Philharmonie"],
+    [49.6165, 6.1383, "Rout Bréck"],
+    [49.6134, 6.1340, "Théâtre"],
+    [49.6118, 6.1332, "Faïencerie"],
+    [49.6103, 6.1316, "Étoile"],
+    [49.6112, 6.1296, "Hamilius"],
+    [49.6100, 6.1285, "Pl. Metz"],
+    [49.6063, 6.1303, "Pl. Paris"],
+    [49.6000, 6.1340, "Gare"],
+    [49.5963, 6.1360, "Dernier Sol"],
+    [49.5930, 6.1358, "L. Bouneweg"],
+    [49.5882, 6.1330, "Scillas"],
+    [49.5850, 6.1295, "Howald"],
+    [49.5808, 6.1252, "Lycée Vauban"],
+    [49.5782, 6.1228, "Waassertuerm"],
+    [49.5755, 6.1205, "Stadion"],
   ];
 
   return (
