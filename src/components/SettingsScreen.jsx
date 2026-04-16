@@ -54,7 +54,7 @@ function SettingsScreen({ apiKey, setApiKey, claudeKey, setClaudeKey, onRefresh,
         border:`1px solid ${gpsPos?C.good+"40":C.border}`,borderRadius:7,padding:"11px 13px" }}>
         <div style={{ color:C.text,fontSize:11,fontFamily:C.fnt }}>📍 GPS</div>
         <div style={{ color:gpsPos?C.good:C.muted,fontSize:8,fontFamily:C.fnt,marginTop:2 }}>
-          {gpsPos?`✓ ${gpsPos.lat.toFixed(5)}, ${gpsPos.lng.toFixed(5)} ±${gpsPos.acc}m`:"En attente de l'autorisation…"}
+          {gpsPos?`✓ ${gpsPos.lat.toFixed(5)}, ${gpsPos.lng.toFixed(5)} ±${gpsPos.acc}m`:t("settings.gps_waiting")}
         </div>
       </div>
 
@@ -64,7 +64,7 @@ function SettingsScreen({ apiKey, setApiKey, claudeKey, setClaudeKey, onRefresh,
           <div style={{ background:apiLive?"rgba(46,204,143,0.08)":"rgba(245,130,13,0.08)",
             border:`1px solid ${apiLive?C.good+"40":C.accent+"40"}`,borderRadius:4,padding:"7px 10px",marginBottom:10 }}>
             <div style={{ color:apiLive?C.good:C.accent,fontSize:9,fontFamily:C.fnt }}>
-              {apiLive?"✓ LIVE — données JCDecaux temps réel":isMock?"⚠ DÉMO — GPS réels, dispos simulées":"⚠ Clé invalide"}
+              {apiLive?t("settings.jcd_live"):isMock?t("settings.jcd_demo"):t("settings.jcd_invalid")}
             </div>
             {isMock&&<div style={{ color:C.muted,fontSize:8,fontFamily:C.fnt,marginTop:2 }}>developer.jcdecaux.com (gratuit)</div>}
           </div>
@@ -75,7 +75,7 @@ function SettingsScreen({ apiKey, setApiKey, claudeKey, setClaudeKey, onRefresh,
             <div onPointerDown={saveKey} style={{ background:saved?"rgba(46,204,143,0.15)":C.accentBg,
               border:`1px solid ${saved?C.good:C.accent}`,color:saved?C.good:C.accent,
               borderRadius:4,padding:"8px 12px",fontSize:9,fontFamily:C.fnt,cursor:"pointer",fontWeight:700,whiteSpace:"nowrap" }}>
-              {saved?"✓ OK":t("settings.apply")}
+              {saved?t("settings.ok"):t("settings.apply")}
             </div>
           </div>
           <div style={{ color:C.muted,fontSize:8,fontFamily:C.fnt,marginTop:8,lineHeight:1.8 }}>
@@ -103,7 +103,7 @@ function SettingsScreen({ apiKey, setApiKey, claudeKey, setClaudeKey, onRefresh,
             <div onPointerDown={saveClaudeKey} style={{ background:claudeSaved?"rgba(46,204,143,0.15)":C.accentBg,
               border:`1px solid ${claudeSaved?C.good:C.accent}`,color:claudeSaved?C.good:C.accent,
               borderRadius:4,padding:"8px 12px",fontSize:9,fontFamily:C.fnt,cursor:"pointer",fontWeight:700,whiteSpace:"nowrap" }}>
-              {claudeSaved?"✓ OK":"APPLIQUER"}
+              {claudeSaved?"✓ OK":t("settings.apply")}
             </div>
           </div>
           <div style={{ color:C.muted,fontSize:8,fontFamily:C.fnt,marginTop:8,lineHeight:1.8 }}>

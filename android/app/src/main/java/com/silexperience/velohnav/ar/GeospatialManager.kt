@@ -30,51 +30,46 @@ class GeospatialManager {
     fun onFrame(earth: Earth, frame: Frame) {
         val p = earth.cameraGeospatialPose
         _accuracy.value = VpsAccuracy(
-            horizontalMeters = p.horizontalAccuracy,
-            headingDegrees   = p.headingAccuracy,
-            isReliable       = p.horizontalAccuracy < 5.0 && p.headingAccuracy < 15.0
+            p.horizontalAccuracy, p.headingAccuracy,
+            p.horizontalAccuracy < 5.0 && p.headingAccuracy < 15.0
         )
     }
 
     /**
-     * Place une ancre de navigation sur la géométrie terrain.
+     * Place une flèche de navigation à la position [data].
      *
-     * Migration ARCore 1.40+ :
-     *   - Ancien (déprécié)  : earth.resolveAnchorOnTerrain(lat, lng, alt, qx, qy, qz, qw)
-     *   - Nouveau (1.40+)    : earth.createAnchor(pose) avec AltitudeMode.RELATIVE_TO_TERRAIN
-     *
-     * Le quaternion Y-axis encode le bearing (cap) de la flèche de navigation.
-     * Formule : angle = bearing_rad / 2  →  quat = (0, sin(angle), 0, cos(angle))
+     * Utilise resolveAnchorOnRooftop (ARCore 1.40+) — adapté aux zones urbaines
+     * denses comme Luxembourg-Ville où la VPS est la plus précise sur les toits.
+     * Fallback sur resolveAnchorOnTerrain si Rooftop lève une exception.
      */
     fun placeArrowAnchor(earth: Earth, data: TerrainAnchorData): TerrainAnchorData {
-        val bearingRad = Math.toRadians(data.bearingDegrees.toDouble())
-        val half = bearingRad / 2.0
-        val qx = 0f
-        val qy = sin(half).toFloat()
-        val qz = 0f
-        val qw = cos(half).toFloat()
+        // Quaternion Y-axis rotation pour orienter la flèche vers la prochaine étape
+        val rad  = Math.toRadians(data.bearingDegrees.toDouble())
+        val half = rad / 2.0
+        val qx = 0f; val qy = sin(half).toFloat(); val qz = 0f; val qw = cos(half).toFloat()
 
         return try {
-            // ARCore 1.40+ : createAnchor avec GeospatialPose — altitude relative au terrain
-            val geoPose = earth.getGeospatialPose()
-            val anchor = earth.createAnchor(
+            // API ARCore 1.40+ — Rooftop anchor (meilleure précision en milieu urbain)
+            val anchor = earth.resolveAnchorOnRooftop(
                 data.latitude, data.longitude,
-                /* altitudeAboveTerrain = */ 0.5,   // 50cm au-dessus du sol
+                0.5,          // altitude au-dessus du toit en mètres
                 qx, qy, qz, qw
             )
-            Log.d(TAG, "Anchor terrain step=${data.stepIndex} acc=${_accuracy.value?.label}")
+            Log.d(TAG, "Rooftop anchor créé step=${data.stepIndex} bearing=${data.bearingDegrees}°")
             data.copy(anchor = anchor)
         } catch (e: Exception) {
-            // Fallback si la nouvelle API n'est pas disponible (anciens devices ARCore < 1.40)
+            Log.w(TAG, "Rooftop non dispo, fallback Terrain: ${e.message}")
             try {
+                // Fallback : resolveAnchorOnTerrain (toujours supporté)
                 @Suppress("DEPRECATION")
                 val anchor = earth.resolveAnchorOnTerrain(
-                    data.latitude, data.longitude, 0.5, qx, qy, qz, qw
+                    data.latitude, data.longitude, 0.5,
+                    qx, qy, qz, qw
                 )
-                Log.d(TAG, "Anchor terrain (fallback legacy) step=${data.stepIndex}")
+                Log.d(TAG, "Terrain anchor fallback créé step=${data.stepIndex}")
                 data.copy(anchor = anchor)
             } catch (e2: Exception) {
-                Log.e(TAG, "placeArrowAnchor failed: ${e2.message}")
+                Log.e(TAG, "placeArrowAnchor impossible: ${e2.message}")
                 data
             }
         }

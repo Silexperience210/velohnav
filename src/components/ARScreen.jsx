@@ -6,10 +6,6 @@ import { haversine, getBearing, fDist, fWalk, bCol, bTag, pins } from "../utils.
 import { useCompass } from "../hooks/useCompass.js";
 import { useRoute } from "../hooks/useRoute.js";
 import { launchNativeArNav } from "../utils.js";
-import RouteOverlay from "./RouteOverlay.jsx";
-import NavOverlay from "./NavOverlay.jsx";
-import ARPin from "./ARPin.jsx";
-import CityBG from "./CityBG.jsx";
 
 function RouteOverlay({ route, gpsPos, heading, mode, onClose }) {
   const cvRef = useRef();
@@ -121,13 +117,13 @@ function RouteOverlay({ route, gpsPos, heading, mode, onClose }) {
   const modeCol  = mode === "walking" ? "#A78BFA" : "#3B82F6";
 
   // Étiquette de direction textuelle
-  const dirText = arriving ? "ARRIVÉE !" : (
+  const dirText = arriving ? t("nav.arrived") : (
     nextWp?.modifier === "left"         ? "◀ TOURNEZ À GAUCHE"
     : nextWp?.modifier === "right"      ? "TOURNEZ À DROITE ▶"
     : nextWp?.modifier === "sharp left" ? "◀◀ VIRAGE SERRÉ GAUCHE"
     : nextWp?.modifier === "sharp right"? "VIRAGE SERRÉ DROITE ▶▶"
     : nextWp?.modifier === "uturn"      ? "DEMI-TOUR"
-    :                                     "CONTINUEZ TOUT DROIT"
+    :                                     t("nav.continue")
   );
 
   return (
@@ -206,142 +202,13 @@ function RouteOverlay({ route, gpsPos, heading, mode, onClose }) {
 
 // ── BRIDGE CAPACITOR → ArNavigationActivity (Android natif) ──────
 // Déclenche ARCore Geospatial si on est dans l'app native, sinon no-op.
-async function launchNativeArNav(destLat, destLng, destName, mode="bicycling", mapsKey="") {
-  try {
-    const { registerPlugin } = await import("@capacitor/core");
-    const ArNav = registerPlugin("ArNavigation");
-    await ArNav.startNavigation({ destLat, destLng, destName, travelMode: mode, mapsKey });
-    return true;
-  } catch { return false; }
-}
 
-async function startWatchingGPS(cb) {
-  if (!navigator.geolocation) return () => {};
-  const id = navigator.geolocation.watchPosition(
-    p => cb({ lat:p.coords.latitude, lng:p.coords.longitude, acc:Math.round(p.coords.accuracy) }),
-    e => console.warn("GPS:", e),
-    { enableHighAccuracy:true, maximumAge:5000 }
-  );
-  return () => navigator.geolocation.clearWatch(id);
-}
 
 // JCDecaux — fetch direct, fallback proxy CORS si bloqué (prototype web)
-async function fetchJCDecaux(apiKey) {
-  const url = `https://api.jcdecaux.com/vls/v3/stations?contract=Luxembourg&apiKey=${apiKey}`;
-  try {
-    const r = await fetch(url);
-    if (r.ok) return await r.json();
-  } catch {}
-  // Fallback proxy CORS pour prototype web (ne pas utiliser en prod — expose la clé)
-  try {
-    const r = await fetch(`https://corsproxy.io/?${encodeURIComponent(url)}`);
-    if (r.ok) return await r.json();
-  } catch {}
-  return null;
-}
 
-// ── DESIGN ────────────────────────────────────────────────────────
-const C = {
-  bg:"#080c0f", border:"rgba(255,255,255,0.07)",
-  accent:"#F5820D", accentBg:"rgba(245,130,13,0.12)",
-  good:"#2ECC8F", warn:"#F5820D", bad:"#E03E3E",
-  blue:"#3B82F6", text:"#E2E6EE", muted:"#4A5568",
-  fnt:"'Courier New', monospace",
-};
 
-// ── UTILS ─────────────────────────────────────────────────────────
-function haversine(la1,ln1,la2,ln2) {
-  const R=6371000,dL=(la2-la1)*Math.PI/180,dl=(ln2-ln1)*Math.PI/180;
-  const a=Math.sin(dL/2)**2+Math.cos(la1*Math.PI/180)*Math.cos(la2*Math.PI/180)*Math.sin(dl/2)**2;
-  return Math.round(R*2*Math.atan2(Math.sqrt(a),Math.sqrt(1-a)));
-}
-function getBearing(la1,ln1,la2,ln2){
-  const φ1=la1*Math.PI/180,φ2=la2*Math.PI/180,Δλ=(ln2-ln1)*Math.PI/180;
-  const y=Math.sin(Δλ)*Math.cos(φ2);
-  const x=Math.cos(φ1)*Math.sin(φ2)-Math.sin(φ1)*Math.cos(φ2)*Math.cos(Δλ);
-  return(Math.atan2(y,x)*180/Math.PI+360)%360;
-}
-const fDist = m => m<1000 ? `${m}m` : `${(m/1000).toFixed(1)}km`;
-// FIX : Math.round(0/80) = 0 → affichait "0 min". Math.ceil + seuil < 1 min.
-const fWalk = m => m < 40 ? "< 1 min" : `${Math.ceil(m/80)} min`;
-const bCol  = s => s.status==="CLOSED"?"#444":s.bikes===0?C.bad:s.bikes<=2?C.warn:C.good;
-const bTag  = s => s.status==="CLOSED"?t("station.closed"):s.bikes===0?t("station.empty"):s.bikes<=2?t("station.low"):t("station.available");
 
-function parseStation(raw) {
-  const av = raw.totalStands?.availabilities ?? {};
-  // FIX : meca était toujours 0. JCDecaux v3 expose bien mechanicalBikes.
-  const elec  = av.electricalBikes ?? av.electricalInternalBatteryBikes ?? av.electricalExternalBatteryBikes ?? 0;
-  const bikes = av.bikes ?? raw.available_bikes ?? 0;
-  const meca  = av.mechanicalBikes ?? Math.max(0, bikes - elec);
-  return {
-    id:    raw.number,
-    name:  (raw.name||"").replace(/^\d+[\s\-]+/,"").trim(),
-    lat:   raw.position?.latitude  ?? raw.position?.lat,
-    lng:   raw.position?.longitude ?? raw.position?.lng,
-    cap:   raw.totalStands?.capacity ?? raw.bike_stands ?? 0,
-    bikes,
-    elec,
-    meca,
-    docks: av.stands ?? raw.available_bike_stands ?? 0,
-    status: raw.status==="OPEN" ? "OPEN" : "CLOSED",
-    _mock: false,
-  };
-}
 
-const REF = { lat:49.6080, lng:6.1295 };
-const FALLBACK = [
-  { id:1,  name:"Gare Centrale",       lat:49.59995, lng:6.13385, cap:20, b:7, e:5 },
-  { id:4,  name:"Place d'Armes",        lat:49.61118, lng:6.13091, cap:15, b:5, e:4 },
-  { id:2,  name:"Hamilius",             lat:49.61143, lng:6.12975, cap:25, b:2, e:1 },
-  { id:7,  name:"Clausen",              lat:49.61021, lng:6.14437, cap:12, b:4, e:3 },
-  { id:14, name:"Kirchberg MUDAM",      lat:49.61921, lng:6.15178, cap:22, b:9, e:7 },
-  { id:21, name:"Limpertsberg",         lat:49.61571, lng:6.12462, cap:20, b:3, e:2 },
-  { id:33, name:"Bonnevoie",            lat:49.59650, lng:6.13750, cap:18, b:0, e:0 },
-  { id:45, name:"Belair",               lat:49.60890, lng:6.11940, cap:16, b:6, e:4 },
-].map(s=>({ id:s.id, name:s.name, lat:s.lat, lng:s.lng, cap:s.cap,
-  bikes:s.b, elec:s.e, meca:0, docks:s.cap-s.b,
-  status:s.b===0&&s.id===33?"CLOSED":"OPEN", _mock:true }));
-
-function enrich(list, pos) {
-  const ref = pos ?? REF;
-  return list.filter(s=>s.lat&&s.lng)
-    .map(s=>({ ...s, dist:haversine(ref.lat,ref.lng,s.lat,s.lng) }))
-    .sort((a,b)=>a.dist-b.dist);
-}
-
-// pins() — projette les stations réelles dans le FOV via bearing+heading.
-// Retourne [] si heading ou gpsPos manquants — on n'affiche JAMAIS de faux pins hardcodés.
-function pins(stations, heading=null, gpsPos=null) {
-  if (heading === null || !gpsPos) return []; // pas de boussole → pas de pins
-  const FOV_=68;
-  return stations
-    .filter(s=>s.lat&&s.lng&&s.dist<15000)
-    .map(s=>{
-      const bear=getBearing(gpsPos.lat,gpsPos.lng,s.lat,s.lng);
-      const rel=((bear-heading+540)%360)-180;
-      if(Math.abs(rel)>FOV_/2+8) return null;
-      const x=50+(rel/(FOV_/2))*50;
-      const dc=Math.min(s.dist,12000);
-      const y=70-(1-dc/12000)*44;
-      const scale=Math.max(0.3,1-dc/14000);
-      return{...s,x,y,scale,labelRight:rel<0,rel};
-    })
-    .filter(Boolean)
-    .sort((a,b)=>b.dist-a.dist)
-    .slice(0,8);
-}
-
-// ── HISTORIQUE STATIONS (feature #13) ────────────────────────────
-const HIST_KEY = "velohnav_history";
-function getHistory() {
-  try { return JSON.parse(localStorage.getItem(HIST_KEY)||"[]"); } catch { return []; }
-}
-function addToHistory(station) {
-  const prev = getHistory().filter(h=>h.id!==station.id);
-  const entry = { id:station.id, name:station.name, lat:station.lat, lng:station.lng,
-    visitedAt: Date.now() };
-  localStorage.setItem(HIST_KEY, JSON.stringify([entry,...prev].slice(0,10)));
-}
 
 // ── LNURL-PAY (feature #2) ────────────────────────────────────────
 // Envoie des sats via LNURL-pay depuis une Lightning Address (user@domain)
@@ -370,27 +237,6 @@ async function payLnAddress(lnAddress, satsAmount, comment="VelohNav trajet") {
   }
 }
 
-// ── NOTIFICATIONS (feature #14) ──────────────────────────────────
-async function requestNotifPerm() {
-  if (!("Notification" in window)) return false;
-  if (Notification.permission === "granted") return true;
-  const p = await Notification.requestPermission();
-  return p === "granted";
-}
-function notifyStation(station, prevBikes) {
-  if (!("Notification" in window) || Notification.permission !== "granted") return;
-  if (station.bikes === 0 && prevBikes > 0) {
-    new Notification(`🚲 ${station.name} est vide`, {
-      body: `Plus aucun vélo disponible.`,
-      icon: "./icon-192.png", tag: `empty-${station.id}`, silent: false,
-    });
-  } else if (station.bikes <= 2 && prevBikes > 2) {
-    new Notification(`⚠️ ${station.name} presque vide`, {
-      body: `Plus que ${station.bikes} vélo${station.bikes>1?"s":""} disponible${station.bikes>1?"s":""}.`,
-      icon: "./icon-192.png", tag: `low-${station.id}`, silent: true,
-    });
-  }
-}
 
 // ── COMPASS HOOK ──────────────────────────────────────────────────
 
@@ -402,12 +248,12 @@ function NavOverlay({ relBear, dist, name }) {
   const col = arriving ? C.good : onTrack ? "#3B82F6" : C.accent;
 
   const dirLabel = arriving          ? "ARRIVÉE !"
-    : abs < 14                       ? "TOUT DROIT"
-    : abs < 50 && relBear < 0        ? "◀  TOURNE À GAUCHE"
-    : abs < 50 && relBear > 0        ? "TOURNE À DROITE  ▶"
-    : abs < 120 && relBear < 0       ? "◀◀  DEMI-TOUR GAUCHE"
-    : abs < 120 && relBear > 0       ? "DEMI-TOUR DROITE  ▶▶"
-    :                                  "FAIS DEMI-TOUR";
+    : abs < 14                       ? t("nav.straight")
+    : abs < 50 && relBear < 0        ? t("nav.turn_left")
+    : abs < 50 && relBear > 0        ? t("nav.turn_right")
+    : abs < 120 && relBear < 0       ? t("nav.sharp_left")
+    : abs < 120 && relBear > 0       ? t("nav.sharp_right")
+    :                                  t("nav.uturn");
 
   // Canvas corridor
   useEffect(()=>{
@@ -695,8 +541,6 @@ function ARPin({ s, sel, setSel, pulse }) {
 }
 
 // ── AR SCREEN ─────────────────────────────────────────────────────
-const COMPASS_LABELS=["N","NE","E","SE","S","SO","O","NO"];
-const FOV=68;
 
 
 function ARScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey="" }) {
@@ -845,11 +689,11 @@ function ARScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey=""
   // ── Status boussole pour l'UI ──────────────────────────────────
   const compassStatus=()=>{
     if(perm==="idle")       return{label:"APPUIE SUR ACTIVER AR",col:C.muted};
-    if(perm==="requesting") return{label:"INITIALISATION…",col:C.warn};
-    if(perm==="denied")     return{label:"BOUSSOLE REFUSÉE",col:C.bad};
-    if(perm==="unavailable")return{label:"CAPTEUR INDISPONIBLE",col:C.bad};
-    if(perm==="nosignal")   return{label:"CALIBRATION REQUISE — voir indicateur",col:C.bad};
-    if(heading===null)      return{label:"ATTENTE CAPTEUR…",col:C.warn};
+    if(perm==="requesting") return{label:t("ar.init"),col:C.warn};
+    if(perm==="denied")     return{label:t("ar.compass_denied"),col:C.bad};
+    if(perm==="unavailable")return{label:t("ar.compass_unavail"),col:C.bad};
+    if(perm==="nosignal")   return{label:t("ar.compass_nosignal"),col:C.bad};
+    if(heading===null)      return{label:t("ar.compass_waiting"),col:C.warn};
     return{label:`AR ACTIF · ${hdg}° ${cardLabel}`,col:C.good};
   };
   const cs=compassStatus();
@@ -1045,11 +889,11 @@ function ARScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey=""
             </div>
             <div style={{display:"flex",borderTop:`1px solid ${C.border}`,paddingTop:11}}>
               {[
-                {l:"VÉLOS",v:navStation.bikes,col:bCol(navStation)},
+                {l:t("station.bikes"),v:navStation.bikes,col:bCol(navStation)},
                 {l:"⚡ ÉLEC.",v:navStation.elec, col:"#60A5FA"},
                 {l:"🔧 MÉCA.",v:navStation.meca, col:C.text},
-                {l:"DOCKS",v:navStation.docks,col:C.good},
-                {l:"CAP.",  v:navStation.cap,  col:C.muted},
+                {l:t("station.docks"),v:navStation.docks,col:C.good},
+                {l:t("station.capacity"),  v:navStation.cap,  col:C.muted},
               ].map((m,i)=>(
                 <div key={m.l} style={{flex:1,textAlign:"center",borderRight:i<3?`1px solid ${C.border}`:"none"}}>
                   <div style={{color:m.col,fontSize:20,fontFamily:C.fnt,fontWeight:700}}>{m.v}</div>

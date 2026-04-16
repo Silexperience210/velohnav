@@ -1,10 +1,9 @@
-import { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import { useState } from "react";
 import { t } from "../i18n.js";
-import { C, COMPASS_LABELS, FOV } from "../constants.js";
-import { haversine, getBearing, fDist, fWalk, bCol, bTag, pins } from "../utils.js";
-
-import { nearestStop, getWeatherAdvice } from "../utils.js";
 import { C } from "../constants.js";
+
+import { nearestStop } from "../utils.js";
+import { getWeatherAdvice } from "../hooks/useWeather.js";
 
 function WeatherBanner({ weather, advice, nearStop, station }) {
   const [expanded, setExpanded] = useState(false);

@@ -29,8 +29,8 @@ function StatusBar({ tab, gpsOk, apiLive, isMock, onRefresh, refreshing }) {
       </div>
       <div style={{ display:"flex", gap:5, alignItems:"center" }}>
         {[
-          { l:gpsOk?"GPS ✓":"GPS",  col:gpsOk?C.good:C.warn },
-          { l:apiLive?"LIVE":isMock?"DEMO":"ERR", col:apiLive?C.good:isMock?C.warn:C.bad },
+          { l:gpsOk?t("status.gps_ok"):t("status.gps_nok"),  col:gpsOk?C.good:C.warn },
+          { l:apiLive?t("status.live"):isMock?t("status.demo"):t("status.error"), col:apiLive?C.good:isMock?C.warn:C.bad },
         ].map(s=>(
           <div key={s.l} style={{ display:"flex", alignItems:"center", gap:3, padding:"3px 6px",
             background:"rgba(0,0,0,0.4)", border:`1px solid ${C.border}`, borderRadius:3 }}>
@@ -203,7 +203,7 @@ export default function App() {
     const sats = Math.max(10, durMin * 2); // 2 sats/min, min 10 sats
     setTrip(null);
     if (lnOn && lnAddr) {
-      setSatsResult({ok:null, msg:"Envoi en cours…"});
+      setSatsResult({ok:null, msg:t("trip.sats_sending")});
       const res = await payLnAddress(lnAddr, sats, `VelohNav trajet ${durMin}min depuis ${trip.name}`);
       setSatsResult(res.ok
         ? {ok:true,  msg:`⚡ ${sats} sats envoyés !`}

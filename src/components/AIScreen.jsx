@@ -8,7 +8,7 @@ function AIScreen({ stations, claudeKey, aiHistory, setAiHistory, aiDisplay, set
   const top = stations.find(s=>s.bikes>0);
   const initMsg = top
     ? `${stations.filter(s=>s.bikes>0).length}/${stations.length} stations dispos. Plus proche : ${top.name} (${fDist(top.dist)}, ${top.bikes}🚲 ⚡${top.elec}).`
-    : "Chargement des stations…";
+    : t("map.loading");
 
   const [input,   setInput]   = useState("");
   const [busy,    setBusy]    = useState(false);
@@ -42,7 +42,7 @@ Réponds uniquement sur la mobilité Veloh, les itinéraires, ou l'app.`;
     const q=(text||input).trim();
     if(!q||busy) return;
     if (!claudeKey) {
-      setAiDisplay(d=>[...d,{role:"user",text:q},{role:"ai",text:"⚠ Clé API Claude manquante — entre-la dans OPT pour activer l'assistant."}]);
+      setAiDisplay(d=>[...d,{role:"user",text:q},{role:"ai",text:t("ai.missing_key")}]);
       setInput(""); return;
     }
     setInput(""); setBusy(true);
@@ -66,7 +66,7 @@ Réponds uniquement sur la mobilité Veloh, les itinéraires, ou l'app.`;
       if (!r.ok) {
         // FIX : cas spécial 401 → message clair pour l'utilisateur
         const errMsg = r.status === 401
-          ? "Clé Claude invalide — vérifie-la dans OPT."
+          ? t("ai.invalid_key")
           : data?.error?.message ?? `Erreur API (${r.status})`;
         setAiDisplay(d=>[...d,{role:"ai",text:`⚠ ${errMsg}`}]);
       } else {
@@ -80,14 +80,14 @@ Réponds uniquement sur la mobilité Veloh, les itinéraires, ou l'app.`;
     setBusy(false);
   },[input,busy,aiHistory,claudeKey,systemPrompt,setAiHistory,setAiDisplay]);
 
-  const QUICK = ["Station la plus proche ?","Vélos électriques dispo ?","Où déposer mon vélo ?","Itinéraire Hamilius → Kirchberg"];
+  const QUICK = [t("ai.q1"),t("ai.q2"),t("ai.q3"),t("ai.q4")];
 
   return (
     <div style={{ flex:1, display:"flex", flexDirection:"column", background:C.bg, minHeight:0 }}>
       <div style={{ padding:"9px 14px 7px", borderBottom:`1px solid ${C.border}`, flexShrink:0 }}>
         <div style={{ color:C.accent, fontSize:10, fontFamily:C.fnt, fontWeight:700, letterSpacing:2 }}>VELOH·AI</div>
         <div style={{ color:C.muted, fontSize:8, fontFamily:C.fnt }}>
-          Claude · {stations.length} stations · {stations.some(s=>!s._mock)?"données live":"données simulées"}
+          Claude · {stations.length} stations · {stations.some(s=>!s._mock)?t("ai.live"):t("station.simulated")}
         </div>
       </div>
       <div style={{ flex:1, overflowY:"auto", padding:"11px 14px", display:"flex", flexDirection:"column", gap:9 }}>
@@ -124,7 +124,7 @@ Réponds uniquement sur la mobilité Veloh, les itinéraires, ou l'app.`;
       </div>
       <div style={{ display:"flex", gap:8, padding:"7px 14px 13px", borderTop:`1px solid ${C.border}`, flexShrink:0 }}>
         <input value={input} onChange={e=>setInput(e.target.value)} onKeyDown={e=>e.key==="Enter"&&sendText(input)}
-          placeholder="Pose ta question sur Veloh…"
+          placeholder={t("ai.placeholder")}
           style={{ flex:1, background:"rgba(255,255,255,0.03)", border:`1px solid ${C.border}`,
             borderRadius:5, padding:"9px 11px", color:C.text, fontSize:10, fontFamily:C.fnt, outline:"none" }}/>
         <div onPointerDown={()=>sendText(input)} style={{

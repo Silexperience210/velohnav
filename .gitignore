@@ -22,3 +22,4 @@ android/app/src/main/assets/google-services.json
 
 # Répertoires dupliqués / parasites
 velohnav-main/
+*.jks

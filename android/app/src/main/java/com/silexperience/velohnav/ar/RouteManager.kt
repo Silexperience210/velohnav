@@ -28,6 +28,16 @@ class RouteManager(private val mapsApiKey: String) {
     private val TAG = "RouteManager"
     
     companion object {
+        /** "120m" ou "1.2km" */
+        fun formatDistance(meters: Int): String =
+            if (meters < 1000) "${meters}m" else "${"%.1f".format(meters / 1000.0)}km"
+
+        /** "2 min" ou "1h 05" */
+        fun formatDuration(seconds: Int): String {
+            val m = seconds / 60
+            return if (m < 60) "$m min" else "${m / 60}h ${"%02d".format(m % 60)}"
+        }
+
         val httpClient by lazy {
             OkHttpClient.Builder()
                 .addInterceptor(HttpLoggingInterceptor().apply { level = HttpLoggingInterceptor.Level.BASIC })

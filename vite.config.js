@@ -47,6 +47,12 @@ export default defineConfig({
     }),
   ],
   base: './',
+  // FIX: Capacitor packages sont injectés à runtime par Android — ne pas bundler
+  build: {
+    rollupOptions: {
+      external: ['@capacitor/geolocation', '@capacitor/core'],
+    },
+  },
   // Vitest — tests unitaires sans lancer le navigateur
   test: {
     environment: 'node',

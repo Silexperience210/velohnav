@@ -1,11 +1,9 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { t } from "../i18n.js";
 import { C, COMPASS_LABELS, FOV } from "../constants.js";
-import { haversine, getBearing, fDist, fWalk, bCol, bTag, pins } from "../utils.js";
-
-import { nearestStop, getWeatherAdvice } from "../utils.js";
+import { haversine, getBearing, fDist, fWalk, bCol, bTag, pins, nearestStop } from "../utils.js";
+import { getWeatherAdvice } from "../hooks/useWeather.js";
 import WeatherBanner from "./WeatherBanner.jsx";
-import LuxMap from "./LuxMap.jsx";
 
 function LuxMap({ toXY }) {
   // Converts [lat,lng] array → "x,y x,y …" for polyline/polygon
@@ -262,7 +260,7 @@ function MapScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey, 
           borderRadius:8, padding:"6px 10px" }}>
           <span style={{ color:C.muted, fontSize:12 }}>🔍</span>
           <input value={search} onChange={e=>setSearch(e.target.value)}
-            placeholder="Rechercher une station…"
+            placeholder={t("map.search")}
             style={{ flex:1, background:"transparent", border:"none", outline:"none",
               color:C.text, fontSize:11, fontFamily:C.fnt }}/>
           {search&&<span onPointerDown={()=>setSearch("")}
@@ -447,11 +445,11 @@ function MapScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey, 
           </div>
           <div style={{ display:"flex",borderTop:`1px solid ${C.border}`,paddingTop:9 }}>
             {[
-              {l:"VÉLOS",  v:selStation.bikes, col:bCol(selStation)},
-              {l:"⚡ÉLEC", v:selStation.elec,  col:"#60A5FA"},
-              {l:"🔧MÉCA", v:selStation.meca,  col:C.text},
-              {l:"DOCKS",  v:selStation.docks, col:C.good},
-              {l:"CAP.",   v:selStation.cap,   col:C.muted},
+              {l:t("station.bikes"),  v:selStation.bikes, col:bCol(selStation)},
+              {l:t("station.elec"), v:selStation.elec,  col:"#60A5FA"},
+              {l:t("station.meca"), v:selStation.meca,  col:C.text},
+              {l:t("station.docks"),  v:selStation.docks, col:C.good},
+              {l:t("station.capacity"),   v:selStation.cap,   col:C.muted},
             ].map((m,i)=>(
               <div key={m.l} style={{ flex:1,textAlign:"center",
                 borderRight:i<4?`1px solid ${C.border}`:"none" }}>
