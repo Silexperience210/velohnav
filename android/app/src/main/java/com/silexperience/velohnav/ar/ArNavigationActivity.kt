@@ -55,7 +55,7 @@ class ArNavigationActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         
         destLat = savedInstanceState?.getDouble("dest_lat") ?: intent.getDoubleExtra("dest_lat", 0.0)
-        destLng = savedInstanceState?.getDouble("dest_lon") ?: intent.getDoubleExtra("dest_lon", 0.0)
+        destLng = savedInstanceState?.getDouble("dest_lng") ?: intent.getDoubleExtra("dest_lng", 0.0)
         destName = savedInstanceState?.getString("dest_name") ?: intent.getStringExtra("dest_name") ?: "Destination"
         travelMode = savedInstanceState?.getString("travel_mode") ?: intent.getStringExtra("travel_mode") ?: "bicycling"
         mapsKey = savedInstanceState?.getString("maps_key") ?: intent.getStringExtra("maps_key") ?: ""
@@ -160,7 +160,7 @@ class ArNavigationActivity : ComponentActivity() {
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
         outState.putDouble("dest_lat", destLat)
-        outState.putDouble("dest_lon", destLng)
+        outState.putDouble("dest_lng", destLng)
         outState.putString("dest_name", destName)
         outState.putString("travel_mode", travelMode)
         outState.putString("maps_key", mapsKey)

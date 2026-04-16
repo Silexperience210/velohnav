@@ -178,7 +178,8 @@ function useWeather(gpsPos) {
     load();
     const t = setInterval(load, 10 * 60 * 1000); // refresh 10min
     return () => { cancelled = true; clearInterval(t); };
-  }, [gpsPos?.lat?.toFixed(2), gpsPos?.lng?.toFixed(2)]); // re-fetch seulement si position change de >1km
+  // Dep: arrondi à 0.01° (~1km) pour éviter des re-fetches inutiles
+  }, [gpsPos ? Math.round(gpsPos.lat * 100) : null, gpsPos ? Math.round(gpsPos.lng * 100) : null]);
 
   return { weather, loading };
 }
@@ -641,7 +642,7 @@ const fDist = m => m<1000 ? `${m}m` : `${(m/1000).toFixed(1)}km`;
 // FIX : Math.round(0/80) = 0 → affichait "0 min". Math.ceil + seuil < 1 min.
 const fWalk = m => m < 40 ? "< 1 min" : `${Math.ceil(m/80)} min`;
 const bCol  = s => s.status==="CLOSED"?"#444":s.bikes===0?C.bad:s.bikes<=2?C.warn:C.good;
-const bTag  = s => s.status==="CLOSED"?"FERMÉ":s.bikes===0?"VIDE":s.bikes<=2?"FAIBLE":"DISPO";
+const bTag  = s => s.status==="CLOSED"?t("station.closed"):s.bikes===0?t("station.empty"):s.bikes<=2?t("station.low"):t("station.available");
 
 function parseStation(raw) {
   const av = raw.totalStands?.availabilities ?? {};
@@ -988,7 +989,7 @@ function CityBG() {
 function StatusBar({ tab, gpsOk, apiLive, isMock, onRefresh, refreshing }) {
   const [t,setT] = useState(new Date());
   useEffect(()=>{ const i=setInterval(()=>setT(new Date()),1000); return()=>clearInterval(i); },[]);
-  const LABELS = { ar:"AUGMENTED REALITY", map:"CARTE", ai:"ASSISTANT", settings:"PARAMÈTRES" };
+  const LABELS = { ar:t("status.ar"), map:t("status.map"), ai:t("status.ai"), settings:t("status.settings") };
   return (
     <div style={{ padding:"9px 14px", display:"flex", justifyContent:"space-between", alignItems:"center",
       background:"rgba(8,12,15,0.97)", borderBottom:`1px solid ${C.border}`, flexShrink:0 }}>
@@ -1823,10 +1824,10 @@ function MapScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey, 
 
   // Filtres
   const FILTERS=[
-    {id:"all",  label:"Tout",    count:stations.length},
-    {id:"bikes",label:"🚲 Vélos",count:stations.filter(s=>s.bikes>0&&s.status==="OPEN").length},
-    {id:"docks",label:"🅿 Docks", count:stations.filter(s=>s.docks>0&&s.status==="OPEN").length},
-    {id:"elec", label:"⚡ Élec",  count:stations.filter(s=>s.elec>0&&s.status==="OPEN").length},
+    {id:"all",  label:t("map.filter_all"),    count:stations.length},
+    {id:"bikes",label:t("map.filter_bikes"),count:stations.filter(s=>s.bikes>0&&s.status==="OPEN").length},
+    {id:"docks",label:t("map.filter_docks"), count:stations.filter(s=>s.docks>0&&s.status==="OPEN").length},
+    {id:"elec", label:t("map.filter_elec"),  count:stations.filter(s=>s.elec>0&&s.status==="OPEN").length},
   ];
 
   return (
@@ -2328,7 +2329,7 @@ function SettingsScreen({ apiKey, setApiKey, claudeKey, setClaudeKey, onRefresh,
             <div onPointerDown={saveKey} style={{ background:saved?"rgba(46,204,143,0.15)":C.accentBg,
               border:`1px solid ${saved?C.good:C.accent}`,color:saved?C.good:C.accent,
               borderRadius:4,padding:"8px 12px",fontSize:9,fontFamily:C.fnt,cursor:"pointer",fontWeight:700,whiteSpace:"nowrap" }}>
-              {saved?"✓ OK":"APPLIQUER"}
+              {saved?"✓ OK":t("settings.apply")}
             </div>
           </div>
           <div style={{ color:C.muted,fontSize:8,fontFamily:C.fnt,marginTop:8,lineHeight:1.8 }}>
@@ -2380,7 +2381,7 @@ function SettingsScreen({ apiKey, setApiKey, claudeKey, setClaudeKey, onRefresh,
                 background:lnSaved?"rgba(46,204,143,0.15)":C.accentBg,border:`1px solid ${lnSaved?C.good:C.accent}`,
                 color:lnSaved?C.good:C.accent,borderRadius:4,padding:"8px 12px",
                 fontSize:9,fontFamily:C.fnt,cursor:"pointer",fontWeight:700,whiteSpace:"nowrap" }}>
-                {lnSaved?"✓ OK":"SAVE"}
+                {lnSaved?"✓ OK":t("settings.save")}
               </div>
             </div>
             {lnError&&<div style={{ color:C.bad,fontSize:8,fontFamily:C.fnt,marginTop:4 }}>⚠ {lnError}</div>}

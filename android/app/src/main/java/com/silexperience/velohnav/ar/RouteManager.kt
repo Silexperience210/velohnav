@@ -1,6 +1,8 @@
 package com.silexperience.velohnav.ar
 
 import android.util.Log
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import com.silexperience.velohnav.data.DirectionsApiService
 import okhttp3.OkHttpClient
 import okhttp3.logging.HttpLoggingInterceptor
@@ -71,7 +73,7 @@ class RouteManager(private val mapsApiKey: String) {
                 .url(url)
                 .header("User-Agent", "VelohNav/1.0")
                 .build()
-            val response = httpClient.newCall(request).execute()
+            val response = withContext(Dispatchers.IO) { httpClient.newCall(request).execute() }
             
             if (!response.isSuccessful) return Result.failure(Exception("OSRM HTTP ${response.code}"))
             
