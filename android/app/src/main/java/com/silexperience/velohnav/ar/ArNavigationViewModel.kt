@@ -27,16 +27,16 @@ import kotlinx.coroutines.withContext
 enum class NavStatus { IDLE, LOCATING, ROUTING, LOCALIZING, NAVIGATING, ARRIVED, ERROR }
 
 data class NavState(
-    val status: NavStatus      = NavStatus.IDLE,
+    val status: NavStatus        = NavStatus.IDLE,
     val currentStep: NavigationStep? = null,
-    val stepIndex: Int         = 0,
-    val totalSteps: Int        = 0,
+    val stepIndex: Int           = 0,
+    val totalSteps: Int          = 0,
     val distanceToNextTurnMeters: Double = 0.0,
-    val totalRemainingMeters: Int  = 0,
-    val etaSeconds: Int        = 0,
+    val totalRemainingMeters: Int = 0,
+    val etaSeconds: Int          = 0,
     val vpsAccuracy: VpsAccuracy? = null,
-    val destName: String       = "",
-    val errorMessage: String?  = null
+    val destName: String         = "",
+    val errorMessage: String?    = null
 )
 
 class ArNavigationViewModel(application: Application) : AndroidViewModel(application) {
@@ -49,18 +49,20 @@ class ArNavigationViewModel(application: Application) : AndroidViewModel(applica
     private var routeManager: RouteManager = RouteManager("")
     private val fusedLocation = LocationServices.getFusedLocationProviderClient(application)
 
-    private var arView: ARSceneView? = null
+    // FIX : arView n'est PLUS stocké ici — fuite mémoire lors des rotations écran.
+    // ARSceneView est passé en paramètre à chaque méthode qui en a besoin,
+    // sauf pour cleanup() où l'Activity passe explicitement la référence courante.
+    private var cleanupView: ARSceneView? = null  // référence unique pour cleanup
+
     private var route: NavigationRoute? = null
     private var currentStepIdx = 0
     private val arrowNodes = java.util.concurrent.ConcurrentHashMap<Int, AnchorNode>()
     private var modelAsset: Model? = null
     private var vpsReady = false
     private var navigationJob: Job? = null
-
-    // Dernier Earth connu — pour retry sans attendre le prochain frame
     private var lastEarth: Earth? = null
 
-    // ── Initialisation ───────────────────────────────────────────
+    // ── Initialisation ─────────────────────────────────────────────
     fun initializeNavigation(
         arSceneView: ARSceneView,
         destLat: Double, destLng: Double,
@@ -68,7 +70,8 @@ class ArNavigationViewModel(application: Application) : AndroidViewModel(applica
         mapsKey: String = ""
     ) {
         navigationJob?.cancel()
-        arView = arSceneView
+        // Stocker uniquement pour cleanup — pas pour les opérations de rendu
+        cleanupView = arSceneView
         routeManager = RouteManager(mapsKey)
         vpsReady = false
         currentStepIdx = 0
@@ -77,14 +80,12 @@ class ArNavigationViewModel(application: Application) : AndroidViewModel(applica
 
         _state.value = NavState(status = NavStatus.LOCATING, destName = destName)
 
-        // Charger le modèle GLB en arrière-plan
         viewModelScope.launch {
             try {
-                // loadModel() est déjà une suspend function qui gère son propre dispatcher
                 modelAsset = arSceneView.modelLoader.loadModel("models/arrow_navigation.glb")
+                Log.d(TAG, "GLB chargé")
             } catch (e: Exception) {
-                Log.w(TAG, "GLB load failed (navigation sans modèle): ${e.message}")
-                // Ne pas crasher — navigation textuelle reste disponible
+                Log.w(TAG, "GLB load failed (nav textuelle): ${e.message}")
             }
         }
 
@@ -93,13 +94,13 @@ class ArNavigationViewModel(application: Application) : AndroidViewModel(applica
         }
     }
 
-    // ── GPS + routing avec retry backoff ────────────────────────
+    // ── GPS + routing ───────────────────────────────────────────────
     @SuppressLint("MissingPermission")
     private suspend fun locateAndRoute(dLat: Double, dLng: Double, mode: String) {
         try {
             val loc = withContext(Dispatchers.IO) {
                 fusedLocation.getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, null).await()
-            } ?: return setState(NavStatus.ERROR, "GPS indisponible — vérifiez la localisation")
+            } ?: return setState(NavStatus.ERROR, "GPS indisponible")
 
             _state.value = _state.value.copy(status = NavStatus.ROUTING)
 
@@ -110,26 +111,26 @@ class ArNavigationViewModel(application: Application) : AndroidViewModel(applica
                     .onSuccess { r ->
                         route = r
                         _state.value = _state.value.copy(
-                            status       = NavStatus.LOCALIZING,
-                            totalSteps   = r.steps.size,
+                            status               = NavStatus.LOCALIZING,
+                            totalSteps           = r.steps.size,
                             totalRemainingMeters = r.totalDistanceMeters,
-                            etaSeconds   = r.totalDurationSeconds,
-                            currentStep  = r.steps.firstOrNull()
+                            etaSeconds           = r.totalDurationSeconds,
+                            currentStep          = r.steps.firstOrNull()
                         )
-                        Log.i(TAG, "Route obtenue : ${r.steps.size} étapes, ${r.totalDistanceMeters}m")
+                        Log.i(TAG, "Route: ${r.steps.size} étapes, ${r.totalDistanceMeters}m")
                         return
                     }
                     .onFailure { lastError = it }
             }
-            setState(NavStatus.ERROR, "Itinéraire indisponible : ${lastError?.message}")
+            setState(NavStatus.ERROR, "Itinéraire : ${lastError?.message}")
         } catch (e: Exception) {
-            setState(NavStatus.ERROR, "Erreur GPS : ${e.message}")
+            setState(NavStatus.ERROR, "GPS : ${e.message}")
         }
     }
 
-    // ── Appelé depuis le main thread (via mainHandler.post) ─────
-    // FIX : plus de GL thread ici, on est sur le main thread
-    fun onEarthTracking(earth: Earth, frame: Frame) {
+    // ── Appelé depuis main thread (via mainHandler.post dans Activity) ──
+    // arView passé en paramètre — jamais stocké
+    fun onEarthTracking(earth: Earth, frame: Frame, arView: ARSceneView) {
         lastEarth = earth
         geo.onFrame(earth, frame)
         val acc = geo.accuracy.value ?: return
@@ -138,28 +139,26 @@ class ArNavigationViewModel(application: Application) : AndroidViewModel(applica
         val r = route ?: return
         val st = _state.value.status
 
-        // Transition LOCALIZING → NAVIGATING dès que VPS est fiable
         if (!vpsReady && acc.isReliable && st == NavStatus.LOCALIZING) {
-            Log.i(TAG, "VPS fiable — démarrage navigation (±${acc.horizontalMeters}m)")
+            Log.i(TAG, "VPS fiable (±${acc.horizontalMeters}m) — démarrage navigation")
             vpsReady = true
-            // Placer les 3 premières flèches (sur le main thread = OK)
-            placeArrows(earth, r, 0, minOf(3, r.steps.size))
+            placeArrows(arView, earth, r, 0, minOf(3, r.steps.size))
             _state.value = _state.value.copy(status = NavStatus.NAVIGATING)
         }
 
         if (st == NavStatus.NAVIGATING || _state.value.status == NavStatus.NAVIGATING) {
-            updateProgress(earth, r)
+            updateProgress(arView, earth, r)
         }
     }
 
-    // ── Placement des ancres ─────────────────────────────────────
-    private fun placeArrows(earth: Earth, r: NavigationRoute, from: Int, count: Int) {
+    // ── Placement flèches ────────────────────────────────────────────
+    private fun placeArrows(arView: ARSceneView, earth: Earth, r: NavigationRoute, from: Int, count: Int) {
         for (i in from until (from + count).coerceAtMost(r.steps.size)) {
-            if (!arrowNodes.containsKey(i)) placeArrow(earth, r, i)
+            if (!arrowNodes.containsKey(i)) placeArrow(arView, earth, r, i)
         }
     }
 
-    private fun placeArrow(earth: Earth, r: NavigationRoute, idx: Int) {
+    private fun placeArrow(arView: ARSceneView, earth: Earth, r: NavigationRoute, idx: Int) {
         val step = r.steps.getOrNull(idx) ?: return
         val next = r.steps.getOrNull(idx + 1)
         val bearing = if (next != null)
@@ -170,40 +169,36 @@ class ArNavigationViewModel(application: Application) : AndroidViewModel(applica
         val placed = geo.placeArrowAnchor(earth, TerrainAnchorData(idx, step.endLat, step.endLng, bearing))
         val anchor = placed.anchor ?: return
 
-        // createNode sur le main thread dans viewModelScope — correct
+        // Main thread — SceneView 2.2.1 accepte addChildNode sur le main thread
         viewModelScope.launch {
-            val view = arView ?: return@launch
             try {
-                val anchorNode = AnchorNode(engine = view.engine, anchor = anchor)
+                val anchorNode = AnchorNode(engine = arView.engine, anchor = anchor)
                 modelAsset?.let { asset ->
-                    val instance = view.modelLoader.createInstance(asset)
-                    if (instance != null) {
+                    val instance = arView.modelLoader.createInstance(asset)
+                    if (instance != null)
                         anchorNode.addChildNode(ModelNode(modelInstance = instance, scaleToUnits = 0.8f))
-                    }
                 }
-                view.addChildNode(anchorNode)
+                arView.addChildNode(anchorNode)
                 arrowNodes[idx] = anchorNode
-                Log.d(TAG, "Flèche placée step=$idx")
+                Log.d(TAG, "Flèche step=$idx")
             } catch (e: Exception) {
-                Log.e(TAG, "Erreur placement flèche $idx: ${e.message}")
+                Log.e(TAG, "Flèche $idx : ${e.message}")
             }
         }
     }
 
-    // ── Progression ──────────────────────────────────────────────
-    private fun updateProgress(earth: Earth, r: NavigationRoute) {
+    // ── Progression ─────────────────────────────────────────────────
+    private fun updateProgress(arView: ARSceneView, earth: Earth, r: NavigationRoute) {
         if (currentStepIdx >= r.steps.size) {
             _state.value = _state.value.copy(status = NavStatus.ARRIVED); return
         }
-        // Vérifier que la session est toujours en tracking
         if (earth.trackingState != TrackingState.TRACKING) return
 
-        val pose  = earth.cameraGeospatialPose
-        val step  = r.steps[currentStepIdx]
-        val dist  = GeospatialManager.distanceMeters(pose.latitude, pose.longitude, step.endLat, step.endLng)
+        val pose = earth.cameraGeospatialPose
+        val step = r.steps[currentStepIdx]
+        val dist = GeospatialManager.distanceMeters(pose.latitude, pose.longitude, step.endLat, step.endLng)
 
-        // Arrivée à moins de 15m de l'étape courante → avancer
-        if (dist < 15.0) { advance(earth, r); return }
+        if (dist < 15.0) { advance(arView, earth, r); return }
 
         _state.value = _state.value.copy(
             currentStep              = step,
@@ -214,11 +209,11 @@ class ArNavigationViewModel(application: Application) : AndroidViewModel(applica
         )
     }
 
-    private fun advance(earth: Earth, r: NavigationRoute) {
+    private fun advance(arView: ARSceneView, earth: Earth, r: NavigationRoute) {
         arrowNodes.remove(currentStepIdx)?.let { node ->
             viewModelScope.launch {
-                arView?.removeChildNode(node)
-                try { node.destroy() } catch (e: Exception) { Log.w(TAG, "destroy advance: ${e.message}") }
+                arView.removeChildNode(node)
+                try { node.destroy() } catch (e: Exception) { Log.w(TAG, "destroy: ${e.message}") }
             }
         }
         currentStepIdx++
@@ -227,33 +222,39 @@ class ArNavigationViewModel(application: Application) : AndroidViewModel(applica
             Log.i(TAG, "Destination atteinte !")
             return
         }
-        // Pré-charger la flèche suivante
         val nextToLoad = currentStepIdx + 3
-        if (nextToLoad < r.steps.size) placeArrow(earth, r, nextToLoad)
+        if (nextToLoad < r.steps.size) placeArrow(arView, earth, r, nextToLoad)
     }
 
-    // ── Retry public ─────────────────────────────────────────────
-    fun retry(destLat: Double, destLng: Double, travelMode: String) {
+    // ── Retry ────────────────────────────────────────────────────────
+    fun retry(arView: ARSceneView, destLat: Double, destLng: Double, travelMode: String) {
         navigationJob?.cancel()
         vpsReady = false
+        cleanupView = arView
         _state.value = _state.value.copy(status = NavStatus.LOCATING, errorMessage = null)
         navigationJob = viewModelScope.launch { locateAndRoute(destLat, destLng, travelMode) }
     }
 
-    // ── Cleanup ──────────────────────────────────────────────────
-    fun cleanup() {
+    // ── Cleanup — appelé depuis Activity.onDestroy avec la référence courante ──
+    fun cleanup(arViewFromActivity: ARSceneView?) {
         navigationJob?.cancel()
-        viewModelScope.launch {
+        val view = arViewFromActivity ?: cleanupView
+        view?.let { v ->
             arrowNodes.values.forEach { node ->
-                arView?.removeChildNode(node)
-                try { node.destroy() } catch (e: Exception) { Log.w(TAG, "destroy: ${e.message}") }
+                try {
+                    v.removeChildNode(node)
+                    node.destroy()
+                } catch (e: Exception) {
+                    Log.w(TAG, "cleanup node: ${e.message}")
+                }
             }
-            arrowNodes.clear()
         }
+        arrowNodes.clear()
         geo.cleanup()
         modelAsset = null
-        arView = null
+        cleanupView = null
         lastEarth = null
+        route = null
     }
 
     private fun setState(status: NavStatus, msg: String? = null) {
@@ -261,5 +262,5 @@ class ArNavigationViewModel(application: Application) : AndroidViewModel(applica
         if (msg != null) Log.e(TAG, msg)
     }
 
-    override fun onCleared() { super.onCleared(); cleanup() }
+    override fun onCleared() { super.onCleared(); cleanup(null) }
 }

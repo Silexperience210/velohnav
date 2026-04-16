@@ -100,7 +100,7 @@ class ArNavigationActivity : ComponentActivity() {
                                     if (earth != null && earth.trackingState == TrackingState.TRACKING) {
                                         mainHandler.post {
                                             try {
-                                                viewModel.onEarthTracking(earth, frame)
+                                                viewModel.onEarthTracking(earth, frame, v)
                                             } catch (e: Exception) {
                                                 Log.e(TAG, "onEarthTracking error", e)
                                             }
@@ -195,7 +195,7 @@ class ArNavigationActivity : ComponentActivity() {
         super.onDestroy()
         Log.d(TAG, "onDestroy")
         mainHandler.removeCallbacksAndMessages(null)
-        viewModel.cleanup()
+        viewModel.cleanup(arView)  // Passer la référence courante pour cleanup propre
         arView = null
     }
 }
