@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { t } from "../i18n.js";
-import { C, COMPASS_LABELS, FOV } from "../constants.js";
+import { C, COMPASS_LABELS, FOV, FISCHER_STORES } from "../constants.js";
 import { haversine, getBearing, fDist, fWalk, bCol, bTag, pins } from "../utils.js";
 
 import { useCompass } from "../hooks/useCompass.js";
@@ -559,11 +559,12 @@ function ARPin({ s, sel, setSel, pulse }) {
 // ── AR SCREEN ─────────────────────────────────────────────────────
 
 
-function ARScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey="" }) {
+function ARScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey="", fischerVisible=false }) {
   const vidRef=useRef(null);
   const [cam,   setCam]  =useState("idle");
   const [pulse, setPulse]=useState(false);
   const {heading,perm,start:startCompass}=useCompass();
+  const [fischerOn, setFischerOn] = useState(false);
 
   // ── Navigation AR ───────────────────────────────────────────────
   const [navMode, setNavMode] = useState(null);   // null | "cycling" | "walking"
@@ -693,6 +694,28 @@ function ARScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey=""
   },[arPins, fakePins]);
 
   const visiblePins = clusteredPins;
+
+  // ── Fischer stores AR pins ──────────────────────────────────────
+  // Visible uniquement si fischerVisible=true — rayon 600m, max 4
+  const fischerPins = useMemo(()=>{
+    if (!fischerOn || heading === null || !gpsPos) return [];
+    const RADIUS = 600;
+    return FISCHER_STORES
+      .map(s => {
+        const dist = haversine(gpsPos.lat, gpsPos.lng, s.lat, s.lng);
+        if (dist > RADIUS) return null;
+        const bear = getBearing(gpsPos.lat, gpsPos.lng, s.lat, s.lng);
+        const rel  = ((bear - heading + 540) % 360) - 180;
+        if (Math.abs(rel) > FOV / 2 + 8) return null;
+        const x     = 50 + (rel / (FOV / 2)) * 50;
+        const y     = 70 - (1 - Math.min(dist, RADIUS) / RADIUS) * 44;
+        const scale = Math.max(0.55, 1 - dist / (RADIUS * 1.8));
+        return { ...s, dist, x, y, scale };
+      })
+      .filter(Boolean)
+      .sort((a, b) => a.dist - b.dist)
+      .slice(0, 4);
+  },[fischerOn, heading, gpsPos]);
 
   // ── Nav overlay ────────────────────────────────────────────────
   const navRel=useMemo(()=>{
@@ -878,10 +901,54 @@ function ARScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey=""
         </div>
       )}
 
-      {/* Pins */}
+      {/* Pins Vel'OH */}
       <div style={{position:"absolute",inset:0,zIndex:15}}>
         {visiblePins.map(s=><ARPin key={s.id} s={s} sel={sel} setSel={setSel} pulse={pulse}/>)}
       </div>
+
+      {/* Pins Fischer 🥐 */}
+      {fischerPins.map(s=>(
+        <div key={s.name} style={{
+          position:"absolute",
+          left:`${s.x}%`, top:`${s.y}%`,
+          transform:`translate(-50%,-100%) scale(${s.scale})`,
+          zIndex:16, pointerEvents:"none",
+          display:"flex", flexDirection:"column", alignItems:"center",
+        }}>
+          {/* Badge cyberpunk Fischer */}
+          <div style={{
+            background:"linear-gradient(135deg,rgba(8,5,0,0.95),rgba(20,10,0,0.92))",
+            border:"1px solid #D4780066",
+            borderTop:"2px solid #D47800",
+            borderRadius:"6px 6px 2px 6px",
+            padding:"4px 7px 3px",
+            display:"flex", alignItems:"center", gap:5,
+            boxShadow:"0 0 10px #D4780033",
+          }}>
+            <span style={{fontSize:14}}>🥐</span>
+            <div>
+              <div style={{
+                color:"#D47800", fontSize:7,
+                fontFamily:"monospace", fontWeight:700, letterSpacing:1,
+                whiteSpace:"nowrap",
+              }}>
+                {s.name.replace("Fischer ","")}
+              </div>
+              <div style={{
+                color:"#D47800aa", fontSize:6,
+                fontFamily:"monospace",
+              }}>
+                {Math.round(s.dist)}m
+              </div>
+            </div>
+          </div>
+          {/* Tige */}
+          <div style={{width:1,height:14,background:"linear-gradient(#D47800,transparent)"}}/>
+          {/* Point ancrage */}
+          <div style={{width:4,height:4,borderRadius:"50%",background:"#D47800",
+            boxShadow:"0 0 5px #D47800"}}/>
+        </div>
+      ))}
 
       {/* Bottom panel */}
       <div style={{position:"absolute",bottom:0,left:0,right:0,padding:"0 14px 14px",zIndex:22}}>
@@ -936,8 +1003,24 @@ function ARScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey=""
                 </div>
               </div>
             )}
+            {/* Toggle Fischer AR — toujours visible quand caméra active */}
+            {cam==="active"&&(
+              <div onPointerDown={()=>setFischerOn(f=>!f)}
+                style={{
+                  display:"flex", alignItems:"center", gap:5, padding:"6px 11px",
+                  background: fischerOn ? "rgba(212,120,0,0.2)" : "rgba(0,0,0,0.4)",
+                  border:`1px solid ${fischerOn ? "#D47800" : C.border}`,
+                  borderRadius:5, cursor:"pointer", marginBottom:6,
+                  boxShadow: fischerOn ? "0 0 8px #D4780044" : "none",
+                }}>
+                <span style={{fontSize:12}}>🥐</span>
+                <span style={{color: fischerOn ? "#D47800" : C.muted, fontSize:8, fontFamily:C.fnt, letterSpacing:1}}>
+                  FISCHER {fischerOn ? "ON" : "OFF"}
+                </span>
+              </div>
+            )}
             {navMode&&(
-              <div onPointerDown={stopNav}
+            <div onPointerDown={stopNav}
                 style={{marginTop:10,textAlign:"center",padding:"7px",
                   background:"rgba(224,62,62,0.1)",border:`1px solid ${C.bad}44`,
                   borderRadius:6,cursor:"pointer"}}>
