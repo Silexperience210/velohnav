@@ -12,8 +12,9 @@ import SettingsScreen from "./components/SettingsScreen.jsx";
 
 // ── Status Bar ─────────────────────────────────────────────────────
 function StatusBar({ tab, gpsOk, apiLive, isMock, onRefresh, refreshing }) {
-  const [t,setT] = useState(new Date());
-  useEffect(()=>{ const i=setInterval(()=>setT(new Date()),1000); return()=>clearInterval(i); },[]);
+  // FIX: renommé t→now pour éviter de masquer la fonction t() de i18n
+  const [now,setNow] = useState(new Date());
+  useEffect(()=>{ const i=setInterval(()=>setNow(new Date()),1000); return()=>clearInterval(i); },[]);
   const LABELS = { ar:t("status.ar"), map:t("status.map"), ai:t("status.ai"), settings:t("status.settings") };
   return (
     <div style={{ padding:"9px 14px", display:"flex", justifyContent:"space-between", alignItems:"center",
@@ -48,7 +49,7 @@ function StatusBar({ tab, gpsOk, apiLive, isMock, onRefresh, refreshing }) {
         </div>
         <div style={{ color:C.text, fontSize:11, fontFamily:C.fnt, fontWeight:700,
           padding:"3px 6px", background:"rgba(0,0,0,0.4)", border:`1px solid ${C.border}`, borderRadius:3 }}>
-          {t.toLocaleTimeString("fr",{hour:"2-digit",minute:"2-digit"})}
+          {now.toLocaleTimeString("fr",{hour:"2-digit",minute:"2-digit"})}
         </div>
       </div>
     </div>
