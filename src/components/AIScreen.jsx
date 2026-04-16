@@ -85,7 +85,7 @@ Réponds uniquement sur la mobilité Veloh, les itinéraires, ou l'app.`;
   return (
     <div style={{ flex:1, display:"flex", flexDirection:"column", background:C.bg, minHeight:0 }}>
       <div style={{ padding:"9px 14px 7px", borderBottom:`1px solid ${C.border}`, flexShrink:0 }}>
-        <div style={{ color:C.accent, fontSize:10, fontFamily:C.fnt, fontWeight:700, letterSpacing:2 }}>VELOH·AI</div>
+        <div style={{ color:C.accent, fontSize:10, fontFamily:C.fnt, fontWeight:700, letterSpacing:2 }}>{t("ai.title")}</div>
         <div style={{ color:C.muted, fontSize:8, fontFamily:C.fnt }}>
           Claude · {stations.length} stations · {stations.some(s=>!s._mock)?t("ai.live"):t("station.simulated")}
         </div>
@@ -93,7 +93,7 @@ Réponds uniquement sur la mobilité Veloh, les itinéraires, ou l'app.`;
       <div style={{ flex:1, overflowY:"auto", padding:"11px 14px", display:"flex", flexDirection:"column", gap:9 }}>
         {aiDisplay.map((m,i)=>(
           <div key={i} style={{ alignSelf:m.role==="user"?"flex-end":"flex-start", maxWidth:"88%" }}>
-            {m.role==="ai"&&<div style={{ color:C.accent, fontSize:7, fontFamily:C.fnt, letterSpacing:2, marginBottom:3 }}>VELOH·AI</div>}
+            {m.role==="ai"&&<div style={{ color:C.accent, fontSize:7, fontFamily:C.fnt, letterSpacing:2, marginBottom:3 }}>{t("ai.title")}</div>}
             <div style={{ background:m.role==="user"?C.accentBg:"rgba(255,255,255,0.04)",
               border:`1px solid ${m.role==="user"?C.accent+"55":C.border}`,
               borderRadius:m.role==="user"?"10px 10px 2px 10px":"10px 10px 10px 2px", padding:"9px 12px" }}>
@@ -105,7 +105,7 @@ Réponds uniquement sur la mobilité Veloh, les itinéraires, ou l'app.`;
         ))}
         {busy&&(
           <div style={{ alignSelf:"flex-start" }}>
-            <div style={{ color:C.accent, fontSize:7, fontFamily:C.fnt, letterSpacing:2, marginBottom:3 }}>VELOH·AI</div>
+            <div style={{ color:C.accent, fontSize:7, fontFamily:C.fnt, letterSpacing:2, marginBottom:3 }}>{t("ai.title")}</div>
             <div style={{ background:"rgba(255,255,255,0.04)", border:`1px solid ${C.border}`,
               borderRadius:"10px 10px 10px 2px", padding:"10px 14px", display:"flex", gap:6, alignItems:"center" }}>
               {[0,1,2].map(i=><div key={i} style={{ width:6,height:6,borderRadius:"50%",background:C.accent,opacity:0.7,transform:`scale(${i===1?1.2:0.8})` }}/>)}

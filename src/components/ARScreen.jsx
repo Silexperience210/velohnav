@@ -730,7 +730,7 @@ function ARScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey=""
           transform:"translate(-50%,-50%)",zIndex:30,
           background:"rgba(8,12,15,0.9)",border:`1px solid ${C.border}`,
           borderRadius:8,padding:"14px 22px",textAlign:"center"}}>
-          <div style={{color:C.accent,fontSize:10,fontFamily:C.fnt,letterSpacing:2}}>CALCUL ITINÉRAIRE…</div>
+          <div style={{color:C.accent,fontSize:10,fontFamily:C.fnt,letterSpacing:2}}>{t("ar.nav_loading")}</div>
         </div>
       )}
       {navMode&&routeError&&(
@@ -785,10 +785,10 @@ function ARScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey=""
                 background:C.accentBg,border:`1px solid ${C.accent}`,color:C.accent,
                 borderRadius:5,padding:"12px 32px",fontSize:12,fontFamily:C.fnt,
                 fontWeight:700,cursor:"pointer",letterSpacing:2,boxShadow:`0 0 20px ${C.accent}25`}}>
-                ▶ ACTIVER AR
+                {t("ar.activate")}
               </button>
               <div style={{color:C.muted,fontSize:8,fontFamily:C.fnt,textAlign:"center",lineHeight:1.6}}>
-                Caméra + boussole
+                {t("ar.camera_mic")}
               </div>
             </>
           )}
@@ -800,14 +800,14 @@ function ARScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey=""
           )}
           {cam==="denied"&&(
             <div style={{textAlign:"center",padding:"0 32px"}}>
-              <div style={{color:C.bad,fontSize:10,fontFamily:C.fnt,marginBottom:8}}>CAMÉRA REFUSÉE</div>
+              <div style={{color:C.bad,fontSize:10,fontFamily:C.fnt,marginBottom:8}}>{t("ar.denied")}</div>
               <div style={{color:C.muted,fontSize:9,fontFamily:C.fnt,lineHeight:1.7}}>
                 Paramètres → Apps → VelohNav → Autorisations → Caméra
               </div>
               <button onPointerDown={startAR} style={{
                 background:"rgba(224,62,62,0.1)",border:`1px solid ${C.bad}`,color:C.bad,
                 borderRadius:4,padding:"8px 20px",fontSize:9,fontFamily:C.fnt,
-                cursor:"pointer",marginTop:12}}>RÉESSAYER</button>
+                cursor:"pointer",marginTop:12}}>{t("ar.retry")}</button>
             </div>
           )}
         </div>
@@ -847,16 +847,14 @@ function ARScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey=""
           </svg>
           <div style={{color:C.accent,fontSize:10,fontFamily:C.fnt,fontWeight:700,
             letterSpacing:1.5,marginBottom:6}}>
-            CALIBRATION REQUISE
+            {t("ar.calib_title")}
           </div>
           <div style={{color:C.muted,fontSize:8,fontFamily:C.fnt,lineHeight:1.7}}>
-            Trace un grand <span style={{color:C.text}}>chiffre 8</span> dans l'air{"\n"}
-            avec ton téléphone, lentement{"\n"}
-            <span style={{color:C.text}}>3 à 5 fois</span> jusqu'à ce que la boussole s'active.
+            {t("ar.calib_desc")}
           </div>
           {perm==="nosignal"&&(
             <div style={{color:"#666",fontSize:7,fontFamily:C.fnt,marginTop:8}}>
-              Vérifier aussi : HTTPS requis · Capteur magnétique activé
+              {t("ar.calib_hint")}
             </div>
           )}
         </div>
@@ -909,14 +907,14 @@ function ARScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey=""
                     background:"rgba(59,130,246,0.12)",border:`1px solid #3B82F644`,
                     borderRadius:6,padding:"8px 0",cursor:"pointer"}}>
                   <span style={{fontSize:13}}>🚲</span>
-                  <span style={{color:"#3B82F6",fontSize:8,fontFamily:C.fnt,fontWeight:700,letterSpacing:1}}>AR VÉLO</span>
+                  <span style={{color:"#3B82F6",fontSize:8,fontFamily:C.fnt,fontWeight:700,letterSpacing:1}}>{t("ar.nav_cycling")}</span>
                 </div>
                 <div onPointerDown={()=>startNav("walking")}
                   style={{flex:1,display:"flex",alignItems:"center",justifyContent:"center",gap:5,
                     background:"rgba(167,139,250,0.12)",border:`1px solid #A78BFA44`,
                     borderRadius:6,padding:"8px 0",cursor:"pointer"}}>
                   <span style={{fontSize:13}}>🚶</span>
-                  <span style={{color:"#A78BFA",fontSize:8,fontFamily:C.fnt,fontWeight:700,letterSpacing:1}}>AR PIED</span>
+                  <span style={{color:"#A78BFA",fontSize:8,fontFamily:C.fnt,fontWeight:700,letterSpacing:1}}>{t("ar.nav_walking")}</span>
                 </div>
               </div>
             )}
@@ -925,7 +923,7 @@ function ARScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey=""
                 style={{marginTop:10,textAlign:"center",padding:"7px",
                   background:"rgba(224,62,62,0.1)",border:`1px solid ${C.bad}44`,
                   borderRadius:6,cursor:"pointer"}}>
-                <span style={{color:C.bad,fontSize:8,fontFamily:C.fnt,fontWeight:700}}>■ ARRÊTER LA NAVIGATION</span>
+                <span style={{color:C.bad,fontSize:8,fontFamily:C.fnt,fontWeight:700}}>{t("ar.nav_stop")}</span>
               </div>
             )}
           </div>
@@ -934,7 +932,7 @@ function ARScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey=""
             borderRadius:8,padding:"11px 15px",textAlign:"center"}}>
             <div style={{color:C.muted,fontSize:8,fontFamily:C.fnt,letterSpacing:2}}>
               {arPins
-                ? `${arPins.length} STATIONS EN VUE · TOURNE-TOI POUR SCANNER`
+                ? t("ar.stations_in_view", {n: arPins.length})
                 : cam==="active"
                   ? "BOUSSOLE REQUISE · ACTIVE AR POUR VOIR LES PINS"
                   : `${stations.filter(s=>s.bikes>0).length}/${stations.length} DISPO · ACTIVE LA CAMÉRA`}

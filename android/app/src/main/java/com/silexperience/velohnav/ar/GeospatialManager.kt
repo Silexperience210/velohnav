@@ -38,40 +38,24 @@ class GeospatialManager {
     /**
      * Place une flèche de navigation à la position [data].
      *
-     * Utilise resolveAnchorOnRooftop (ARCore 1.40+) — adapté aux zones urbaines
-     * denses comme Luxembourg-Ville où la VPS est la plus précise sur les toits.
-     * Fallback sur resolveAnchorOnTerrain si Rooftop lève une exception.
+     * TODO (ARCore 1.40+): migrer vers resolveAnchorOnRooftopAsync (API callback/Future)
+     * pour une meilleure précision en milieu urbain dense (Luxembourg-Ville).
+     * La migration requiert une refacto du ViewModel pour gérer le Future<Anchor>.
      */
+    @Suppress("DEPRECATION")
     fun placeArrowAnchor(earth: Earth, data: TerrainAnchorData): TerrainAnchorData {
-        // Quaternion Y-axis rotation pour orienter la flèche vers la prochaine étape
         val rad  = Math.toRadians(data.bearingDegrees.toDouble())
         val half = rad / 2.0
-        val qx = 0f; val qy = sin(half).toFloat(); val qz = 0f; val qw = cos(half).toFloat()
-
         return try {
-            // API ARCore 1.40+ — Rooftop anchor (meilleure précision en milieu urbain)
-            val anchor = earth.resolveAnchorOnRooftop(
-                data.latitude, data.longitude,
-                0.5,          // altitude au-dessus du toit en mètres
-                qx, qy, qz, qw
+            val anchor = earth.resolveAnchorOnTerrain(
+                data.latitude, data.longitude, 0.5,
+                0f, sin(half).toFloat(), 0f, cos(half).toFloat()
             )
-            Log.d(TAG, "Rooftop anchor créé step=${data.stepIndex} bearing=${data.bearingDegrees}°")
+            Log.d(TAG, "Anchor créé step=${data.stepIndex} bearing=${data.bearingDegrees}°")
             data.copy(anchor = anchor)
         } catch (e: Exception) {
-            Log.w(TAG, "Rooftop non dispo, fallback Terrain: ${e.message}")
-            try {
-                // Fallback : resolveAnchorOnTerrain (toujours supporté)
-                @Suppress("DEPRECATION")
-                val anchor = earth.resolveAnchorOnTerrain(
-                    data.latitude, data.longitude, 0.5,
-                    qx, qy, qz, qw
-                )
-                Log.d(TAG, "Terrain anchor fallback créé step=${data.stepIndex}")
-                data.copy(anchor = anchor)
-            } catch (e2: Exception) {
-                Log.e(TAG, "placeArrowAnchor impossible: ${e2.message}")
-                data
-            }
+            Log.e(TAG, "placeArrowAnchor error: ${e.message}")
+            data
         }
     }
 
@@ -95,3 +79,27 @@ class GeospatialManager {
         }
     }
 }
+
+// Extension : migration vers resolveAnchorOnRooftopAsync (ARCore 1.40+)
+// Utilisation : appeler placeArrowAnchorAsync depuis une coroutine ViewModel
+// La méthode retourne null si le Future échoue ou si l'état de tracking est invalide.
+//
+// TODO: Remplacer placeArrowAnchor() par cette fonction dans ArNavigationViewModel.placeArrow()
+//       une fois que la gestion de Future<Anchor> sera intégrée dans le ViewModel.
+//
+// fun GeospatialManager.placeArrowAnchorAsync(
+//     earth: Earth, data: TerrainAnchorData,
+//     scope: CoroutineScope
+// ): TerrainAnchorData {
+//     val rad = Math.toRadians(data.bearingDegrees.toDouble()); val half = rad / 2.0
+//     return try {
+//         val future = earth.resolveAnchorOnRooftopAsync(
+//             data.latitude, data.longitude, 0.5,
+//             0f, sin(half).toFloat(), 0f, cos(half).toFloat()
+//         )
+//         // future.resultCode : ResolveAnchorOnRooftopFuture.ResultCode
+//         data.copy(anchor = future.result?.takeIf {
+//             future.resultCode == Earth.ResolveAnchorOnRooftopFuture.ResultCode.SUCCESS
+//         })
+//     } catch (e: Exception) { Log.e("GeoMgr", "RooftopAsync error", e); data }
+// }

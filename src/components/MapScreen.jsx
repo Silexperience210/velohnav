@@ -410,7 +410,7 @@ function MapScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey, 
               background:"rgba(8,12,15,0.92)",border:`1px solid ${C.accent}55`,
               borderRadius:5,padding:"5px 10px",cursor:"pointer",
               display:"flex",alignItems:"center",gap:4 }}>
-            <span style={{ color:C.accent,fontSize:8,fontFamily:C.fnt,letterSpacing:1 }}>⊙ TOUT</span>
+            <span style={{ color:C.accent,fontSize:8,fontFamily:C.fnt,letterSpacing:1 }}>{t("map.reset")}</span>
           </div>
         )}
 
@@ -467,7 +467,7 @@ function MapScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey, 
                 borderRadius:6,padding:"9px 0",cursor:"pointer",minWidth:80 }}>
               <span style={{ fontSize:14 }}>🚲</span>
               <div>
-                <div style={{ color:"#3B82F6",fontSize:9,fontFamily:C.fnt,fontWeight:700 }}>AR VÉLO</div>
+                <div style={{ color:"#3B82F6",fontSize:9,fontFamily:C.fnt,fontWeight:700 }}>{t("ar.nav_cycling")}</div>
                 <div style={{ color:C.muted,fontSize:6,fontFamily:C.fnt }}>itinéraire AR</div>
               </div>
             </div>
@@ -477,7 +477,7 @@ function MapScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey, 
                 borderRadius:6,padding:"9px 0",cursor:"pointer",minWidth:80 }}>
               <span style={{ fontSize:14 }}>🚶</span>
               <div>
-                <div style={{ color:"#A78BFA",fontSize:9,fontFamily:C.fnt,fontWeight:700 }}>AR PIED</div>
+                <div style={{ color:"#A78BFA",fontSize:9,fontFamily:C.fnt,fontWeight:700 }}>{t("ar.nav_walking")}</div>
                 <div style={{ color:C.muted,fontSize:6,fontFamily:C.fnt }}>itinéraire AR</div>
               </div>
             </div>
@@ -496,7 +496,7 @@ function MapScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey, 
                   background:"rgba(46,204,143,0.12)",border:`1px solid ${C.good}55`,
                   borderRadius:6,padding:"9px 12px",cursor:"pointer" }}>
                 <span style={{ fontSize:12 }}>▶</span>
-                <span style={{ color:C.good,fontSize:8,fontFamily:C.fnt,fontWeight:700 }}>TRAJET</span>
+                <span style={{ color:C.good,fontSize:8,fontFamily:C.fnt,fontWeight:700 }}>{t("map.start_trip")}</span>
               </div>
             )}
           </div>

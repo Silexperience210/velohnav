@@ -227,7 +227,7 @@ export default function App() {
           padding:"7px 14px",display:"flex",alignItems:"center",gap:10,flexShrink:0 }}>
           <span style={{ fontSize:14 }}>🚲</span>
           <div style={{ flex:1 }}>
-            <div style={{ color:C.accent,fontSize:9,fontFamily:C.fnt,fontWeight:700 }}>TRAJET EN COURS</div>
+            <div style={{ color:C.accent,fontSize:9,fontFamily:C.fnt,fontWeight:700 }}>{t("trip.in_progress")}</div>
             <div style={{ color:C.muted,fontSize:8,fontFamily:C.fnt }}>
               Depuis {trip.name} · {Math.round((Date.now()-trip.startAt)/60000)} min
             </div>
