@@ -77,6 +77,44 @@ function LuxMap({ toXY }) {
   const kBridg = `rgba(255,255,255,0.42)`;   // pont Kirchberg — blanc
   const lblCol = `rgba(255,255,255,0.52)`;   // labels — blanc lisible
 
+
+  // ── Lignes de tram T1 Luxembourg ──────────────────────────────
+  // Tracé complet : Luxexpo → Kirchberg → Hamilius → Gare → Cessange → Cloche d'Or
+  const tramT1 = [
+    // Luxexpo / Kirchberg Nord
+    [49.6262, 6.1641],[49.6248, 6.1598],[49.6231, 6.1563],
+    [49.6215, 6.1532],[49.6198, 6.1502],
+    // Pont Grande-Duchesse Charlotte → Ville-Haute
+    [49.6180, 6.1468],[49.6163, 6.1435],[49.6148, 6.1408],
+    [49.6132, 6.1379],[49.6118, 6.1355],
+    // Hamilius / Centre
+    [49.6112, 6.1340],[49.6105, 6.1325],
+    // Vers Gare Centrale
+    [49.6092, 6.1335],[49.6078, 6.1338],[49.6062, 6.1340],
+    [49.6045, 6.1340],[49.6028, 6.1340],
+    // Gare Centrale
+    [49.6010, 6.1340],[49.5998, 6.1340],
+    // Vers Cessange / Cloche d'Or
+    [49.5980, 6.1320],[49.5960, 6.1295],[49.5940, 6.1268],
+    [49.5918, 6.1240],[49.5895, 6.1210],
+    // Cloche d'Or
+    [49.5872, 6.1178],[49.5851, 6.1152],
+  ];
+  // Extension Kirchberg Est (vers Luxexpo via route différente)
+  const tramKirchbergExt = [
+    [49.6198, 6.1502],[49.6212, 6.1520],[49.6230, 6.1548],
+    [49.6248, 6.1580],[49.6262, 6.1641],
+  ];
+  const tramCol = "rgba(0,160,220,0.85)"; // bleu tram officiel LuxTram
+  const tramStop = "rgba(0,160,220,0.9)";
+  // Stations tram principales
+  const tramStations = [
+    [49.6262, 6.1641, "Luxexpo"],
+    [49.6118, 6.1355, "Hamilius"],
+    [49.5998, 6.1340, "Gare"],
+    [49.5851, 6.1152, "Cloche d'Or"],
+  ];
+
   return (
     <svg style={{ position:"absolute",inset:0,width:"100%",height:"100%",pointerEvents:"none" }}
       viewBox="0 0 100 100" preserveAspectRatio="none">
@@ -99,6 +137,20 @@ function LuxMap({ toXY }) {
       <path d={road(kirchbergBridge)} fill="none" stroke={kBridg} strokeWidth="1.1" strokeLinecap="round"/>
       <path d={road(routeEsch)}   fill="none" stroke={rCol} strokeWidth="0.8" strokeLinecap="round"/>
       <path d={road(avgJFK)}      fill="none" stroke={rCol} strokeWidth="0.8" strokeLinecap="round"/>
+
+      {/* Lignes de tram T1 */}
+      <polyline points={pts(tramT1)}
+        fill="none" stroke={tramCol} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"
+        strokeDasharray="none"/>
+      {/* Stops tram */}
+      {tramStations.map(([la,ln,name])=>{
+        const {x,y}=toXY(la,ln);
+        return (
+          <g key={name}>
+            <circle cx={x} cy={y} r="1.2" fill={tramStop} stroke="#fff" strokeWidth="0.4"/>
+          </g>
+        );
+      })}
 
       {/* District labels */}
       {labels.map(([la,ln,txt])=>{
