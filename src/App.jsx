@@ -261,7 +261,9 @@ export default function App() {
           onTabChange={setTab}/>}
         {tab==="ai"       &&<AIScreen  stations={stations} claudeKey={claudeKey}
           aiHistory={aiHistory} setAiHistory={setAiHistory}
-          aiDisplay={aiDisplay} setAiDisplay={setAiDisplay} gpsPos={gpsPos}/>}
+          aiDisplay={aiDisplay} setAiDisplay={setAiDisplay}
+          gpsPos={gpsPos} mapsKey={mapsKey}
+          onLaunchAR={nav=>launchNativeArNav(nav.lat,nav.lng,nav.name,nav.mode,mapsKey)}/>}
         {tab==="settings" &&<SettingsScreen
           apiKey={apiKey}    setApiKey={setApiKey}
           claudeKey={claudeKey} setClaudeKey={setClaudeKey}
