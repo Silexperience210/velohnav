@@ -7,6 +7,20 @@ import { useCompass } from "../hooks/useCompass.js";
 import { useRoute } from "../hooks/useRoute.js";
 import { launchNativeArNav } from "../utils.js";
 
+// Projette un point GPS sur le canvas AR via bearing + distance
+// Retourne {x, y} dans le repère canvas, ou null si hors champ
+function projectPoint(fromLat, fromLng, heading, toLat, toLng, W, H) {
+  const dist   = haversine(fromLat, fromLng, toLat, toLng);
+  if (dist > 500) return null; // trop loin = pas visible
+  const bear   = getBearing(fromLat, fromLng, toLat, toLng);
+  const relBear = ((bear - heading + 540) % 360) - 180; // -180..+180
+  if (Math.abs(relBear) > 55) return null; // hors du FOV AR
+  const x = W / 2 + (relBear / 55) * (W / 2);
+  // Les points proches sont bas (y élevé), les lointains sont hauts
+  const y = H * 0.75 - (1 - dist / 500) * H * 0.45;
+  return { x, y };
+}
+
 function RouteOverlay({ route, gpsPos, heading, mode, onClose }) {
   const cvRef = useRef();
   const [step, setStep] = useState(0); // index du prochain waypoint
