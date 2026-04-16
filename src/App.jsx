@@ -261,7 +261,7 @@ export default function App() {
           onTabChange={setTab}/>}
         {tab==="ai"       &&<AIScreen  stations={stations} claudeKey={claudeKey}
           aiHistory={aiHistory} setAiHistory={setAiHistory}
-          aiDisplay={aiDisplay} setAiDisplay={setAiDisplay}/>}
+          aiDisplay={aiDisplay} setAiDisplay={setAiDisplay} gpsPos={gpsPos}/>}
         {tab==="settings" &&<SettingsScreen
           apiKey={apiKey}    setApiKey={setApiKey}
           claudeKey={claudeKey} setClaudeKey={setClaudeKey}

@@ -1,10 +1,10 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { t } from "../i18n.js";
-import { C, COMPASS_LABELS, FOV } from "../constants.js";
+import { C, COMPASS_LABELS, FOV, TRANSIT_STOPS } from "../constants.js";
 import { haversine, getBearing, fDist, fWalk, bCol, bTag, pins, getHistory } from "../utils.js";
 
 
-function AIScreen({ stations, claudeKey, aiHistory, setAiHistory, aiDisplay, setAiDisplay }) {
+function AIScreen({ stations, claudeKey, aiHistory, setAiHistory, aiDisplay, setAiDisplay, gpsPos=null }) {
   const top = stations.find(s=>s.bikes>0);
   const initMsg = top
     ? `${stations.filter(s=>s.bikes>0).length}/${stations.length} stations dispos. Plus proche : ${top.name} (${fDist(top.dist)}, ${top.bikes}🚲 ⚡${top.elec}).`
@@ -21,7 +21,7 @@ function AIScreen({ stations, claudeKey, aiHistory, setAiHistory, aiDisplay, set
       setAiDisplay([{ role:"ai", text:initMsg }]);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  },[stations]);
+  },[stations, gpsPos]);
 
   // FIX : systemPrompt dans useMemo — évite de recréer sendText à chaque render
   // et élimine le risque de closure stale sur une const recalculée inline.
@@ -31,11 +31,35 @@ function AIScreen({ stations, claudeKey, aiHistory, setAiHistory, aiDisplay, set
     const histTxt = hist.length
       ? `\nStations récemment visitées par l'utilisateur : ${hist.map(h=>h.name).join(", ")}.`
       : "";
-    return `Tu es VELOH·AI, l'assistant de VelohNav pour le réseau Vel'OH! Luxembourg.
-Réponds en français, de façon concise (3-4 lignes max).
-Données actuelles (triées par distance) :
-${stations.map(s=>`• ${s.name} | ${s.bikes} vélos (⚡${s.elec} élec., 🔧${s.meca} méca.) | ${s.docks} docks | ${fDist(s.dist)} | ${bTag(s)}`).join("\n")}${histTxt}
-Réponds uniquement sur la mobilité Veloh, les itinéraires, ou l'app.`;
+    // Arrêts tram proches (<=600m) pour enrichir le contexte multimodal
+    const nearTram = gpsPos
+      ? TRANSIT_STOPS.filter(t=>{
+          const d = Math.sqrt((t.lat-gpsPos.lat)**2+(t.lng-gpsPos.lng)**2)*111000;
+          return d < 600;
+        }).map(t=>{
+          const d = Math.round(Math.sqrt((t.lat-gpsPos.lat)**2+(t.lng-gpsPos.lng)**2)*111000);
+          return `${t.name} (${d}m${t.hub?" — hub":""}${t.veloh?" 🚲":""})`; 
+        })
+      : [];
+
+    const tramSection = nearTram.length
+      ? `\nArrêts tram T1 proches : ${nearTram.join(", ")}.`
+      : "";
+
+    return `Tu es VELOH·AI, l'assistant mobilité de VelohNav pour Luxembourg.
+Réponds en français, concis (4-5 lignes max).
+
+STATIONS VEL'OH actuelles (par distance) :
+${stations.map(s=>`• ${s.name} | ${s.bikes}🚲 (⚡${s.elec} élec, 🔧${s.meca} méca) | ${s.docks} docks libres | ${fDist(s.dist)} | ${bTag(s)}`).join("\n")}${histTxt}${tramSection}
+
+TRAM T1 — Ligne complète Findel/Aéroport ↔ Gasperich/Stadion (24 arrêts, 16 km) :
+Horaires : 04h20→00h06 tous les jours — GRATUIT
+Fréquence : 3-4 min entre LuxExpo et Lycée Bouneweg | 8 min vers Findel ou Stadion
+Hubs : Luxexpo, Rout Bréck/Pafendall (funiculaire+CFL), Place de l'Étoile, Hamilius (bus), Gare Centrale (bus+train), Howald (CFL), Cloche d'Or, Gasperich/Stadion
+Arrêts avec Vel'OH nearby : Luxexpo, Parlement Européen, Philharmonie, Rout Bréck, Théâter, Place de l'Étoile, Hamilius, Paräisserplatz, Gare Centrale
+
+Tu peux conseiller des itinéraires multimodaux Tram+Vel'OH.
+Réponds sur la mobilité Vel'OH, les horaires tram, les correspondances, ou les itinéraires.`;
   },[stations]);
 
   const sendText = useCallback(async(text)=>{

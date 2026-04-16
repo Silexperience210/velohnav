@@ -45,26 +45,36 @@ export const WMO_ICON = {
 };
 
 export const TRANSIT_STOPS = [
-  { id:"T01", name:"Luxexpo",            lat:49.6267, lng:6.1651, lines:["T1"],         type:"tram" },
-  { id:"T02", name:"Kirchberg P+R",      lat:49.6248, lng:6.1588, lines:["T1"],         type:"tram" },
-  { id:"T03", name:"Philharmonie MUDAM", lat:49.6219, lng:6.1520, lines:["T1"],         type:"tram" },
-  { id:"T04", name:"Européen",           lat:49.6183, lng:6.1432, lines:["T1"],         type:"tram" },
-  { id:"T05", name:"Alphonse Weicker",   lat:49.6154, lng:6.1378, lines:["T1"],         type:"tram" },
-  { id:"T06", name:"Hamilius",           lat:49.6118, lng:6.1299, lines:["T1","1","2"], type:"tram" },
-  { id:"T07", name:"Place de Paris",     lat:49.6073, lng:6.1285, lines:["T1","16"],    type:"tram" },
-  { id:"T08", name:"Stade de Lux.",      lat:49.6019, lng:6.1260, lines:["T1"],         type:"tram" },
-  { id:"T09", name:"Lycée Bouneweg",     lat:49.5979, lng:6.1252, lines:["T1"],         type:"tram" },
-  { id:"T10", name:"Gare Centrale",      lat:49.5998, lng:6.1340, lines:["T1","bus"],   type:"tram" },
-  { id:"B01", name:"Gare Routière",      lat:49.6005, lng:6.1320, lines:["1","2","3","4","5","16","18"],type:"bus" },
-  { id:"B02", name:"Cloche d'Or",        lat:49.5817, lng:6.1333, lines:["1","25"],     type:"bus" },
-  { id:"B03", name:"Limpertsberg",       lat:49.6153, lng:6.1243, lines:["3","4"],      type:"bus" },
-  { id:"B04", name:"Belair Résidence",   lat:49.6092, lng:6.1175, lines:["5"],          type:"bus" },
-  { id:"B05", name:"Clausen Bierger",    lat:49.6107, lng:6.1442, lines:["9"],          type:"bus" },
-  { id:"B06", name:"Bonnevoie Hollerich",lat:49.5948, lng:6.1322, lines:["2"],          type:"bus" },
-  { id:"B07", name:"Merl Betzenberg",    lat:49.6078, lng:6.1082, lines:["6"],          type:"bus" },
-  { id:"B08", name:"Cents Schleed",      lat:49.6152, lng:6.1624, lines:["14"],         type:"bus" },
-  { id:"B09", name:"Kirchberg Campus",   lat:49.6196, lng:6.1558, lines:["27"],         type:"bus" },
-  { id:"B10", name:"Grund Pfaffenthal",  lat:49.6082, lng:6.1394, lines:["9"],          type:"bus" },
-  { id:"B11", name:"Verlorenkost",       lat:49.6133, lng:6.1205, lines:["4"],          type:"bus" },
-  { id:"B12", name:"Cessange",           lat:49.5905, lng:6.1204, lines:["1","4"],      type:"bus" },
+  // ── Ligne T1 Luxtram — 24 arrêts complets (Findel → Gasperich/Stadion) ──
+  // Horaires : 04h20→00h06 (vers Stadion) | 04h00→23h17 (vers Findel) — tous les jours
+  // Fréquence : 3-4 min (LuxExpo↔Lycée Bouneweg) | 8 min (vers Findel/Stadion) | 15 min heures creuses
+  // Gratuit depuis mars 2020 — 16 km — 10 hubs d'interconnexion
+
+  // Kirchberg & Findel (nord-est)
+  { id:"T01", name:"Findel / Aéroport",      lat:49.6308, lng:6.2073, lines:["T1"],                    veloh:false, hub:true  },
+  { id:"T02", name:"Héienhaff P+R",          lat:49.6280, lng:6.1980, lines:["T1"],                    veloh:false, hub:false },
+  { id:"T03", name:"Luxexpo",                lat:49.6267, lng:6.1651, lines:["T1","bus"],               veloh:true,  hub:true  },
+  { id:"T04", name:"Alphonse Weicker",       lat:49.6225, lng:6.1570, lines:["T1"],                    veloh:false, hub:false },
+  { id:"T05", name:"Nationalbibliothéik",    lat:49.6200, lng:6.1518, lines:["T1"],                    veloh:false, hub:false },
+  { id:"T06", name:"Universitéit",           lat:49.6180, lng:6.1472, lines:["T1"],                    veloh:false, hub:false },
+  { id:"T07", name:"Coque",                  lat:49.6161, lng:6.1432, lines:["T1"],                    veloh:false, hub:false },
+  { id:"T08", name:"Parlement Européen",     lat:49.6142, lng:6.1408, lines:["T1"],                    veloh:true,  hub:false },
+  { id:"T09", name:"Philharmonie / MUDAM",   lat:49.6127, lng:6.1378, lines:["T1"],                    veloh:true,  hub:false },
+  // Pont Rouge → Centre-Ville
+  { id:"T10", name:"Rout Bréck / Pafendall", lat:49.6112, lng:6.1340, lines:["T1","funiculaire","CFL"],veloh:true,  hub:true  },
+  { id:"T11", name:"Théâter",                lat:49.6127, lng:6.1280, lines:["T1"],                    veloh:true,  hub:false },
+  { id:"T12", name:"Faïencerie",             lat:49.6138, lng:6.1262, lines:["T1"],                    veloh:false, hub:false },
+  { id:"T13", name:"Place de l'Étoile",      lat:49.6118, lng:6.1235, lines:["T1","bus"],              veloh:true,  hub:true  },
+  { id:"T14", name:"Hamilius",               lat:49.6118, lng:6.1299, lines:["T1","1","2","4","16"],   veloh:true,  hub:true  },
+  // Gare → Bonnevoie
+  { id:"T15", name:"Paräisserplatz",         lat:49.6073, lng:6.1285, lines:["T1"],                    veloh:true,  hub:false },
+  { id:"T16", name:"Gare Centrale",          lat:49.5998, lng:6.1340, lines:["T1","bus","CFL"],        veloh:true,  hub:true  },
+  { id:"T17", name:"Lycée Bouneweg",         lat:49.5965, lng:6.1330, lines:["T1"],                    veloh:false, hub:false },
+  // Cloche d'Or → Gasperich
+  { id:"T18", name:"Hollerich",              lat:49.5935, lng:6.1295, lines:["T1"],                    veloh:false, hub:false },
+  { id:"T19", name:"Howald",                 lat:49.5900, lng:6.1265, lines:["T1","CFL"],              veloh:false, hub:true  },
+  { id:"T20", name:"Cloche d'Or",            lat:49.5840, lng:6.1230, lines:["T1","bus"],              veloh:false, hub:true  },
+  { id:"T21", name:"Lycée Vauban",           lat:49.5812, lng:6.1195, lines:["T1"],                    veloh:false, hub:false },
+  { id:"T22", name:"Gasperich Q.",           lat:49.5785, lng:6.1178, lines:["T1"],                    veloh:false, hub:false },
+  { id:"T23", name:"Gasperich / Stadion",    lat:49.5748, lng:6.1152, lines:["T1","bus"],              veloh:false, hub:true  },
 ];
