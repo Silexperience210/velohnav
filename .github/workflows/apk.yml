@@ -3,6 +3,7 @@ name: Build VelohNav APK
 on:
   push:
     branches: [main]
+    tags: ['v*']
   workflow_dispatch:
 
 jobs:
@@ -57,7 +58,7 @@ jobs:
 
       - name: Build debug APK
         working-directory: android
-        run: ./gradlew assembleDebug --no-daemon --stacktrace
+        run: ./gradlew assembleDebug --no-daemon
 
       - name: Build release APK (signé)
         working-directory: android
@@ -67,9 +68,8 @@ jobs:
           KEY_PWD:      ${{ secrets.KEY_PASSWORD }}
           STORE_PWD:    ${{ secrets.STORE_PASSWORD }}
         run: |
-          # Ne signe que si le secret keystore est configuré
           if [ -z "$KEYSTORE_B64" ]; then
-            echo "KEYSTORE_BASE64 non configuré — build release ignoré"
+            echo "KEYSTORE_BASE64 non configuré — release ignorée"
             exit 0
           fi
           echo "$KEYSTORE_B64" | base64 --decode > app/velohnav-release.jks
@@ -101,3 +101,14 @@ jobs:
           echo "=== Debug ===" && du -h android/app/build/outputs/apk/debug/app-debug.apk
           [ -f android/app/build/outputs/apk/release/app-release.apk ] && \
             echo "=== Release ===" && du -h android/app/build/outputs/apk/release/app-release.apk || true
+
+      # Attacher l'APK à la release GitHub si triggered par un tag v*
+      - name: Attach APK to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            android/app/build/outputs/apk/debug/app-debug.apk
+            android/app/build/outputs/apk/release/app-release.apk
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
