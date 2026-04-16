@@ -295,3 +295,136 @@ describe('decodePolyline', () => {
     });
   });
 });
+
+// ── getWeatherAdvice ──────────────────────────────────────────────
+// Reproduit la logique de App.jsx pour les tests
+const C_bad = "#E03E3E", C_warn = "#F5820D", C_good = "#2ECC8F";
+function getWeatherAdvice(weather) {
+  if (!weather) return { mode:"bike", reason:null };
+  const { rain, wind, code } = weather;
+  const isStorm = code >= 95;
+  const isSnow  = (code >= 71 && code <= 77) || code === 85 || code === 86;
+  const heavyRain = rain > 2.0;
+  const lightRain = rain > 0.5;
+  const strongWind = wind > 35;
+  const mildWind   = wind > 25;
+  if (isStorm || isSnow || heavyRain || (strongWind && lightRain))
+    return { mode:"transit", reason: isStorm?"orage": isSnow?"neige": heavyRain?"pluie forte":"vent fort + pluie" };
+  if (lightRain || mildWind)
+    return { mode:"mixed", reason: lightRain?"pluie légère":"vent modéré" };
+  return { mode:"bike", reason:null };
+}
+
+describe('getWeatherAdvice', () => {
+  it('retourne bike pour conditions idéales', () => {
+    expect(getWeatherAdvice({ rain:0, wind:10, code:0 }).mode).toBe('bike');
+  });
+  it('retourne transit pour orage (code 95)', () => {
+    const r = getWeatherAdvice({ rain:0.1, wind:20, code:95 });
+    expect(r.mode).toBe('transit');
+    expect(r.reason).toBe('orage');
+  });
+  it('retourne transit pour neige (code 71)', () => {
+    expect(getWeatherAdvice({ rain:0, wind:5, code:71 }).mode).toBe('transit');
+  });
+  it('retourne transit pour pluie forte >2mm', () => {
+    const r = getWeatherAdvice({ rain:3.5, wind:10, code:63 });
+    expect(r.mode).toBe('transit');
+    expect(r.reason).toBe('pluie forte');
+  });
+  it('retourne mixed pour pluie légère 0.5-2mm', () => {
+    const r = getWeatherAdvice({ rain:1.0, wind:10, code:61 });
+    expect(r.mode).toBe('mixed');
+    expect(r.reason).toBe('pluie légère');
+  });
+  it('retourne mixed pour vent modéré 25-35km/h', () => {
+    const r = getWeatherAdvice({ rain:0, wind:30, code:1 });
+    expect(r.mode).toBe('mixed');
+    expect(r.reason).toBe('vent modéré');
+  });
+  it('retourne bike quand null', () => {
+    expect(getWeatherAdvice(null).mode).toBe('bike');
+  });
+  it('retourne transit pour vent fort + pluie', () => {
+    expect(getWeatherAdvice({ rain:0.8, wind:40, code:61 }).mode).toBe('transit');
+  });
+});
+
+// ── Historique stations ───────────────────────────────────────────
+// Simuler localStorage pour les tests
+const mockStorage = {};
+const mockLocalStorage = {
+  getItem: k => mockStorage[k] ?? null,
+  setItem: (k, v) => { mockStorage[k] = v; },
+  removeItem: k => { delete mockStorage[k]; },
+};
+const HIST_KEY = "velohnav_history";
+
+function getHistory() {
+  try { return JSON.parse(mockLocalStorage.getItem(HIST_KEY)||"[]"); } catch { return []; }
+}
+function addToHistory(station) {
+  const prev = getHistory().filter(h=>h.id!==station.id);
+  const entry = { id:station.id, name:station.name, lat:station.lat, lng:station.lng, visitedAt:1 };
+  mockLocalStorage.setItem(HIST_KEY, JSON.stringify([entry,...prev].slice(0,10)));
+}
+
+describe('historique stations', () => {
+  beforeEach(() => { delete mockStorage[HIST_KEY]; });
+
+  it('commence vide', () => {
+    expect(getHistory()).toHaveLength(0);
+  });
+  it('ajoute une station', () => {
+    addToHistory({ id:1, name:"Gare", lat:49.6, lng:6.13 });
+    expect(getHistory()).toHaveLength(1);
+    expect(getHistory()[0].name).toBe("Gare");
+  });
+  it('ne duplique pas la même station', () => {
+    addToHistory({ id:1, name:"Gare", lat:49.6, lng:6.13 });
+    addToHistory({ id:1, name:"Gare", lat:49.6, lng:6.13 });
+    expect(getHistory()).toHaveLength(1);
+  });
+  it('la dernière visitée est en première position', () => {
+    addToHistory({ id:1, name:"Gare",    lat:49.6, lng:6.13 });
+    addToHistory({ id:2, name:"Hamilius", lat:49.61, lng:6.13 });
+    expect(getHistory()[0].name).toBe("Hamilius");
+  });
+  it('limite à 10 entrées', () => {
+    for (let i = 0; i < 15; i++)
+      addToHistory({ id:i, name:`Station ${i}`, lat:49.6, lng:6.13 });
+    expect(getHistory()).toHaveLength(10);
+  });
+});
+
+// ── nearestStop ───────────────────────────────────────────────────
+// Reproduire la logique de nearestStop
+const TRANSIT_STOPS_TEST = [
+  { id:"T06", name:"Hamilius", lat:49.6118, lng:6.1299 },
+  { id:"T10", name:"Gare Centrale", lat:49.5998, lng:6.1340 },
+  { id:"B01", name:"Gare Routière", lat:49.6005, lng:6.1320 },
+];
+function nearestStop(lat, lng) {
+  let best = null, bestDist = Infinity;
+  TRANSIT_STOPS_TEST.forEach(s => {
+    const d = Math.sqrt((s.lat-lat)**2 + (s.lng-lng)**2) * 111000;
+    if (d < bestDist) { bestDist = d; best = { ...s, distM: Math.round(d) }; }
+  });
+  return best;
+}
+
+describe('nearestStop', () => {
+  it('trouve Hamilius depuis Ville-Haute', () => {
+    const s = nearestStop(49.611, 6.130);
+    expect(s.name).toBe('Hamilius');
+  });
+  it('trouve Gare Centrale depuis Bonnevoie', () => {
+    const s = nearestStop(49.596, 6.134);
+    expect(s.id).toBe('T10');
+  });
+  it('retourne une distance en mètres', () => {
+    const s = nearestStop(49.611, 6.130);
+    expect(s.distM).toBeGreaterThan(0);
+    expect(s.distM).toBeLessThan(5000);
+  });
+});

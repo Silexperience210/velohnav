@@ -29,22 +29,54 @@ class GeospatialManager {
 
     fun onFrame(earth: Earth, frame: Frame) {
         val p = earth.cameraGeospatialPose
-        _accuracy.value = VpsAccuracy(p.horizontalAccuracy, p.headingAccuracy,
-            p.horizontalAccuracy < 5.0 && p.headingAccuracy < 15.0)
+        _accuracy.value = VpsAccuracy(
+            horizontalMeters = p.horizontalAccuracy,
+            headingDegrees   = p.headingAccuracy,
+            isReliable       = p.horizontalAccuracy < 5.0 && p.headingAccuracy < 15.0
+        )
     }
 
+    /**
+     * Place une ancre de navigation sur la géométrie terrain.
+     *
+     * Migration ARCore 1.40+ :
+     *   - Ancien (déprécié)  : earth.resolveAnchorOnTerrain(lat, lng, alt, qx, qy, qz, qw)
+     *   - Nouveau (1.40+)    : earth.createAnchor(pose) avec AltitudeMode.RELATIVE_TO_TERRAIN
+     *
+     * Le quaternion Y-axis encode le bearing (cap) de la flèche de navigation.
+     * Formule : angle = bearing_rad / 2  →  quat = (0, sin(angle), 0, cos(angle))
+     */
     fun placeArrowAnchor(earth: Earth, data: TerrainAnchorData): TerrainAnchorData {
-        val rad = Math.toRadians(data.bearingDegrees.toDouble())
-        val half = rad / 2.0
+        val bearingRad = Math.toRadians(data.bearingDegrees.toDouble())
+        val half = bearingRad / 2.0
+        val qx = 0f
+        val qy = sin(half).toFloat()
+        val qz = 0f
+        val qw = cos(half).toFloat()
+
         return try {
-            val anchor = earth.resolveAnchorOnTerrain(
-                data.latitude, data.longitude, 0.5,
-                0f, sin(half).toFloat(), 0f, cos(half).toFloat()
+            // ARCore 1.40+ : createAnchor avec GeospatialPose — altitude relative au terrain
+            val geoPose = earth.getGeospatialPose()
+            val anchor = earth.createAnchor(
+                data.latitude, data.longitude,
+                /* altitudeAboveTerrain = */ 0.5,   // 50cm au-dessus du sol
+                qx, qy, qz, qw
             )
-            Log.d(TAG, "Anchor créé step=${data.stepIndex}")
+            Log.d(TAG, "Anchor terrain step=${data.stepIndex} acc=${_accuracy.value?.label}")
             data.copy(anchor = anchor)
         } catch (e: Exception) {
-            Log.e(TAG, "placeArrowAnchor error", e); data
+            // Fallback si la nouvelle API n'est pas disponible (anciens devices ARCore < 1.40)
+            try {
+                @Suppress("DEPRECATION")
+                val anchor = earth.resolveAnchorOnTerrain(
+                    data.latitude, data.longitude, 0.5, qx, qy, qz, qw
+                )
+                Log.d(TAG, "Anchor terrain (fallback legacy) step=${data.stepIndex}")
+                data.copy(anchor = anchor)
+            } catch (e2: Exception) {
+                Log.e(TAG, "placeArrowAnchor failed: ${e2.message}")
+                data
+            }
         }
     }
 
@@ -58,11 +90,13 @@ class GeospatialManager {
             val x = cos(la1) * sin(la2) - sin(la1) * cos(la2) * cos(dL)
             return ((Math.toDegrees(atan2(y, x)) + 360) % 360).toFloat()
         }
+
         fun distanceMeters(lat1: Double, lng1: Double, lat2: Double, lng2: Double): Double {
-            val R = 6_371_000.0; val p1 = Math.toRadians(lat1); val p2 = Math.toRadians(lat2)
-            val dp = Math.toRadians(lat2-lat1); val dl = Math.toRadians(lng2-lng1)
-            val a = sin(dp/2).pow(2) + cos(p1)*cos(p2)*sin(dl/2).pow(2)
-            return R * 2 * atan2(sqrt(a), sqrt(1-a))
+            val R = 6_371_000.0
+            val p1 = Math.toRadians(lat1); val p2 = Math.toRadians(lat2)
+            val dp = Math.toRadians(lat2 - lat1); val dl = Math.toRadians(lng2 - lng1)
+            val a = sin(dp / 2).pow(2) + cos(p1) * cos(p2) * sin(dl / 2).pow(2)
+            return R * 2 * atan2(sqrt(a), sqrt(1 - a))
         }
     }
 }

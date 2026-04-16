@@ -76,19 +76,34 @@ class ArNavigationViewModel(application: Application) : AndroidViewModel(applica
             val loc = fusedLocation.getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, null).await()
                 ?: return setState(NavStatus.ERROR, "GPS indisponible")
             _state.value = _state.value.copy(status = NavStatus.ROUTING)
-            routeManager.fetchRoute(loc.latitude, loc.longitude, dLat, dLng, mode)
-                .onSuccess { r ->
-                    route = r
-                    _state.value = _state.value.copy(
-                        status = NavStatus.LOCALIZING,
-                        totalSteps = r.steps.size,
-                        totalRemainingMeters = r.totalDistanceMeters,
-                        etaSeconds = r.totalDurationSeconds,
-                        currentStep = r.steps.firstOrNull()
-                    )
-                }
-                .onFailure { setState(NavStatus.ERROR, it.message ?: "Erreur itinéraire") }
+            // Retry avec backoff exponentiel : 3 tentatives (0s, 2s, 4s)
+            var lastError: Throwable? = null
+            for (attempt in 0..2) {
+                if (attempt > 0) kotlinx.coroutines.delay(attempt * 2000L)
+                routeManager.fetchRoute(loc.latitude, loc.longitude, dLat, dLng, mode)
+                    .onSuccess { r ->
+                        route = r
+                        _state.value = _state.value.copy(
+                            status = NavStatus.LOCALIZING,
+                            totalSteps = r.steps.size,
+                            totalRemainingMeters = r.totalDistanceMeters,
+                            etaSeconds = r.totalDurationSeconds,
+                            currentStep = r.steps.firstOrNull()
+                        )
+                        return
+                    }
+                    .onFailure { lastError = it }
+            }
+            setState(NavStatus.ERROR, lastError?.message ?: "Itinéraire indisponible après 3 tentatives")
         } catch (e: Exception) { setState(NavStatus.ERROR, e.message ?: "Erreur GPS") }
+    }
+
+    /** Permet de relancer la navigation depuis l'UI sans recréer le ViewModel */
+    fun retry(destLat: Double, destLng: Double, travelMode: String) {
+        navigationJob?.cancel()
+        vpsReady = false
+        _state.value = _state.value.copy(status = NavStatus.LOCATING, errorMessage = null)
+        navigationJob = viewModelScope.launch { locateAndRoute(destLat, destLng, travelMode) }
     }
 
     fun onEarthTracking(earth: Earth, frame: Frame) {
