@@ -80,9 +80,8 @@ class ArNavigationViewModel(application: Application) : AndroidViewModel(applica
         // Charger le modèle GLB en arrière-plan
         viewModelScope.launch {
             try {
-                modelAsset = withContext(Dispatchers.IO) {
-                    arSceneView.modelLoader.loadModel("models/arrow_navigation.glb")
-                }
+                // loadModel() est déjà une suspend function qui gère son propre dispatcher
+                modelAsset = arSceneView.modelLoader.loadModel("models/arrow_navigation.glb")
             } catch (e: Exception) {
                 Log.w(TAG, "GLB load failed (navigation sans modèle): ${e.message}")
                 // Ne pas crasher — navigation textuelle reste disponible
@@ -179,7 +178,7 @@ class ArNavigationViewModel(application: Application) : AndroidViewModel(applica
                 modelAsset?.let { asset ->
                     val instance = view.modelLoader.createInstance(asset)
                     if (instance != null) {
-                        anchorNode.addChildNode(ModelNode(instance, scaleToUnits = 0.8f))
+                        anchorNode.addChildNode(ModelNode(modelInstance = instance, scaleToUnits = 0.8f))
                     }
                 }
                 view.addChildNode(anchorNode)

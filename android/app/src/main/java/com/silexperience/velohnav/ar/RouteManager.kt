@@ -94,13 +94,22 @@ class RouteManager(private val mapsApiKey: String) {
             if (result.code != "Ok") return Result.failure(Exception("OSRM: ${result.code}"))
 
             val leg = result.routes.first().legs.first()
-            val steps = leg.steps.mapIndexed { i, step ->
+            val rawSteps = leg.steps
+            val steps = rawSteps.mapIndexed { i, step ->
+                // OSRM : maneuver.location = début du step (point de virage entrant).
+                // Pour endLat/endLng, on prend le début du step suivant si disponible,
+                // sinon on utilise la destination finale (dLat, dLng).
+                val nextStep = rawSteps.getOrNull(i + 1)
+                val (eLat, eLng) = if (nextStep != null)
+                    Pair(nextStep.maneuver.location[1], nextStep.maneuver.location[0])
+                else
+                    Pair(dLat, dLng)
                 NavigationStep(
                     index = i,
                     startLat = step.maneuver.location[1],
                     startLng = step.maneuver.location[0],
-                    endLat = step.maneuver.location[1],
-                    endLng = step.maneuver.location[0],
+                    endLat = eLat,
+                    endLng = eLng,
                     distanceMeters = step.distance.toInt(),
                     durationSeconds = step.duration.toInt(),
                     instruction = step.name.ifEmpty { step.maneuver.type },
