@@ -254,13 +254,12 @@ Ne l'utilise pas pour de simples informations ou conseils.`;
     setLaunching(true);
     setNavError(null);
     try {
-      let ok = false;
-      if (onLaunchAR) ok = await onLaunchAR(nav) !== false;
-      else ok = await launchNativeArNav(nav.lat, nav.lng, nav.name, nav.mode, mapsKey);
-      if (!ok) setNavError("Capacitor indisponible — vérifiez que vous utilisez l'APK Android");
+      if (onLaunchAR) await onLaunchAR(nav);
+      else await launchNativeArNav(nav.lat, nav.lng, nav.name, nav.mode, mapsKey);
     } catch(e) {
-      console.error("[AIScreen] launchNav error:", e);
-      setNavError(String(e?.message || e));
+      const msg = e?.message || String(e);
+      console.error("[AIScreen] launchNav error:", msg);
+      setNavError(msg);
     }
     setLaunching(false);
   },[mapsKey, onLaunchAR, launching]);
