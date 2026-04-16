@@ -244,13 +244,20 @@ Ne l'utilise pas pour de simples informations ou conseils.`;
     setBusy(false);
   },[input,busy,aiHistory,claudeKey,systemPrompt,setAiHistory,setAiDisplay]);
 
+  const [launching, setLaunching] = useState(false);
+
   // ── Lancer la nav AR depuis le bouton ─────────────────────────────
   const launchNav = useCallback(async(nav)=>{
-    if (!nav) return;
-    setNavCmd(null);
-    if (onLaunchAR) onLaunchAR(nav); // callback vers App.jsx
-    else await launchNativeArNav(nav.lat, nav.lng, nav.name, nav.mode, mapsKey);
-  },[mapsKey, onLaunchAR]);
+    if (!nav || launching) return;
+    setLaunching(true);
+    try {
+      if (onLaunchAR) await onLaunchAR(nav);
+      else await launchNativeArNav(nav.lat, nav.lng, nav.name, nav.mode, mapsKey);
+    } catch(e) {
+      console.error("[AIScreen] launchNav error:", e);
+    }
+    setLaunching(false);
+  },[mapsKey, onLaunchAR, launching]);
 
   // ── Questions rapides contextuelles ──────────────────────────────
   const QUICK = useMemo(()=>{
@@ -340,13 +347,17 @@ Ne l'utilise pas pour de simples informations ou conseils.`;
               {m.nav && (
                 <div onPointerDown={()=>launchNav(m.nav)}
                   style={{ marginTop:8, display:"flex", alignItems:"center", gap:6,
-                    background:"linear-gradient(135deg,#F5820D22,#F5820D11)",
-                    border:`1px solid ${C.accent}`, borderRadius:6,
-                    padding:"7px 10px", cursor:"pointer" }}>
-                  <span style={{ fontSize:16 }}>🗺</span>
+                    background: launching
+                      ? "rgba(245,130,13,0.08)"
+                      : "linear-gradient(135deg,#F5820D22,#F5820D11)",
+                    border:`1px solid ${C.accent}`,
+                    borderRadius:6, padding:"7px 10px",
+                    cursor: launching ? "wait" : "pointer",
+                    opacity: launching ? 0.7 : 1 }}>
+                  <span style={{ fontSize:16 }}>{launching ? "⏳" : "🗺"}</span>
                   <div>
                     <div style={{ color:C.accent, fontSize:9, fontFamily:C.fnt, fontWeight:700 }}>
-                      NAVIGUER EN AR
+                      {launching ? "OUVERTURE AR…" : "NAVIGUER EN AR"}
                     </div>
                     <div style={{ color:C.muted, fontSize:7, fontFamily:C.fnt }}>
                       → {m.nav.name} · {m.nav.mode==="walking"?"à pied":"vélo"}

@@ -154,13 +154,37 @@ export async function fetchJCDecaux(apiKey) {
 }
 
 // ── Bridge Capacitor → ArNavigationActivity ─────────────────────
+let _ArNav = null; // singleton — registerPlugin ne doit être appelé qu'une fois
+
 export async function launchNativeArNav(destLat, destLng, destName, mode="bicycling", mapsKey="") {
   try {
-    const { registerPlugin } = await import(/* @vite-ignore */ "@capacitor/core");
-    const ArNav = registerPlugin("ArNavigation");
-    await ArNav.startNavigation({ destLat, destLng, destName, travelMode: mode, mapsKey });
+    // Vérifier que Capacitor est disponible (Android natif uniquement)
+    if (!window.Capacitor?.isNativePlatform?.()) {
+      console.warn("[ArNav] Capacitor non disponible — web browser détecté");
+      alert(`Navigation AR vers ${destName}\n(disponible uniquement sur l'APK Android)`);
+      return false;
+    }
+
+    // Initialiser le plugin une seule fois
+    if (!_ArNav) {
+      const { registerPlugin } = await import(/* @vite-ignore */ "@capacitor/core");
+      _ArNav = registerPlugin("ArNavigation");
+    }
+
+    console.log("[ArNav] Lancement navigation →", destName, destLat, destLng, mode);
+    await _ArNav.startNavigation({
+      destLat:    Number(destLat),
+      destLng:    Number(destLng),
+      destName:   String(destName),
+      travelMode: String(mode),
+      mapsKey:    String(mapsKey || ""),
+    });
+    console.log("[ArNav] startNavigation OK");
     return true;
-  } catch { return false; }
+  } catch(e) {
+    console.error("[ArNav] Erreur lancement:", e);
+    return false;
+  }
 }
 
 // ── GPS watcher ────────────────────────────────────────────────────
