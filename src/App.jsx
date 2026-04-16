@@ -79,7 +79,7 @@ function NavBar({ tab, setTab }) {
 
 // ── Root App ───────────────────────────────────────────────────────
 export default function App() {
-  const [tab,setTab] = useState("ar");
+  const [tab,setTab] = useState("map"); // map par défaut — AR demande la caméra au render
   const [sel,setSel] = useState(null);
   const [apiKey,setApiKey]     = useState(()=>localStorage.getItem("velohnav_jcdKey")||"");
   const [claudeKey,setClaudeKey] = useState(()=>localStorage.getItem("velohnav_claudeKey")||"");
