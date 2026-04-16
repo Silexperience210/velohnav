@@ -614,21 +614,23 @@ function ARScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey=""
   // ── Projection AR réelle ───────────────────────────────────────
   const arPins=useMemo(()=>{
     if(heading===null||!gpsPos) return null;
+    const AR_RADIUS = 800; // m — uniquement les stations proches en AR
+    const AR_MAX    = 5;   // max 5 pins à l'écran
     return stations
-      .filter(s=>s.lat&&s.lng&&s.dist<15000)   // FIX : 1600m → 15km
+      .filter(s=>s.lat&&s.lng&&s.dist<=AR_RADIUS)
       .map(s=>{
         const bear=getBearing(gpsPos.lat,gpsPos.lng,s.lat,s.lng);
         const rel=((bear-heading+540)%360)-180;
         if(Math.abs(rel)>FOV/2+8) return null;
         const x=50+(rel/(FOV/2))*50;
-        // Projection verticale adaptée à 15km : stations proches haut, lointaines bas
-        const dc=Math.min(s.dist,12000);
-        const y=70-(1-dc/12000)*44;
-        const scale=Math.max(0.3,1-dc/14000);
+        const dc=Math.min(s.dist,AR_RADIUS);
+        const y=70-(1-dc/AR_RADIUS)*44;
+        const scale=Math.max(0.5,1-dc/(AR_RADIUS*1.5));
         return{...s,x,y,scale,labelRight:rel<0,rel};
       })
       .filter(Boolean)
-      .sort((a,b)=>b.dist-a.dist);
+      .sort((a,b)=>a.dist-b.dist)  // plus proche = devant
+      .slice(0,AR_MAX);
   },[heading,gpsPos,stations]);
 
   const fakePins=useMemo(()=>pins(stations,heading,gpsPos),[stations,heading,gpsPos]);
@@ -646,8 +648,8 @@ function ARScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey=""
 
     raw.forEach((pin, i) => {
       if (used.has(i)) return;
-      // Stations à moins de 500m → toujours individuelles
-      if (pin.dist < 500) { result.push({ ...pin, cluster: null }); return; }
+      // Stations à moins de 200m → toujours individuelles (rayon AR limité à 800m)
+      if (pin.dist < 200) { result.push({ ...pin, cluster: null }); return; }
       // Chercher les voisins dans le FOV
       const neighbors = raw.filter((p2, j) => {
         if (j === i || used.has(j)) return false;

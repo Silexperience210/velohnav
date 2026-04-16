@@ -53,22 +53,24 @@ export function enrich(list, pos) {
 // pins() — projette les stations réelles dans le FOV via bearing+heading.
 export function pins(stations, heading=null, gpsPos=null) {
   if (heading === null || !gpsPos) return [];
-  const FOV_=68;
+  const FOV_   = 68;
+  const RADIUS = 800; // m — cohérent avec ARScreen
+  const MAX    = 5;
   return stations
-    .filter(s=>s.lat&&s.lng&&s.dist<15000)
+    .filter(s=>s.lat&&s.lng&&s.dist<=RADIUS)
     .map(s=>{
       const bear=getBearing(gpsPos.lat,gpsPos.lng,s.lat,s.lng);
       const rel=((bear-heading+540)%360)-180;
       if(Math.abs(rel)>FOV_/2+8) return null;
       const x=50+(rel/(FOV_/2))*50;
-      const dc=Math.min(s.dist,12000);
-      const y=70-(1-dc/12000)*44;
-      const scale=Math.max(0.3,1-dc/14000);
+      const dc=Math.min(s.dist,RADIUS);
+      const y=70-(1-dc/RADIUS)*44;
+      const scale=Math.max(0.5,1-dc/(RADIUS*1.5));
       return{...s,x,y,scale,labelRight:rel<0,rel};
     })
     .filter(Boolean)
-    .sort((a,b)=>b.dist-a.dist)
-    .slice(0,8);
+    .sort((a,b)=>a.dist-b.dist)
+    .slice(0,MAX);
 }
 
 // ── Historique stations ────────────────────────────────────────────
