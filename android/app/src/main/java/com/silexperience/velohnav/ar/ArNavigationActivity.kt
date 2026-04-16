@@ -97,8 +97,8 @@ class ArNavigationActivity : ComponentActivity() {
                                 // FIX CRITIQUE : onSessionUpdated tourne sur le GL thread.
                                 // On post sur le main thread avant tout appel ViewModel.
                                 v.onSessionUpdated = { session, frame ->
-                                    val earth = session.earth ?: return@onSessionUpdated
-                                    if (earth.trackingState == TrackingState.TRACKING) {
+                                    val earth = session.earth
+                                    if (earth != null && earth.trackingState == TrackingState.TRACKING) {
                                         mainHandler.post {
                                             viewModel.onEarthTracking(earth, frame)
                                         }
