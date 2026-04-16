@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { t } from "../i18n.js";
 import { C, COMPASS_LABELS, FOV } from "../constants.js";
-import { haversine, getBearing, fDist, fWalk, bCol, bTag, pins } from "../utils.js";
+import { haversine, getBearing, fDist, fWalk, bCol, bTag, pins, getHistory } from "../utils.js";
 
 
 function AIScreen({ stations, claudeKey, aiHistory, setAiHistory, aiDisplay, setAiDisplay }) {

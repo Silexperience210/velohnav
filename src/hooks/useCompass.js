@@ -21,7 +21,10 @@ function useCompass(){
     let gotAbsolute=false; // true dès qu'on reçoit un event absolu valide
 
     const update=(h)=>{
-      last=last===null?h:last+((h-last+540)%360-180)*0.2;
+      if(last===null){ last=h; setHeading(Math.round((h+360)%360)); return; }
+      const diff=((h-last+540)%360)-180;
+      if(Math.abs(diff)<1.5) return;           // deadzone : ignore le bruit < 1.5°
+      last=last+diff*0.08;                     // EMA lent → boussole stable
       setHeading(Math.round((last+360)%360));
     };
 
