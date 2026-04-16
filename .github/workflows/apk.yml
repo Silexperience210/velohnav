@@ -6,12 +6,14 @@ on:
     tags: ['v*']
   workflow_dispatch:
 
+# FIX: permissions explicites pour softprops/action-gh-release
+permissions:
+  contents: write
+
 jobs:
   build-apk:
     runs-on: ubuntu-latest
     timeout-minutes: 40
-    permissions:
-      contents: write   # nécessaire pour uploader les APK dans la release GitHub
 
     steps:
       - name: Checkout
@@ -63,6 +65,7 @@ jobs:
         run: ./gradlew assembleDebug --no-daemon
 
       - name: Build release APK (signé)
+        id: release_build
         working-directory: android
         env:
           KEYSTORE_B64: ${{ secrets.KEYSTORE_BASE64 }}
@@ -72,6 +75,7 @@ jobs:
         run: |
           if [ -z "$KEYSTORE_B64" ]; then
             echo "KEYSTORE_BASE64 non configuré — release ignorée"
+            echo "signed=false" >> $GITHUB_OUTPUT
             exit 0
           fi
           echo "$KEYSTORE_B64" | base64 --decode > app/velohnav-release.jks
@@ -82,6 +86,7 @@ jobs:
             -Pandroid.injected.signing.key.password="$KEY_PWD" \
             --no-daemon
           rm -f app/velohnav-release.jks
+          echo "signed=true" >> $GITHUB_OUTPUT
 
       - name: Upload debug APK
         uses: actions/upload-artifact@v4
@@ -92,7 +97,7 @@ jobs:
 
       - name: Upload release APK
         uses: actions/upload-artifact@v4
-        if: hashFiles('android/app/build/outputs/apk/release/app-release.apk') != ''
+        if: steps.release_build.outputs.signed == 'true'
         with:
           name: VelohNav-AR-release
           path: android/app/build/outputs/apk/release/app-release.apk
@@ -104,11 +109,15 @@ jobs:
           [ -f android/app/build/outputs/apk/release/app-release.apk ] && \
             echo "=== Release ===" && du -h android/app/build/outputs/apk/release/app-release.apk || true
 
-      # Attacher l'APK à la release GitHub si triggered par un tag v*
+      # Attacher l'APK à la GitHub Release — uniquement sur tag v*
+      # FIX 1: permissions contents:write en haut du fichier
+      # FIX 2: release APK conditionnel (seulement si keystore configuré)
+      # FIX 3: fail_on_unmatched_files: false pour ne pas crasher sans release APK
       - name: Attach APK to GitHub Release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
+          fail_on_unmatched_files: false
           files: |
             android/app/build/outputs/apk/debug/app-debug.apk
             android/app/build/outputs/apk/release/app-release.apk
