@@ -93,7 +93,11 @@ class RouteManager(private val mapsApiKey: String) {
             
             if (result.code != "Ok") return Result.failure(Exception("OSRM: ${result.code}"))
 
-            val leg = result.routes.first().legs.first()
+            // Guard : vérifier que la réponse a bien des routes/legs avant .first()
+            if (result.routes.isEmpty()) return Result.failure(Exception("OSRM: aucune route"))
+            val route = result.routes.first()
+            if (route.legs.isEmpty()) return Result.failure(Exception("OSRM: aucun leg"))
+            val leg = route.legs.first()
             val rawSteps = leg.steps
             val steps = rawSteps.mapIndexed { i, step ->
                 // OSRM : maneuver.location = début du step (point de virage entrant).

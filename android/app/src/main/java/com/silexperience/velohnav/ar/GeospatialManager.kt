@@ -48,7 +48,7 @@ class GeospatialManager {
         val half = rad / 2.0
         return try {
             val anchor = earth.resolveAnchorOnTerrain(
-                data.latitude, data.longitude, 0.5,
+                data.latitude, data.longitude, 1.5, // 1.5m : meilleure visibilité, évite z-fighting
                 0f, sin(half).toFloat(), 0f, cos(half).toFloat()
             )
             Log.d(TAG, "Anchor OK step=${data.stepIndex} bearing=${data.bearingDegrees}°")

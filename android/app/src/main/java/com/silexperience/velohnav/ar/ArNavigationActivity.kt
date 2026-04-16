@@ -141,20 +141,6 @@ class ArNavigationActivity : ComponentActivity() {
         }
     }
 
-    // FIX CRITIQUE : forwarding explicite du lifecycle à SceneView 2.2.1
-    // Sans ces appels, la caméra ARCore reste figée → écran noir
-    override fun onResume() {
-        super.onResume()
-        Log.d(TAG, "onResume")
-        arView?.onResume()
-    }
-
-    override fun onPause() {
-        Log.d(TAG, "onPause")
-        arView?.onPause()
-        super.onPause()
-    }
-
     // Vérifier qu'ARCore est installé et à jour avant de lancer la navigation
     private fun checkArCoreAvailability(onAvailable: () -> Unit) {
         try {

@@ -52,7 +52,7 @@ class ArNavigationViewModel(application: Application) : AndroidViewModel(applica
     private var arView: ARSceneView? = null
     private var route: NavigationRoute? = null
     private var currentStepIdx = 0
-    private val arrowNodes = mutableMapOf<Int, AnchorNode>()
+    private val arrowNodes = java.util.concurrent.ConcurrentHashMap<Int, AnchorNode>()
     private var modelAsset: Model? = null
     private var vpsReady = false
     private var navigationJob: Job? = null
@@ -216,7 +216,10 @@ class ArNavigationViewModel(application: Application) : AndroidViewModel(applica
 
     private fun advance(earth: Earth, r: NavigationRoute) {
         arrowNodes.remove(currentStepIdx)?.let { node ->
-            viewModelScope.launch { arView?.removeChildNode(node) }
+            viewModelScope.launch {
+                arView?.removeChildNode(node)
+                try { node.destroy() } catch (e: Exception) { Log.w(TAG, "destroy advance: ${e.message}") }
+            }
         }
         currentStepIdx++
         if (currentStepIdx >= r.steps.size) {
@@ -241,7 +244,10 @@ class ArNavigationViewModel(application: Application) : AndroidViewModel(applica
     fun cleanup() {
         navigationJob?.cancel()
         viewModelScope.launch {
-            arrowNodes.values.forEach { arView?.removeChildNode(it) }
+            arrowNodes.values.forEach { node ->
+                arView?.removeChildNode(node)
+                try { node.destroy() } catch (e: Exception) { Log.w(TAG, "destroy: ${e.message}") }
+            }
             arrowNodes.clear()
         }
         geo.cleanup()
