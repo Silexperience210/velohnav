@@ -1,5 +1,6 @@
 package com.silexperience.velohnav.ar
 
+import android.annotation.SuppressLint
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -8,18 +9,19 @@ import com.google.android.gms.location.Priority
 import com.google.ar.core.Earth
 import com.google.ar.core.Frame
 import io.github.sceneview.ar.ARSceneView
-import kotlinx.coroutines.*
+import io.github.sceneview.ar.node.AnchorNode
+import io.github.sceneview.model.Model
+import io.github.sceneview.node.ModelNode
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
 
 enum class NavStatus { IDLE, LOCATING, ROUTING, LOCALIZING, NAVIGATING, ARRIVED, ERROR }
 
-data class VpsAccuracy(val horizontal: Double, val orientation: Double) {
-    val isReliable: Boolean get() = horizontal < 10 && orientation < 10
-}
-
+// VpsAccuracy est défini dans GeospatialManager.kt — ne pas redéclarer ici.
 data class NavState(
     val status: NavStatus = NavStatus.IDLE,
     val currentStep: NavigationStep? = null,
@@ -34,14 +36,18 @@ data class NavState(
 )
 
 class ArNavigationViewModel(application: Application) : AndroidViewModel(application) {
+    private val TAG = "ArNavViewModel"
     private val _state = MutableStateFlow(NavState())
     val navState: StateFlow<NavState> = _state.asStateFlow()
+
     private val geo = GeospatialManager()
-    private lateinit var routeManager: RouteManager
+    private var routeManager: RouteManager = RouteManager("")
     private val fusedLocation = LocationServices.getFusedLocationProviderClient(application)
     private var arView: ARSceneView? = null
     private var route: NavigationRoute? = null
     private var currentStepIdx = 0
+    private val arrowNodes = mutableMapOf<Int, AnchorNode>()
+    private var modelAsset: Model? = null
     private var vpsReady = false
     private var navigationJob: Job? = null
 
@@ -54,103 +60,106 @@ class ArNavigationViewModel(application: Application) : AndroidViewModel(applica
         navigationJob?.cancel()
         arView = arSceneView
         routeManager = RouteManager(mapsKey)
-        _state.value = NavState(status = NavStatus.LOCATING, destName: destName)
-        
-        navigationJob = viewModelScope.launch {
-            locateAndRoute(destLat, destLng, travelMode)
+        _state.value = NavState(status = NavStatus.LOCATING, destName = destName)
+
+        viewModelScope.launch {
+            try {
+                modelAsset = arSceneView.modelLoader.loadModel("models/arrow_navigation.glb")
+            } catch (e: Exception) { android.util.Log.e(TAG, "GLB load error", e) }
         }
+        navigationJob = viewModelScope.launch { locateAndRoute(destLat, destLng, travelMode) }
     }
 
+    @SuppressLint("MissingPermission")
     private suspend fun locateAndRoute(dLat: Double, dLng: Double, mode: String) {
         try {
+            val loc = fusedLocation.getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, null).await()
+                ?: return setState(NavStatus.ERROR, "GPS indisponible")
             _state.value = _state.value.copy(status = NavStatus.ROUTING)
-            
-            val loc = withTimeoutOrNull(15000) {
-                fusedLocation.getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, null).await()
-            } ?: fusedLocation.lastLocation.await()
-            
-            if (loc == null) {
-                setState(NavStatus.ERROR, "GPS indisponible.")
-                return
-            }
-
             routeManager.fetchRoute(loc.latitude, loc.longitude, dLat, dLng, mode)
                 .onSuccess { r ->
                     route = r
                     _state.value = _state.value.copy(
                         status = NavStatus.LOCALIZING,
-                        totalSteps = r.steps.size, 
+                        totalSteps = r.steps.size,
                         totalRemainingMeters = r.totalDistanceMeters,
-                        etaSeconds = r.totalDurationSeconds, 
+                        etaSeconds = r.totalDurationSeconds,
                         currentStep = r.steps.firstOrNull()
                     )
                 }
-                .onFailure { 
-                    setState(NavStatus.ERROR, it.message ?: "Erreur itinéraire")
-                }
-        } catch (e: Exception) { 
-            setState(NavStatus.ERROR, "GPS: ${e.message}")
-        }
+                .onFailure { setState(NavStatus.ERROR, it.message ?: "Erreur itinéraire") }
+        } catch (e: Exception) { setState(NavStatus.ERROR, e.message ?: "Erreur GPS") }
     }
 
     fun onEarthTracking(earth: Earth, frame: Frame) {
-        if (!viewModelScope.isActive) return
-        
-        val pose = earth.cameraGeospatialPose
-        val acc = VpsAccuracy(
-            horizontal = pose.horizontalAccuracy,
-            orientation = pose.orientationYawAccuracy
-        )
+        geo.onFrame(earth, frame)
+        val acc = geo.accuracy.value ?: return
         _state.value = _state.value.copy(vpsAccuracy = acc)
-        
         val r = route ?: return
-        
         if (!vpsReady && acc.isReliable && _state.value.status == NavStatus.LOCALIZING) {
             vpsReady = true
+            placeArrows(earth, r, 0, minOf(5, r.steps.size))
             _state.value = _state.value.copy(status = NavStatus.NAVIGATING)
         }
-        
-        if (_state.value.status == NavStatus.NAVIGATING) {
-            updateProgress(earth, r)
+        if (_state.value.status == NavStatus.NAVIGATING) updateProgress(earth, r)
+    }
+
+    private fun placeArrows(earth: Earth, r: NavigationRoute, from: Int, count: Int) {
+        for (i in from until from + count) {
+            if (!arrowNodes.containsKey(i)) placeArrow(earth, r, i)
+        }
+    }
+
+    private fun placeArrow(earth: Earth, r: NavigationRoute, idx: Int) {
+        val step = r.steps.getOrNull(idx) ?: return
+        val next = r.steps.getOrNull(idx + 1)
+        val bearing = if (next != null)
+            GeospatialManager.computeBearing(step.endLat, step.endLng, next.startLat, next.startLng)
+        else
+            GeospatialManager.computeBearing(step.startLat, step.startLng, step.endLat, step.endLng)
+        val placed = geo.placeArrowAnchor(earth, TerrainAnchorData(idx, step.endLat, step.endLng, bearing))
+        placed.anchor?.let { createNode(it, idx) }
+    }
+
+    private fun createNode(anchor: com.google.ar.core.Anchor, idx: Int) {
+        val view = arView ?: return
+        viewModelScope.launch {
+            val anchorNode = AnchorNode(engine = view.engine, anchor = anchor)
+            modelAsset?.let { asset ->
+                val instance = view.modelLoader.createInstance(asset)
+                if (instance != null) {
+                    anchorNode.addChildNode(ModelNode(instance, scaleToUnits = 0.9f))
+                }
+            }
+            view.addChildNode(anchorNode)
+            arrowNodes[idx] = anchorNode
         }
     }
 
     private fun updateProgress(earth: Earth, r: NavigationRoute) {
-        if (currentStepIdx >= r.steps.size) { 
-            _state.value = _state.value.copy(status = NavStatus.ARRIVED)
-            return 
+        if (currentStepIdx >= r.steps.size) {
+            _state.value = _state.value.copy(status = NavStatus.ARRIVED); return
         }
-        
         val pose = earth.cameraGeospatialPose
         val step = r.steps[currentStepIdx]
-        val dist = distanceMeters(pose.latitude, pose.longitude, step.endLat, step.endLng)
-        
-        if (dist < 15.0) { 
-            currentStepIdx++
-            if (currentStepIdx >= r.steps.size) {
-                _state.value = _state.value.copy(status = NavStatus.ARRIVED)
-                return
-            }
-        }
-        
+        val dist = GeospatialManager.distanceMeters(pose.latitude, pose.longitude, step.endLat, step.endLng)
+        if (dist < 12.0) { advance(earth, r); return }
         _state.value = _state.value.copy(
-            currentStep = step, 
-            stepIndex = currentStepIdx,
+            currentStep = step, stepIndex = currentStepIdx,
             distanceToNextTurnMeters = dist,
             totalRemainingMeters = r.steps.drop(currentStepIdx).sumOf { it.distanceMeters },
             etaSeconds = r.steps.drop(currentStepIdx).sumOf { it.durationSeconds }
         )
     }
 
-    private fun distanceMeters(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {
-        val R = 6371000.0
-        val dLat = Math.toRadians(lat2 - lat1)
-        val dLon = Math.toRadians(lon2 - lon1)
-        val a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-                Math.cos(Math.toRadians(lat1)) * Math.cos(Math.toRadians(lat2)) *
-                Math.sin(dLon / 2) * Math.sin(dLon / 2)
-        val c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))
-        return R * c
+    private fun advance(earth: Earth, r: NavigationRoute) {
+        arrowNodes.remove(currentStepIdx)?.let { arView?.removeChildNode(it) }
+        currentStepIdx++
+        if (currentStepIdx >= r.steps.size) {
+            _state.value = _state.value.copy(status = NavStatus.ARRIVED); return
+        }
+        val next = currentStepIdx + 4
+        if (next < r.steps.size) placeArrow(earth, r, next)
     }
 
     private fun setState(status: NavStatus, msg: String? = null) {
@@ -159,11 +168,12 @@ class ArNavigationViewModel(application: Application) : AndroidViewModel(applica
 
     fun cleanup() {
         navigationJob?.cancel()
+        arrowNodes.values.forEach { arView?.removeChildNode(it) }
+        arrowNodes.clear()
+        geo.cleanup()
+        modelAsset = null
         arView = null
     }
-    
-    override fun onCleared() {
-        super.onCleared()
-        cleanup()
-    }
+
+    override fun onCleared() { super.onCleared(); cleanup() }
 }
