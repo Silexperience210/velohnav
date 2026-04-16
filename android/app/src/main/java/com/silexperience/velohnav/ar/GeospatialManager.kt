@@ -28,8 +28,10 @@ class GeospatialManager {
     val accuracy: StateFlow<VpsAccuracy?> = _accuracy
 
     // Appelé depuis le main thread (via mainHandler.post dans Activity)
+    // Précondition : earth.trackingState == TRACKING (vérifié par l'appelant)
     fun onFrame(earth: Earth, frame: Frame) {
         try {
+            if (earth.trackingState != com.google.ar.core.TrackingState.TRACKING) return
             val p = earth.cameraGeospatialPose
             _accuracy.value = VpsAccuracy(
                 p.horizontalAccuracy,
