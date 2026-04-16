@@ -5,6 +5,7 @@ import android.content.pm.PackageManager
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.util.Log
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -23,6 +24,7 @@ import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
+import com.google.ar.core.ArCoreApk
 import com.google.ar.core.Config
 import com.google.ar.core.TrackingState
 import io.github.sceneview.ar.ARSceneView
@@ -35,6 +37,7 @@ class ArNavigationActivity : ComponentActivity() {
     private val viewModel: ArNavigationViewModel by viewModels()
     private var arView: ARSceneView? = null
     private val mainHandler = Handler(Looper.getMainLooper())
+    private val TAG = "ArNavActivity"
 
     private var pendingDestLat: Double = 0.0
     private var pendingDestLng: Double = 0.0
@@ -45,9 +48,10 @@ class ArNavigationActivity : ComponentActivity() {
     private val permLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { results ->
-        if (results.all { it.value }) startNavigation()
-        else {
-            Toast.makeText(this, "Caméra et localisation requis pour la navigation AR", Toast.LENGTH_LONG).show()
+        if (results.all { it.value }) {
+            checkArCoreAvailability { startNavigation() }
+        } else {
+            Toast.makeText(this, "Caméra et localisation requis pour AR", Toast.LENGTH_LONG).show()
             finish()
         }
     }
@@ -79,13 +83,10 @@ class ArNavigationActivity : ComponentActivity() {
                     AndroidView(
                         modifier = Modifier.fillMaxSize(),
                         factory = { ctx ->
-                            // FIX CRITIQUE : passer sharedActivity pour que SceneView
-                            // reçoive les callbacks lifecycle (onResume/onPause).
-                            // Sans ça : ARSceneView ne démarre jamais → écran noir.
                             ARSceneView(
-                                context            = ctx,
-                                sharedActivity     = this@ArNavigationActivity,  // ← CRITICAL
-                                sharedLifecycle    = this@ArNavigationActivity.lifecycle,
+                                context          = ctx,
+                                sharedActivity   = this@ArNavigationActivity,
+                                sharedLifecycle  = this@ArNavigationActivity.lifecycle,
                                 sessionConfiguration = { _, config ->
                                     config.geospatialMode      = Config.GeospatialMode.ENABLED
                                     config.lightEstimationMode = Config.LightEstimationMode.ENVIRONMENTAL_HDR
@@ -94,19 +95,22 @@ class ArNavigationActivity : ComponentActivity() {
                             ).also { v ->
                                 arView = v
 
-                                // FIX CRITIQUE : onSessionUpdated tourne sur le GL thread.
-                                // On post sur le main thread avant tout appel ViewModel.
                                 v.onSessionUpdated = { session, frame ->
                                     val earth = session.earth
                                     if (earth != null && earth.trackingState == TrackingState.TRACKING) {
                                         mainHandler.post {
-                                            viewModel.onEarthTracking(earth, frame)
+                                            try {
+                                                viewModel.onEarthTracking(earth, frame)
+                                            } catch (e: Exception) {
+                                                Log.e(TAG, "onEarthTracking error", e)
+                                            }
                                         }
                                     }
                                 }
 
                                 v.onSessionFailed = { e ->
                                     mainHandler.post {
+                                        Log.e(TAG, "ARCore session failed", e)
                                         Toast.makeText(
                                             this@ArNavigationActivity,
                                             "ARCore indisponible : ${e.message}",
@@ -116,19 +120,17 @@ class ArNavigationActivity : ComponentActivity() {
                                     }
                                 }
 
-                                checkPermissions { startNavigation() }
+                                checkPermissions {
+                                    checkArCoreAvailability { startNavigation() }
+                                }
                             }
                         }
                     )
-                    NavigationHud(
-                        state   = state,
-                        onClose = { finish() }
-                    )
+                    NavigationHud(state = state, onClose = { finish() })
                 }
             }
         }
 
-        // Observer les erreurs pour Toast
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
                 viewModel.navState.collect { s ->
@@ -136,6 +138,47 @@ class ArNavigationActivity : ComponentActivity() {
                         Toast.makeText(this@ArNavigationActivity, s.errorMessage, Toast.LENGTH_LONG).show()
                 }
             }
+        }
+    }
+
+    // FIX CRITIQUE : forwarding explicite du lifecycle à SceneView 2.2.1
+    // Sans ces appels, la caméra ARCore reste figée → écran noir
+    override fun onResume() {
+        super.onResume()
+        Log.d(TAG, "onResume")
+        arView?.onResume()
+    }
+
+    override fun onPause() {
+        Log.d(TAG, "onPause")
+        arView?.onPause()
+        super.onPause()
+    }
+
+    // Vérifier qu'ARCore est installé et à jour avant de lancer la navigation
+    private fun checkArCoreAvailability(onAvailable: () -> Unit) {
+        try {
+            when (val av = ArCoreApk.getInstance().checkAvailability(this)) {
+                ArCoreApk.Availability.SUPPORTED_INSTALLED -> onAvailable()
+                ArCoreApk.Availability.SUPPORTED_APK_TOO_OLD,
+                ArCoreApk.Availability.SUPPORTED_NOT_INSTALLED -> {
+                    try {
+                        ArCoreApk.getInstance().requestInstall(this, true)
+                    } catch (e: Exception) {
+                        Log.e(TAG, "ARCore install request failed", e)
+                        finish()
+                    }
+                }
+                else -> {
+                    Toast.makeText(this, "ARCore non supporté ($av)", Toast.LENGTH_LONG).show()
+                    finish()
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "checkArCoreAvailability error", e)
+            // Continuer quand même — certains appareils retournent des erreurs
+            // mais supportent quand même ARCore
+            onAvailable()
         }
     }
 
@@ -148,11 +191,9 @@ class ArNavigationActivity : ComponentActivity() {
     }
 
     private fun startNavigation() {
-        val v = arView ?: return
-        viewModel.initializeNavigation(
-            v, pendingDestLat, pendingDestLng,
-            pendingDestName, pendingTravelMode, pendingMapsKey
-        )
+        val v = arView ?: run { Log.e(TAG, "ARSceneView null"); return }
+        Log.d(TAG, "startNavigation → $pendingDestLat, $pendingDestLng")
+        viewModel.initializeNavigation(v, pendingDestLat, pendingDestLng, pendingDestName, pendingTravelMode, pendingMapsKey)
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
@@ -166,6 +207,7 @@ class ArNavigationActivity : ComponentActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
+        Log.d(TAG, "onDestroy")
         mainHandler.removeCallbacksAndMessages(null)
         viewModel.cleanup()
         arView = null
