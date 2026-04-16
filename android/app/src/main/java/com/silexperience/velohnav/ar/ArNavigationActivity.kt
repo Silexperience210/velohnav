@@ -3,6 +3,8 @@ package com.silexperience.velohnav.ar
 import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -15,10 +17,12 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
-import com.google.ar.core.ArCoreApk
 import com.google.ar.core.Config
 import com.google.ar.core.TrackingState
 import io.github.sceneview.ar.ARSceneView
@@ -27,21 +31,23 @@ import com.silexperience.velohnav.ar.ui.NavigationHud
 import com.silexperience.velohnav.ar.ui.VelohNavArTheme
 
 class ArNavigationActivity : ComponentActivity() {
+
     private val viewModel: ArNavigationViewModel by viewModels()
     private var arView: ARSceneView? = null
+    private val mainHandler = Handler(Looper.getMainLooper())
 
-    private var pendingDestLat: Double    = 0.0
-    private var pendingDestLng: Double    = 0.0
-    private var pendingDestName: String   = "Destination"
+    private var pendingDestLat: Double = 0.0
+    private var pendingDestLng: Double = 0.0
+    private var pendingDestName: String = "Destination"
     private var pendingTravelMode: String = "bicycling"
-    private var pendingMapsKey: String    = ""
+    private var pendingMapsKey: String = ""
 
     private val permLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { results ->
-        if (results.all { it.value }) initArView()
+        if (results.all { it.value }) startNavigation()
         else {
-            Toast.makeText(this, "Caméra et localisation requis pour AR", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, "Caméra et localisation requis pour la navigation AR", Toast.LENGTH_LONG).show()
             finish()
         }
     }
@@ -49,8 +55,8 @@ class ArNavigationActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        pendingDestLat    = savedInstanceState?.getDouble("dest_lat")    ?: intent.getDoubleExtra("dest_lat",    0.0)
-        pendingDestLng    = savedInstanceState?.getDouble("dest_lng")    ?: intent.getDoubleExtra("dest_lng",    0.0)
+        pendingDestLat    = savedInstanceState?.getDouble("dest_lat")    ?: intent.getDoubleExtra("dest_lat", 0.0)
+        pendingDestLng    = savedInstanceState?.getDouble("dest_lng")    ?: intent.getDoubleExtra("dest_lng", 0.0)
         pendingDestName   = savedInstanceState?.getString("dest_name")   ?: intent.getStringExtra("dest_name")   ?: "Destination"
         pendingTravelMode = savedInstanceState?.getString("travel_mode") ?: intent.getStringExtra("travel_mode") ?: "bicycling"
         pendingMapsKey    = savedInstanceState?.getString("maps_key")    ?: intent.getStringExtra("maps_key")    ?: ""
@@ -60,17 +66,10 @@ class ArNavigationActivity : ComponentActivity() {
             finish(); return
         }
 
-        // ── Vérifier disponibilité ARCore AVANT de créer la view ────────
-        when (ArCoreApk.getInstance().checkAvailability(this)) {
-            ArCoreApk.Availability.UNSUPPORTED_DEVICE_NOT_CAPABLE -> {
-                Toast.makeText(this, "Ce device ne supporte pas ARCore", Toast.LENGTH_LONG).show()
-                finish(); return
-            }
-            ArCoreApk.Availability.UNKNOWN_ERROR -> {
-                Toast.makeText(this, "ARCore indisponible", Toast.LENGTH_LONG).show()
-                finish(); return
-            }
-            else -> { /* OK ou à installer — ARSceneView gérera l'install */ }
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+        WindowInsetsControllerCompat(window, window.decorView).apply {
+            hide(WindowInsetsCompat.Type.systemBars())
+            systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
         }
 
         setContent {
@@ -78,9 +77,15 @@ class ArNavigationActivity : ComponentActivity() {
                 val state by viewModel.navState.collectAsState()
                 Box(Modifier.fillMaxSize()) {
                     AndroidView(
+                        modifier = Modifier.fillMaxSize(),
                         factory = { ctx ->
+                            // FIX CRITIQUE : passer sharedActivity pour que SceneView
+                            // reçoive les callbacks lifecycle (onResume/onPause).
+                            // Sans ça : ARSceneView ne démarre jamais → écran noir.
                             ARSceneView(
-                                context = ctx,
+                                context            = ctx,
+                                sharedActivity     = this@ArNavigationActivity,  // ← CRITICAL
+                                sharedLifecycle    = this@ArNavigationActivity.lifecycle,
                                 sessionConfiguration = { _, config ->
                                     config.geospatialMode      = Config.GeospatialMode.ENABLED
                                     config.lightEstimationMode = Config.LightEstimationMode.ENVIRONMENTAL_HDR
@@ -88,23 +93,42 @@ class ArNavigationActivity : ComponentActivity() {
                                 }
                             ).also { v ->
                                 arView = v
+
+                                // FIX CRITIQUE : onSessionUpdated tourne sur le GL thread.
+                                // On post sur le main thread avant tout appel ViewModel.
                                 v.onSessionUpdated = { session, frame ->
-                                    session.earth?.let { e ->
-                                        if (e.trackingState == TrackingState.TRACKING)
-                                            viewModel.onEarthTracking(e, frame)
+                                    val earth = session.earth ?: return@onSessionUpdated
+                                    if (earth.trackingState == TrackingState.TRACKING) {
+                                        mainHandler.post {
+                                            viewModel.onEarthTracking(earth, frame)
+                                        }
                                     }
                                 }
-                                // Demander les permissions APRÈS que la view est créée
-                                checkPermissions { initArView() }
+
+                                v.onSessionFailed = { e ->
+                                    mainHandler.post {
+                                        Toast.makeText(
+                                            this@ArNavigationActivity,
+                                            "ARCore indisponible : ${e.message}",
+                                            Toast.LENGTH_LONG
+                                        ).show()
+                                        finish()
+                                    }
+                                }
+
+                                checkPermissions { startNavigation() }
                             }
-                        },
-                        modifier = Modifier.fillMaxSize()
+                        }
                     )
-                    NavigationHud(state = state, onClose = { finish() })
+                    NavigationHud(
+                        state   = state,
+                        onClose = { finish() }
+                    )
                 }
             }
         }
 
+        // Observer les erreurs pour Toast
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
                 viewModel.navState.collect { s ->
@@ -123,7 +147,7 @@ class ArNavigationActivity : ComponentActivity() {
             permLauncher.launch(perms)
     }
 
-    private fun initArView() {
+    private fun startNavigation() {
         val v = arView ?: return
         viewModel.initializeNavigation(
             v, pendingDestLat, pendingDestLng,
@@ -142,6 +166,7 @@ class ArNavigationActivity : ComponentActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
+        mainHandler.removeCallbacksAndMessages(null)
         viewModel.cleanup()
         arView = null
     }
