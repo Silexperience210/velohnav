@@ -254,8 +254,13 @@ Ne l'utilise pas pour de simples informations ou conseils.`;
     setLaunching(true);
     setNavError(null);
     try {
-      if (onLaunchAR) await onLaunchAR(nav);
-      else await launchNativeArNav(nav.lat, nav.lng, nav.name, nav.mode, mapsKey);
+      let ok;
+      if (onLaunchAR) ok = await onLaunchAR(nav);
+      else ok = await launchNativeArNav(nav.lat, nav.lng, nav.name, nav.mode, mapsKey);
+      if (ok === false) {
+        // launchNativeArNav a échoué — voir console pour détails
+        setNavError("Échec lancement AR — vérifiez les logs console");
+      }
     } catch(e) {
       const msg = e?.message || String(e);
       console.error("[AIScreen] launchNav error:", msg);

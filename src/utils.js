@@ -177,8 +177,7 @@ export async function launchNativeArNav(destLat, destLng, destName, mode="bicycl
   } catch(e) {
     const msg = e?.message || String(e) || "Erreur inconnue";
     console.error("[ArNav] Erreur lancement:", msg, e);
-    // Re-throw pour que AIScreen puisse afficher le vrai message
-    throw new Error(msg);
+    return false; // ARScreen utilise false pour fallback web AR
   }
 }
 
