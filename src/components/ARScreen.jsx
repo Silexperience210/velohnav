@@ -574,13 +574,19 @@ function ARScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey=""
     useRoute(gpsPos, navMode ? navStation : null, navMode||"cycling", mapsKey);
 
   const startNav = useCallback(async(mode)=>{
-    if (navStation) {
-      const native = await launchNativeArNav(
+    if (!navStation) return;
+    const navModeVal = mode === "walking" ? "walking" : "cycling";
+    try {
+      await launchNativeArNav(
         navStation.lat, navStation.lng, navStation.name,
         mode === "walking" ? "walking" : "bicycling",
-        mapsKey   // transmis au module ARCore natif
+        mapsKey
       );
-      if (!native) setNavMode(mode); // fallback web AR
+      // Native AR lancé — on active aussi le tracé WebView en arrière-plan
+      setNavMode(navModeVal);
+    } catch {
+      // Native indispo — fallback tracé WebView uniquement
+      setNavMode(navModeVal);
     }
   },[navStation, mapsKey]);
 
