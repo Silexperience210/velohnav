@@ -88,6 +88,7 @@ export default function App() {
   const [ads,setAds]           = useState(()=>localStorage.getItem("velohnav_ads")==="true");
   // BUG-1/BUG-4 fix: mapsKey géré en state React → réactif + exposé dans Settings
   const [mapsKey,setMapsKey]   = useState(()=>localStorage.getItem("velohnav_mapsKey")||"");
+  const [hafasKey,setHafasKey] = useState(()=>localStorage.getItem("velohnav_hafasKey")||"");
   const [stations,setStations] = useState(()=>enrich(FALLBACK,null));
   const [apiLive,setApiLive]   = useState(false);
   const [isMock,setIsMock]     = useState(true);
@@ -122,6 +123,7 @@ export default function App() {
   useEffect(()=>{ localStorage.setItem("velohnav_lnOn",     lnOn);      },[lnOn]);
   useEffect(()=>{ localStorage.setItem("velohnav_ads",      ads);       },[ads]);
   useEffect(()=>{ localStorage.setItem("velohnav_mapsKey",  mapsKey);   },[mapsKey]);
+  useEffect(()=>{ localStorage.setItem("velohnav_hafasKey", hafasKey);  },[hafasKey]);
 
   // GPS
   useEffect(()=>{
@@ -263,6 +265,7 @@ export default function App() {
           aiHistory={aiHistory} setAiHistory={setAiHistory}
           aiDisplay={aiDisplay} setAiDisplay={setAiDisplay}
           gpsPos={gpsPos} mapsKey={mapsKey}
+          hafasKey={hafasKey}
           onLaunchAR={async nav=>{ return await launchNativeArNav(nav.lat,nav.lng,nav.name,nav.mode,mapsKey); }}/>}
         {tab==="settings" &&<SettingsScreen
           apiKey={apiKey}    setApiKey={setApiKey}
@@ -271,6 +274,7 @@ export default function App() {
           lnOn={lnOn}        setLnOn={setLnOn}
           ads={ads}          setAds={setAds}
           mapsKey={mapsKey}  setMapsKey={setMapsKey}
+          hafasKey={hafasKey} setHafasKey={setHafasKey}
           onRefresh={loadData} apiLive={apiLive} isMock={isMock} gpsPos={gpsPos}/>}
       </div>
       <NavBar tab={tab} setTab={setTab}/>

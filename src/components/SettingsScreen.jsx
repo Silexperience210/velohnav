@@ -139,24 +139,30 @@ function SettingsScreen({ apiKey, setApiKey, claudeKey, setClaudeKey, onRefresh,
       </div>
 
       <div style={{ padding:"14px 14px 0" }}>
-        <div style={{ color:C.muted,fontSize:8,fontFamily:C.fnt,letterSpacing:2,marginBottom:10 }}>{t("settings.maps_key")}</div>
-        <div style={{ background:"rgba(255,255,255,0.02)",border:`1px solid ${C.border}`,borderRadius:8,padding:"14px" }}>
-          <div style={{ background:"rgba(59,130,246,0.06)",border:`1px solid ${C.blue}33`,borderRadius:4,padding:"7px 10px",marginBottom:10 }}>
-            <div style={{ color:C.blue,fontSize:9,fontFamily:C.fnt }}>
-              {mapsKey?"✓ Clé Maps configurée — fallback navigation actif":"ℹ Fallback si OSRM indisponible"}
-            </div>
-            <div style={{ color:C.muted,fontSize:8,fontFamily:C.fnt,marginTop:2 }}>
-              Utilisé si OSRM échoue · console.cloud.google.com → Directions API
+        <div style={{ color:C.muted,fontSize:8,fontFamily:C.fnt,letterSpacing:2,marginBottom:10 }}>🚌 CLÉS API TRANSPORT</div>
+        <div style={{ background:"rgba(255,255,255,0.02)",border:`1px solid ${C.border}`,borderRadius:8,padding:"14px",display:"flex",flexDirection:"column",gap:10 }}>
+          <div>
+            <div style={{ color:C.muted,fontSize:7,fontFamily:C.fnt,letterSpacing:1,marginBottom:6 }}>Google Maps (navigation AR fallback)</div>
+            <div style={{ display:"flex",gap:8 }}>
+              <input value={mapsDraft} onChange={e=>setMapsDraft(e.target.value)} placeholder="AIza..." type="password"
+                style={{ flex:1,background:"rgba(0,0,0,0.4)",border:`1px solid ${C.border}`,
+                  borderRadius:4,padding:"8px 10px",color:C.text,fontSize:11,fontFamily:C.fnt,outline:"none" }}/>
+              <div onPointerDown={saveMapsKey} style={{ background:mapsSaved?"rgba(46,204,143,0.15)":C.accentBg,
+                border:`1px solid ${mapsSaved?C.good:C.accent}`,color:mapsSaved?C.good:C.accent,
+                borderRadius:4,padding:"8px 12px",fontSize:9,fontFamily:C.fnt,cursor:"pointer",fontWeight:700,whiteSpace:"nowrap" }}>
+                {mapsSaved?"✓ OK":"APPLIQUER"}
+              </div>
             </div>
           </div>
-          <div style={{ display:"flex",gap:8 }}>
-            <input value={mapsDraft} onChange={e=>setMapsDraft(e.target.value)} placeholder="AIza..." type="password"
-              style={{ flex:1,background:"rgba(0,0,0,0.4)",border:`1px solid ${C.border}`,
-                borderRadius:4,padding:"8px 10px",color:C.text,fontSize:11,fontFamily:C.fnt,outline:"none" }}/>
-            <div onPointerDown={saveMapsKey} style={{ background:mapsSaved?"rgba(46,204,143,0.15)":C.accentBg,
-              border:`1px solid ${mapsSaved?C.good:C.accent}`,color:mapsSaved?C.good:C.accent,
-              borderRadius:4,padding:"8px 12px",fontSize:9,fontFamily:C.fnt,cursor:"pointer",fontWeight:700,whiteSpace:"nowrap" }}>
-              {mapsSaved?"✓ OK":"APPLIQUER"}
+          <div>
+            <div style={{ color:C.muted,fontSize:7,fontFamily:C.fnt,letterSpacing:1,marginBottom:6 }}>
+              HAFAS ATP — bus RGTR temps réel {hafasKey ? "✓ Actif" : "· opendata-api@verkeiersverbond.lu"}
+            </div>
+            <div style={{ display:"flex",gap:8 }}>
+              <input value={hafasKey||""} onChange={e=>setHafasKey?.(e.target.value.trim())}
+                placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" type="password"
+                style={{ flex:1,background:"rgba(0,0,0,0.4)",border:`1px solid ${hafasKey?C.good:C.border}`,
+                  borderRadius:4,padding:"8px 10px",color:C.text,fontSize:10,fontFamily:C.fnt,outline:"none" }}/>
             </div>
           </div>
         </div>

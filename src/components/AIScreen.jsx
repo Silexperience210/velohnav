@@ -4,6 +4,7 @@ import { C, COMPASS_LABELS, FOV, TRANSIT_STOPS } from "../constants.js";
 import { haversine, getBearing, fDist, fWalk, bCol, bTag, pins,
          getHistory, launchNativeArNav } from "../utils.js";
 import { fetchWeather, getWeatherAdvice } from "../hooks/useWeather.js";
+import { useTransit, formatDeparturesForAI } from "../hooks/useTransit.js";
 
 // ── Score conditions vélo 0-10 ─────────────────────────────────────
 function bikeScore(weather) {
@@ -54,6 +55,7 @@ function AIScreen({ stations, claudeKey, aiHistory, setAiHistory,
   const [input,    setInput]    = useState("");
   const [busy,     setBusy]     = useState(false);
   const [weather,  setWeather]  = useState(null);
+  const { stops: busStops, departures: busDeps } = useTransit(gpsPos, hafasKey);
   const [forecast, setForecast] = useState(null); // prévisions 3h
   const [navCmd,   setNavCmd]   = useState(null); // commande AR en attente
   const endRef = useRef();
@@ -179,6 +181,12 @@ function AIScreen({ stations, claudeKey, aiHistory, setAiHistory,
       ? `\nPosition GPS : ${gpsPos.lat.toFixed(5)}, ${gpsPos.lng.toFixed(5)}`
       : "";
 
+    // Bus RGTR temps réel — arrêts proches avec départs live
+    const busTxt = busStops.slice(0, 2).map(stop => {
+      const deps = busDeps[stop.id];
+      return deps?.length ? formatDeparturesForAI(stop.name, deps) : "";
+    }).filter(Boolean).join("");
+
     return `Tu es VELOH·AI, assistant mobilité VelohNav pour Luxembourg.
 Réponds en français, concis (4-5 lignes). Sois direct et utile.
 ${meteoTxt}${fcTxt}${gpsTxt}
@@ -200,7 +208,7 @@ Exemples :
   → guider vers Luxexpo en vélo : [NAV:49.6267,6.1651,Luxexpo,bicycling]
 N'utilise cette balise QUE si l'utilisateur veut explicitement être guidé/naviguer/aller quelque part.
 Ne l'utilise pas pour de simples informations ou conseils.`;
-  },[stations, weather, forecast, gpsPos]);
+  },[stations, weather, forecast, gpsPos, busStops, busDeps]);
 
   // ── Envoi message + parsing réponse AR ───────────────────────────
   const sendText = useCallback(async(text)=>{
