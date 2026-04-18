@@ -182,10 +182,16 @@ function AIScreen({ stations, claudeKey, aiHistory, setAiHistory,
       : "";
 
     // Bus RGTR temps réel — arrêts proches avec départs live
-    const busTxt = busStops.slice(0, 2).map(stop => {
-      const deps = busDeps[stop.id];
-      return deps?.length ? formatDeparturesForAI(stop.name, deps) : "";
-    }).filter(Boolean).join("");
+    let busTxt = "";
+    if (hafasKey && busStops.length > 0) {
+      busTxt = busStops.slice(0, 2).map(stop => {
+        const deps = busDeps[stop.id];
+        return deps?.length ? formatDeparturesForAI(stop.name, deps) : "";
+      }).filter(Boolean).join("");
+      if (!busTxt) busTxt = `\n(Arrêts proches détectés : ${busStops.slice(0,3).map(s=>s.name).join(", ")} — départs en cours de chargement)`;
+    } else if (!hafasKey) {
+      busTxt = `\n(Aucune clé HAFAS ATP configurée — l'utilisateur peut en demander une gratuitement à opendata-api@verkeiersverbond.lu et l'ajouter dans OPT pour voir les bus RGTR temps réel.)`;
+    }
 
     return `Tu es VELOH·AI, assistant mobilité VelohNav pour Luxembourg.
 Réponds en français, concis (4-5 lignes). Sois direct et utile.
@@ -198,6 +204,7 @@ TRAM T1 — Findel/Aéroport ↔ Gasperich/Stadion (24 arrêts, 16km, GRATUIT) :
 Horaires : 04h20→00h06 tous les jours
 Fréquence : 3-4 min (LuxExpo↔Bouneweg) | 8 min (extrémités) | 15 min heures creuses
 Hubs : Luxexpo, Rout Bréck/Pafendall (funiculaire+CFL), Place de l'Étoile, Hamilius, Gare Centrale (CFL), Howald (CFL), Cloche d'Or, Gasperich/Stadion
+${busTxt ? `\n🚌 BUS RGTR — départs temps réel aux arrêts proches :${busTxt}\n(Les transports publics au Luxembourg sont GRATUITS depuis 2020 pour tous.)` : ""}
 
 NAVIGATION AR : Si l'utilisateur demande à être guidé vers une destination (station Vel'OH, arrêt tram, lieu),
 tu DOIS terminer ta réponse par une balise de navigation :
@@ -208,7 +215,7 @@ Exemples :
   → guider vers Luxexpo en vélo : [NAV:49.6267,6.1651,Luxexpo,bicycling]
 N'utilise cette balise QUE si l'utilisateur veut explicitement être guidé/naviguer/aller quelque part.
 Ne l'utilise pas pour de simples informations ou conseils.`;
-  },[stations, weather, forecast, gpsPos, busStops, busDeps]);
+  },[stations, weather, forecast, gpsPos, busStops, busDeps, hafasKey]);
 
   // ── Envoi message + parsing réponse AR ───────────────────────────
   const sendText = useCallback(async(text)=>{
