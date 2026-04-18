@@ -5,6 +5,7 @@ import { haversine, getBearing, fDist, bTag, bCol, enrich, parseStation,
          addToHistory, fetchJCDecaux, startWatchingGPS, notifyStation,
          requestNotifPerm, launchNativeArNav, payLnAddress } from "./utils.js";
 import { useWeather } from "./hooks/useWeather.js";
+import { saveStations, loadStations } from "./hooks/useStationsCache.js";
 import ARScreen    from "./components/ARScreen.jsx";
 import MapScreen   from "./components/MapScreen.jsx";
 import AIScreen    from "./components/AIScreen.jsx";
@@ -151,8 +152,20 @@ export default function App() {
       } catch(e) { console.warn("JCDecaux load:", e); }
     }
     if (!newStations) {
-      newStations = enrich(FALLBACK, userPos);
-      setApiLive(false); setIsMock(true);
+      // Essayer le cache IndexedDB avant fallback statique
+      const cached = await loadStations();
+      if (cached?.stations?.length) {
+        newStations = enrich(cached.stations, userPos);
+        const ageMin = Math.round(cached.age / 60000);
+        setApiLive(false); setIsMock(false);
+        console.log(`[Cache] ${cached.stations.length} stations chargées (${ageMin}min)`);
+      } else {
+        newStations = enrich(FALLBACK, userPos);
+        setApiLive(false); setIsMock(true);
+      }
+    } else {
+      // Fetch réussi → persister en cache pour offline
+      saveStations(newStations).catch(e => console.warn("[Cache] save:", e));
     }
     // FIX #14 : Comparer avec les stations précédentes → notifier si vide/faible
     newStations.forEach(s=>{
