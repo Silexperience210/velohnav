@@ -154,7 +154,10 @@ export async function fetchJCDecaux(apiKey) {
 }
 
 // ── Bridge Capacitor → ArNavigationActivity ─────────────────────
-let _ArNav = null; // singleton — registerPlugin ne doit être appelé qu'une fois
+// registerPlugin est maintenant importé statiquement depuis @capacitor/core
+import { registerPlugin } from "@capacitor/core";
+
+let _ArNav = null; // singleton — une seule instance enregistrée
 
 // Reset du singleton — utile en hot reload dev
 export function resetArNavPlugin() { _ArNav = null; }
@@ -164,11 +167,7 @@ if (typeof window !== "undefined" && import.meta.hot) {
 
 export async function launchNativeArNav(destLat, destLng, destName, mode="bicycling", mapsKey="") {
   try {
-    // Initialiser le plugin — si Capacitor n'est pas disponible l'import échouera
-    if (!_ArNav) {
-      const { registerPlugin } = await import(/* @vite-ignore */ "@capacitor/core");
-      _ArNav = registerPlugin("ArNavigation");
-    }
+    if (!_ArNav) _ArNav = registerPlugin("ArNavigation");
 
     console.log("[ArNav] Lancement navigation →", destName, destLat, destLng, mode);
     await _ArNav.startNavigation({
@@ -183,31 +182,41 @@ export async function launchNativeArNav(destLat, destLng, destName, mode="bicycl
   } catch(e) {
     const msg = e?.message || String(e) || "Erreur inconnue";
     console.error("[ArNav] Erreur lancement:", msg, e);
-    return false; // ARScreen utilise false pour fallback web AR
+    return false;
   }
 }
 
 // ── GPS watcher ────────────────────────────────────────────────────
-const IS_NATIVE = typeof window !== "undefined" &&
-  !!(window.Capacitor?.isNativePlatform?.() || window.Capacitor?.platform === "android");
+// Import statique pour tree-shaking + typing + hot-reload stable.
+// Capacitor.isNativePlatform() est résolu par le runtime bridge,
+// pas au build-time → OK sur web et APK.
+import { Geolocation } from "@capacitor/geolocation";
+import { Capacitor } from "@capacitor/core";
+
+const IS_NATIVE = typeof window !== "undefined" && Capacitor?.isNativePlatform?.() === true;
 
 export async function startWatchingGPS(cb) {
   if (IS_NATIVE) {
     try {
-      const cap = await import(/* @vite-ignore */ "@capacitor/geolocation");
-      const { Geolocation } = cap;
       await Geolocation.requestPermissions();
-      const id = await Geolocation.watchPosition({ enableHighAccuracy:true }, (pos) => {
-        if (pos?.coords) cb({ lat:pos.coords.latitude, lng:pos.coords.longitude, acc:Math.round(pos.coords.accuracy) });
+      const id = await Geolocation.watchPosition({ enableHighAccuracy: true }, (pos) => {
+        if (pos?.coords) cb({
+          lat: pos.coords.latitude,
+          lng: pos.coords.longitude,
+          acc: Math.round(pos.coords.accuracy)
+        });
       });
       return () => Geolocation.clearWatch({ id });
-    } catch(e) { console.warn("Native GPS watch:", e); }
+    } catch (e) {
+      console.warn("[GPS] Native watch failed, fallback web:", e.message);
+    }
   }
+  // Fallback navigateur web
   if (!navigator.geolocation) return () => {};
   const id = navigator.geolocation.watchPosition(
-    p => cb({ lat:p.coords.latitude, lng:p.coords.longitude, acc:Math.round(p.coords.accuracy) }),
-    e => console.warn("GPS:", e),
-    { enableHighAccuracy:true, maximumAge:5000 }
+    p => cb({ lat: p.coords.latitude, lng: p.coords.longitude, acc: Math.round(p.coords.accuracy) }),
+    e => console.warn("[GPS] Web watch error:", e.message),
+    { enableHighAccuracy: true, maximumAge: 5000 }
   );
   return () => navigator.geolocation.clearWatch(id);
 }
