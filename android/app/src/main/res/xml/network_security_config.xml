@@ -1,9 +1,29 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- Network Security Config — VelohNav
+     Toutes les APIs externes utilisées par l'app sont whitelistées explicitement.
+     cleartextTrafficPermitted=false partout — HTTPS obligatoire.
+-->
 <network-security-config>
+    <!-- APIs métier Vel'OH + IA -->
     <domain-config cleartextTrafficPermitted="false">
         <domain includeSubdomains="true">api.jcdecaux.com</domain>
         <domain includeSubdomains="true">api.anthropic.com</domain>
     </domain-config>
+
+    <!-- APIs transport + cartographie -->
+    <domain-config cleartextTrafficPermitted="false">
+        <domain includeSubdomains="true">cdt.hafas.de</domain>
+        <domain includeSubdomains="true">router.project-osrm.org</domain>
+        <domain includeSubdomains="true">maps.googleapis.com</domain>
+        <domain includeSubdomains="true">nominatim.openstreetmap.org</domain>
+    </domain-config>
+
+    <!-- Météo -->
+    <domain-config cleartextTrafficPermitted="false">
+        <domain includeSubdomains="true">api.open-meteo.com</domain>
+    </domain-config>
+
+    <!-- Fallback global : HTTPS uniquement + certificats système -->
     <base-config cleartextTrafficPermitted="false">
         <trust-anchors>
             <certificates src="system" />

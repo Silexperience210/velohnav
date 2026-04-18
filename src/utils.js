@@ -156,6 +156,12 @@ export async function fetchJCDecaux(apiKey) {
 // ── Bridge Capacitor → ArNavigationActivity ─────────────────────
 let _ArNav = null; // singleton — registerPlugin ne doit être appelé qu'une fois
 
+// Reset du singleton — utile en hot reload dev
+export function resetArNavPlugin() { _ArNav = null; }
+if (typeof window !== "undefined" && import.meta.hot) {
+  import.meta.hot.dispose(() => { _ArNav = null; });
+}
+
 export async function launchNativeArNav(destLat, destLng, destName, mode="bicycling", mapsKey="") {
   try {
     // Initialiser le plugin — si Capacitor n'est pas disponible l'import échouera

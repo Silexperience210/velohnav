@@ -8,6 +8,8 @@ import android.os.Looper
 import android.util.Log
 import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.enableEdgeToEdge
+import androidx.activity.OnBackPressedCallback
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
@@ -18,7 +20,6 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
-import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.Lifecycle
@@ -70,7 +71,8 @@ class ArNavigationActivity : ComponentActivity() {
             finish(); return
         }
 
-        WindowCompat.setDecorFitsSystemWindows(window, false)
+        enableEdgeToEdge()
+        // Hide status + navigation bars en immersif (AR pleine vue)
         WindowInsetsControllerCompat(window, window.decorView).apply {
             hide(WindowInsetsCompat.Type.systemBars())
             systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
@@ -139,6 +141,16 @@ class ArNavigationActivity : ComponentActivity() {
                 }
             }
         }
+
+        // Back press propre — cancel le job de navigation avant de finish()
+        // Évite les leaks et les crashes si ARCore est en plein placement d'ancre
+        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() {
+                Log.d(TAG, "Back press → cleanup + finish")
+                viewModel.cleanup(arView)
+                finish()
+            }
+        })
     }
 
     // Vérifier qu'ARCore est installé et à jour avant de lancer la navigation

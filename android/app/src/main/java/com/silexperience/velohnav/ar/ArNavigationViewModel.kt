@@ -23,6 +23,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 
 enum class NavStatus { IDLE, LOCATING, ROUTING, LOCALIZING, NAVIGATING, ARRIVED, ERROR }
 
@@ -98,9 +99,12 @@ class ArNavigationViewModel(application: Application) : AndroidViewModel(applica
     @SuppressLint("MissingPermission")
     private suspend fun locateAndRoute(dLat: Double, dLng: Double, mode: String) {
         try {
-            val loc = withContext(Dispatchers.IO) {
-                fusedLocation.getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, null).await()
-            } ?: return setState(NavStatus.ERROR, "GPS indisponible")
+            // Timeout 10s — évite blocage indéfini si GPS ne fix jamais (indoor, tunnel...)
+            val loc = withTimeoutOrNull(10_000) {
+                withContext(Dispatchers.IO) {
+                    fusedLocation.getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, null).await()
+                }
+            } ?: return setState(NavStatus.ERROR, "GPS indisponible (timeout 10s) — sortez en extérieur")
 
             _state.value = _state.value.copy(status = NavStatus.ROUTING)
 

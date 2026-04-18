@@ -38,3 +38,24 @@
 -keepnames class kotlinx.coroutines.internal.MainDispatcherFactory {}
 -keepnames class kotlinx.coroutines.CoroutineExceptionHandler {}
 -dontwarn kotlinx.coroutines.**
+
+# ── VelohNav data classes (Gson reflection + Kotlin metadata) ─────────────────
+-keep class com.silexperience.velohnav.ar.NavigationStep { *; }
+-keep class com.silexperience.velohnav.ar.NavigationRoute { *; }
+-keep class com.silexperience.velohnav.ar.NavState { *; }
+-keep class com.silexperience.velohnav.ar.VpsAccuracy { *; }
+-keep class com.silexperience.velohnav.ar.TerrainAnchorData { *; }
+-keep class com.silexperience.velohnav.ar.RouteManager$* { *; }
+
+# ── Kotlin Metadata (nécessaire pour Compose + reflection) ────────────────────
+-keepattributes RuntimeVisibleAnnotations,RuntimeInvisibleAnnotations
+-keepattributes RuntimeVisibleParameterAnnotations,RuntimeInvisibleParameterAnnotations
+-keep class kotlin.Metadata { *; }
+
+# ── Compose runtime ───────────────────────────────────────────────────────────
+-keep class androidx.compose.runtime.** { *; }
+-dontwarn androidx.compose.**
+
+# ── Filament (SceneView renderer) ─────────────────────────────────────────────
+-keep class com.google.android.filament.** { *; }
+-dontwarn com.google.android.filament.**
