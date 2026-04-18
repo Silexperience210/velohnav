@@ -50,7 +50,7 @@ function stripNavTag(text) {
 // ── Composant principal ────────────────────────────────────────────
 function AIScreen({ stations, claudeKey, aiHistory, setAiHistory,
                     aiDisplay, setAiDisplay, gpsPos=null,
-                    mapsKey="", onLaunchAR=null }) {
+                    mapsKey="", hafasKey="", onLaunchAR=null }) {
 
   const [input,    setInput]    = useState("");
   const [busy,     setBusy]     = useState(false);

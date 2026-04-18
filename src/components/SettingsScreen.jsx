@@ -5,7 +5,7 @@ import { haversine, getBearing, fDist, fWalk, bCol, bTag, pins } from "../utils.
 
 import { useI18n } from "../i18n.js";
 
-function SettingsScreen({ apiKey, setApiKey, claudeKey, setClaudeKey, onRefresh, apiLive, isMock, gpsPos, lnAddr, setLnAddr, lnOn, setLnOn, ads, setAds, mapsKey, setMapsKey }) {
+function SettingsScreen({ apiKey, setApiKey, claudeKey, setClaudeKey, onRefresh, apiLive, isMock, gpsPos, lnAddr, setLnAddr, lnOn, setLnOn, ads, setAds, mapsKey, setMapsKey, hafasKey="", setHafasKey }) {
   const [draft,setDraft]=useState(apiKey);
   const [saved,setSaved]=useState(false);
   const [claudeDraft,setClaudeDraft]=useState(claudeKey);
