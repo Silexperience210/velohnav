@@ -1,5 +1,6 @@
 // VelohNav — fonctions utilitaires pures (math, formatage, données)
 import { REF, FALLBACK } from "./constants.js";
+import { logSentry } from "./sentry.js";
 
 // ── Géodésie ───────────────────────────────────────────────────────
 export function haversine(la1,ln1,la2,ln2) {
@@ -182,6 +183,7 @@ export async function launchNativeArNav(destLat, destLng, destName, mode="bicycl
   } catch(e) {
     const msg = e?.message || String(e) || "Erreur inconnue";
     console.error("[ArNav] Erreur lancement:", msg, e);
+    logSentry("error", "ArNav launch failed", { destName, destLat, destLng, mode, error: msg });
     return false;
   }
 }

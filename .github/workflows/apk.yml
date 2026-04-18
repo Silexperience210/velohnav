@@ -47,6 +47,11 @@ jobs:
         run: npx vitest run
 
       - name: Build web assets (Vite)
+        env:
+          # Sentry DSN — optionnel. Sans ce secret, Sentry reste désactivé.
+          # Configurer dans Settings → Secrets and variables → Actions → VITE_SENTRY_DSN
+          VITE_SENTRY_DSN: ${{ secrets.VITE_SENTRY_DSN }}
+          VITE_APP_VERSION: velohnav@${{ github.sha }}
         run: npm run build
 
       - name: Capacitor sync Android

@@ -1,13 +1,20 @@
 import React, { Component } from 'react'
 import ReactDOM from 'react-dom/client'
 import App from './App.jsx'
+import { initSentry, Sentry } from './sentry.js'
+
+// Initialiser Sentry AVANT React (capture les erreurs d'init aussi)
+const sentryActive = initSentry()
 
 // Error Boundary global — affiche le message d'erreur à l'écran
 // au lieu de l'écran noir silencieux
 class ErrorBoundary extends Component {
   constructor(props) { super(props); this.state = { error: null }; }
   static getDerivedStateFromError(e) { return { error: e }; }
-  componentDidCatch(e, info) { console.error('VelohNav crash:', e, info); }
+  componentDidCatch(e, info) {
+    console.error('VelohNav crash:', e, info);
+    if (sentryActive) Sentry.captureException(e, { extra: { componentStack: info.componentStack } });
+  }
   render() {
     if (this.state.error) return (
       <div style={{background:'#080c0f',color:'#F5820D',padding:20,fontFamily:'monospace',minHeight:'100vh',fontSize:11}}>
