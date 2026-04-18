@@ -2,10 +2,14 @@ import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import { VitePWA } from 'vite-plugin-pwa'
 
+// PWA activé UNIQUEMENT pour le build web (pas pour Capacitor APK).
+// Pour build APK : VITE_DISABLE_PWA=1 npm run build
+const pwaDisabled = process.env.VITE_DISABLE_PWA === '1'
+
 export default defineConfig({
   plugins: [
     react(),
-    VitePWA({
+    ...(pwaDisabled ? [] : [VitePWA({
       registerType: 'autoUpdate',
       base: './',
       injectRegister: 'auto',
@@ -44,16 +48,17 @@ export default defineConfig({
           { src: 'icon-512.png', sizes: '512x512', type: 'image/png', purpose: 'any maskable' },
         ],
       },
-    }),
+    })]),
   ],
   base: './',
-  // FIX: Capacitor packages sont injectés à runtime par Android — ne pas bundler
+  // CRITIQUE : NE PAS marquer Capacitor en external — le bundle doit l'inclure
+  // sinon le WebView Android fait import("@capacitor/core") qui résout en 404.
+  // Capacitor est résolu via node_modules au build-time et le bridge natif
+  // intercepte les appels @capacitor/* à runtime.
   build: {
-    rollupOptions: {
-      external: ['@capacitor/geolocation', '@capacitor/core'],
-    },
+    target: 'es2020',
+    sourcemap: false,
   },
-  // Vitest — tests unitaires sans lancer le navigateur
   test: {
     environment: 'node',
     globals: true,

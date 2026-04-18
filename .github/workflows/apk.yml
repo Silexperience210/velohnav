@@ -52,6 +52,10 @@ jobs:
           # Configurer dans Settings → Secrets and variables → Actions → VITE_SENTRY_DSN
           VITE_SENTRY_DSN: ${{ secrets.VITE_SENTRY_DSN }}
           VITE_APP_VERSION: velohnav@${{ github.sha }}
+          # CRITIQUE : désactiver PWA pour build APK Capacitor
+          # Le service worker entre en conflit avec le schéma capacitor:// /
+          # https://localhost et cause un écran noir au boot dans le WebView.
+          VITE_DISABLE_PWA: '1'
         run: npm run build
 
       - name: Capacitor sync Android
