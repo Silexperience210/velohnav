@@ -1,6 +1,6 @@
 // VelohNav — fonctions utilitaires pures (math, formatage, données)
 import { REF, FALLBACK } from "./constants.js";
-import { logSentry } from "./sentry.js";
+import { logSentry } from "./sentry.js"; // lazy : noop tant que DSN absent
 
 // ── Géodésie ───────────────────────────────────────────────────────
 export function haversine(la1,ln1,la2,ln2) {
@@ -155,9 +155,8 @@ export async function fetchJCDecaux(apiKey) {
 }
 
 // ── Bridge Capacitor → ArNavigationActivity ─────────────────────
-// registerPlugin est maintenant importé statiquement depuis @capacitor/core
-import { registerPlugin } from "@capacitor/core";
-
+// registerPlugin chargé dynamiquement — évite de casser le WebView
+// si Capacitor core n'est pas encore prêt au module-parse time.
 let _ArNav = null; // singleton — une seule instance enregistrée
 
 // Reset du singleton — utile en hot reload dev
@@ -168,7 +167,10 @@ if (typeof window !== "undefined" && import.meta.hot) {
 
 export async function launchNativeArNav(destLat, destLng, destName, mode="bicycling", mapsKey="") {
   try {
-    if (!_ArNav) _ArNav = registerPlugin("ArNavigation");
+    if (!_ArNav) {
+      const { registerPlugin } = await import("@capacitor/core");
+      _ArNav = registerPlugin("ArNavigation");
+    }
 
     console.log("[ArNav] Lancement navigation →", destName, destLat, destLng, mode);
     await _ArNav.startNavigation({
@@ -189,17 +191,22 @@ export async function launchNativeArNav(destLat, destLng, destName, mode="bicycl
 }
 
 // ── GPS watcher ────────────────────────────────────────────────────
-// Import statique pour tree-shaking + typing + hot-reload stable.
-// Capacitor.isNativePlatform() est résolu par le runtime bridge,
-// pas au build-time → OK sur web et APK.
-import { Geolocation } from "@capacitor/geolocation";
-import { Capacitor } from "@capacitor/core";
-
-const IS_NATIVE = typeof window !== "undefined" && Capacitor?.isNativePlatform?.() === true;
+// Détection native différée — window.Capacitor peut ne pas être présent
+// au module-parse time dans le WebView (race avec bridge injection).
+// On check au runtime dans la fonction, pas au top-level.
+function isNative() {
+  try {
+    return typeof window !== "undefined" &&
+      (window.Capacitor?.isNativePlatform?.() === true ||
+       window.Capacitor?.platform === "android" ||
+       window.Capacitor?.platform === "ios");
+  } catch { return false; }
+}
 
 export async function startWatchingGPS(cb) {
-  if (IS_NATIVE) {
+  if (isNative()) {
     try {
+      const { Geolocation } = await import("@capacitor/geolocation");
       await Geolocation.requestPermissions();
       const id = await Geolocation.watchPosition({ enableHighAccuracy: true }, (pos) => {
         if (pos?.coords) cb({
@@ -210,14 +217,14 @@ export async function startWatchingGPS(cb) {
       });
       return () => Geolocation.clearWatch({ id });
     } catch (e) {
-      console.warn("[GPS] Native watch failed, fallback web:", e.message);
+      console.warn("[GPS] Native watch failed, fallback web:", e?.message || e);
     }
   }
   // Fallback navigateur web
   if (!navigator.geolocation) return () => {};
   const id = navigator.geolocation.watchPosition(
     p => cb({ lat: p.coords.latitude, lng: p.coords.longitude, acc: Math.round(p.coords.accuracy) }),
-    e => console.warn("[GPS] Web watch error:", e.message),
+    e => console.warn("[GPS] Web watch error:", e?.message || e),
     { enableHighAccuracy: true, maximumAge: 5000 }
   );
   return () => navigator.geolocation.clearWatch(id);

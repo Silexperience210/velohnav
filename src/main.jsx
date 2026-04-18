@@ -1,10 +1,12 @@
 import React, { Component } from 'react'
 import ReactDOM from 'react-dom/client'
 import App from './App.jsx'
-import { initSentry, Sentry } from './sentry.js'
+import { initSentry, captureErr } from './sentry.js'
 
-// Initialiser Sentry AVANT React (capture les erreurs d'init aussi)
-const sentryActive = initSentry()
+// Init Sentry en fire-and-forget — JAMAIS bloquer le render
+// si DSN absent → no-op instantané (pas d'import Sentry chargé)
+// si DSN présent → chargement async en arrière-plan
+initSentry().catch(() => {})
 
 // Error Boundary global — affiche le message d'erreur à l'écran
 // au lieu de l'écran noir silencieux
@@ -13,7 +15,7 @@ class ErrorBoundary extends Component {
   static getDerivedStateFromError(e) { return { error: e }; }
   componentDidCatch(e, info) {
     console.error('VelohNav crash:', e, info);
-    if (sentryActive) Sentry.captureException(e, { extra: { componentStack: info.componentStack } });
+    try { captureErr(e, { componentStack: info.componentStack }); } catch {}
   }
   render() {
     if (this.state.error) return (

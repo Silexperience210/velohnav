@@ -1,87 +1,75 @@
-// ── Sentry — monitoring + crash reporting VelohNav ──────────────────
-// Activé UNIQUEMENT si VITE_SENTRY_DSN est défini dans l'env.
-// Sans DSN, l'app tourne sans overhead (aucun import network, aucun send).
-//
-// Pour activer :
-//   1. Créer un projet Sentry sur https://sentry.io (free tier : 5k events/mois)
-//   2. Copier le DSN (format: https://xxx@yyy.ingest.sentry.io/zzz)
-//   3. Ajouter dans .env.local : VITE_SENTRY_DSN="https://..."
-//   4. Ou en CI : secrets.VITE_SENTRY_DSN + passer au build Vite
-
-import * as Sentry from "@sentry/react";
+// ── Sentry — crash reporting (lazy load, zero-cost sans DSN) ─────────
+// CRITIQUE : pas d'import statique de @sentry/react — il charge 200 KB
+// avec side-effects qui peuvent casser le WebView Android au boot.
+// On lazy-load SEULEMENT si VITE_SENTRY_DSN est défini.
 
 const DSN = import.meta.env.VITE_SENTRY_DSN;
-const ENV = import.meta.env.MODE; // "development" | "production"
+const ENV = import.meta.env.MODE;
 
-export function initSentry() {
+let _sentry = null;       // référence Sentry une fois chargé
+let _loading = null;      // promise pour éviter double-init
+
+export async function initSentry() {
   if (!DSN) {
     console.log("[Sentry] Désactivé (VITE_SENTRY_DSN non défini)");
     return false;
   }
+  if (_sentry) return true;
+  if (_loading) return _loading;
 
-  Sentry.init({
-    dsn: DSN,
-    environment: ENV,
-    release: import.meta.env.VITE_APP_VERSION || "velohnav@dev",
-
-    // Sampling — 10% en prod pour rester dans le free tier
-    tracesSampleRate: ENV === "production" ? 0.1 : 1.0,
-    replaysSessionSampleRate: 0,            // pas de session replay (coûteux)
-    replaysOnErrorSampleRate: ENV === "production" ? 0.1 : 0.5,
-
-    integrations: [
-      Sentry.browserTracingIntegration(),
-      Sentry.replayIntegration({
-        maskAllText: false,
-        blockAllMedia: true,                // ne pas capturer la caméra AR
-      }),
-    ],
-
-    // Filtrage des erreurs bruit (ResizeObserver, AbortError annulations user, etc.)
-    ignoreErrors: [
-      "ResizeObserver loop limit exceeded",
-      "ResizeObserver loop completed with undelivered notifications",
-      "Non-Error promise rejection captured",
-      /^AbortError/,
-      /Capacitor/,                          // erreurs Capacitor déjà loggées côté natif
-    ],
-
-    // Masquer les data sensibles avant envoi
-    beforeSend(event) {
-      // Retirer les params URL qui contiennent des clés API
-      if (event.request?.url) {
-        event.request.url = event.request.url
-          .replace(/([?&])(apiKey|accessId|key)=[^&]+/gi, "$1$2=***");
-      }
-      // Retirer les clés depuis les breadcrumbs
-      if (event.breadcrumbs) {
-        event.breadcrumbs.forEach(b => {
-          if (b.data?.url) b.data.url = b.data.url
-            .replace(/([?&])(apiKey|accessId|key)=[^&]+/gi, "$1$2=***");
-        });
-      }
-      return event;
-    },
-  });
-
-  // Tag statique utile pour filtrer dans le dashboard Sentry
-  Sentry.setTag("platform", window.Capacitor?.isNativePlatform?.() ? "android-native" : "web");
-  Sentry.setTag("app", "velohnav");
-
-  console.log(`[Sentry] Initialisé (env=${ENV})`);
-  return true;
+  _loading = (async () => {
+    try {
+      const S = await import("@sentry/react");
+      S.init({
+        dsn: DSN,
+        environment: ENV,
+        release: import.meta.env.VITE_APP_VERSION || "velohnav@dev",
+        tracesSampleRate: ENV === "production" ? 0.1 : 1.0,
+        replaysSessionSampleRate: 0,
+        replaysOnErrorSampleRate: ENV === "production" ? 0.1 : 0.5,
+        integrations: [
+          S.browserTracingIntegration(),
+          S.replayIntegration({ maskAllText: false, blockAllMedia: true }),
+        ],
+        ignoreErrors: [
+          "ResizeObserver loop limit exceeded",
+          "ResizeObserver loop completed with undelivered notifications",
+          "Non-Error promise rejection captured",
+          /^AbortError/,
+          /Capacitor/,
+        ],
+        beforeSend(event) {
+          const scrub = (u) => u?.replace(/([?&])(apiKey|accessId|key)=[^&]+/gi, "$1$2=***");
+          if (event.request?.url) event.request.url = scrub(event.request.url);
+          event.breadcrumbs?.forEach(b => { if (b.data?.url) b.data.url = scrub(b.data.url); });
+          return event;
+        },
+      });
+      try {
+        S.setTag("platform", window.Capacitor?.isNativePlatform?.() ? "android-native" : "web");
+        S.setTag("app", "velohnav");
+      } catch { /* noop */ }
+      _sentry = S;
+      console.log(`[Sentry] Initialisé (env=${ENV})`);
+      return true;
+    } catch (e) {
+      // NE JAMAIS throw — une erreur Sentry ne doit JAMAIS casser l'app
+      console.warn("[Sentry] init échoué (app continue):", e.message);
+      return false;
+    }
+  })();
+  return _loading;
 }
 
-// Helper pour tagger le user courant (sans PII — juste une clé localStorage anonyme)
-export function setSentryUser(id) {
-  if (!DSN) return;
-  Sentry.setUser(id ? { id } : null);
+// Capture défensive — noop si Sentry pas chargé
+export function captureErr(err, extra) {
+  try { _sentry?.captureException(err, extra ? { extra } : undefined); } catch {}
 }
 
-// Helper pour capturer manuellement un message (warn, info, error)
 export function logSentry(level, message, extra) {
-  if (!DSN) return;
-  Sentry.captureMessage(message, { level, extra });
+  try { _sentry?.captureMessage(message, { level, extra }); } catch {}
 }
 
-export { Sentry };
+export function setSentryUser(id) {
+  try { _sentry?.setUser(id ? { id } : null); } catch {}
+}
