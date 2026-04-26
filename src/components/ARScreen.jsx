@@ -6,6 +6,7 @@ import { haversine, getBearing, fDist, fWalk, bCol, bTag, pins } from "../utils.
 import { useCompass } from "../hooks/useCompass.js";
 import { useRoute } from "../hooks/useRoute.js";
 import { usePredictiveRouting } from "../hooks/usePredictiveRouting.js";
+import { useGhostTrail } from "../hooks/useGhostTrail.js";
 import { launchNativeArNav } from "../utils.js";
 
 
@@ -14,6 +15,7 @@ import RouteOverlay from "./ar/RouteOverlay.jsx";
 import NavOverlay from "./ar/NavOverlay.jsx";
 import CityBG from "./ar/CityBG.jsx";
 import ARPin from "./ar/ARPin.jsx";
+import GhostPin from "./ar/GhostPin.jsx";
 import { projectPoint } from "./ar/projection.js";
 
 
@@ -94,6 +96,28 @@ function ARScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey=""
   },[navStation, mapsKey]);
 
   const stopNav = useCallback(()=>setNavMode(null),[]);
+
+  // ── Origin station snapshot — figée au lancement de la nav ─────────
+  // Sert de clé "départ" pour le Ghost Trail. On prend la station la plus
+  // proche de la position GPS au moment du startNav (rayon 100m).
+  const [originStation, setOriginStation] = useState(null);
+  useEffect(() => {
+    if (!navMode || !gpsPos) { setOriginStation(null); return; }
+    if (originStation) return;  // déjà figée
+    let best = null, bestD = 100;
+    for (const s of stations) {
+      if (!s.lat || !s.lng) continue;
+      const d = haversine(gpsPos.lat, gpsPos.lng, s.lat, s.lng);
+      if (d < bestD) { bestD = d; best = s; }
+    }
+    if (best) setOriginStation(best);
+  }, [navMode, gpsPos?.lat, gpsPos?.lng, stations, originStation]);
+
+  // ── Ghost Trail — fantôme du meilleur temps ──────────────────────
+  const { ghostPos, hasGhost, bestTime, currentDelta } = useGhostTrail({
+    gpsPos, navStation, originStation, navMode,
+    active: navMode !== null,
+  });
 
   // ── Predictive Routing — surveille la station de destination en live ────
   // Si elle devient saturée pendant qu'on roule, propose une alternative.
@@ -520,6 +544,18 @@ function ARScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey=""
             </div>
           );
         })()
+      )}
+
+      {/* Ghost Trail — fantôme du meilleur temps */}
+      {navMode && (
+        <GhostPin
+          ghostPos={ghostPos}
+          gpsPos={gpsPos}
+          heading={heading}
+          currentDelta={currentDelta}
+          hasGhost={hasGhost}
+          bestTime={bestTime}
+        />
       )}
 
       {/* Pins Fischer 🥐 */}

@@ -6,7 +6,7 @@
 const DB_NAME    = "velohnav";
 const STORE      = "stations";
 const META_STORE = "meta";
-const DB_VERSION = 1;
+const DB_VERSION = 2;  // bumped pour ajouter le store "ghosts" (cf. useGhostTrail)
 
 let dbPromise = null;
 
@@ -21,6 +21,8 @@ function openDB() {
       const db = e.target.result;
       if (!db.objectStoreNames.contains(STORE))      db.createObjectStore(STORE, { keyPath: "id" });
       if (!db.objectStoreNames.contains(META_STORE)) db.createObjectStore(META_STORE, { keyPath: "key" });
+      // Store ghost trails — clé = "originId__destId__mode"
+      if (!db.objectStoreNames.contains("ghosts"))   db.createObjectStore("ghosts", { keyPath: "key" });
     };
   });
   return dbPromise;
