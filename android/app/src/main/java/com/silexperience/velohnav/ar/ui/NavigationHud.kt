@@ -47,7 +47,11 @@ fun VelohNavArTheme(content: @Composable () -> Unit) =
     )
 
 @Composable
-fun NavigationHud(state: NavState, onClose: () -> Unit) {
+fun NavigationHud(
+    state: NavState,
+    onClose: () -> Unit,
+    onFallbackToGps: () -> Unit = {}
+) {
     Box(Modifier.fillMaxSize()) {
 
         // Barre supérieure
@@ -55,7 +59,7 @@ fun NavigationHud(state: NavState, onClose: () -> Unit) {
 
         // Badge précision VPS
         state.vpsAccuracy?.let {
-            VpsBadge(it, Modifier
+            VpsBadge(it, state.trackingMode, Modifier
                 .align(Alignment.TopEnd)
                 .padding(top = 72.dp, end = 12.dp))
         }
@@ -67,7 +71,15 @@ fun NavigationHud(state: NavState, onClose: () -> Unit) {
             ),
             enter = fadeIn(), exit = fadeOut(),
             modifier = Modifier.align(Alignment.Center)
-        ) { LocalizingOverlay(state.status) }
+        ) {
+            LocalizingOverlay(
+                status         = state.status,
+                vpsAccuracy    = state.vpsAccuracy,
+                bestAccuracy   = state.bestHorizontalAccuracy,
+                secondsLeft    = state.vpsTimeoutSecondsLeft,
+                onFallback     = onFallbackToGps
+            )
+        }
 
         // Panneau instruction navigation
         AnimatedVisibility(
@@ -79,7 +91,7 @@ fun NavigationHud(state: NavState, onClose: () -> Unit) {
                 .padding(bottom = 24.dp)
         ) {
             state.currentStep?.let {
-                InstructionPanel(it, state.distanceToNextTurnMeters)
+                InstructionPanel(it, state.distanceToNextTurnMeters, state.trackingMode)
             }
         }
 
@@ -152,7 +164,7 @@ private fun TopBar(state: NavState, onClose: () -> Unit, modifier: Modifier) {
 
 // ── Panneau instruction ───────────────────────────────────────────
 @Composable
-private fun InstructionPanel(step: NavigationStep, dist: Double) {
+private fun InstructionPanel(step: NavigationStep, dist: Double, mode: TrackingMode = TrackingMode.VPS) {
     Box(
         Modifier
             .fillMaxWidth()
@@ -165,30 +177,49 @@ private fun InstructionPanel(step: NavigationStep, dist: Double) {
             )
             .padding(16.dp)
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Box(
-                Modifier
-                    .size(56.dp)
-                    .background(OrangeGlow, CircleShape)
-                    .border(2.dp, Orange, CircleShape),
-                Alignment.Center
-            ) { Icon(maneuverIcon(step.maneuver), null, tint = Orange, modifier = Modifier.size(28.dp)) }
-
-            Spacer(Modifier.width(14.dp))
-
-            Column(Modifier.weight(1f)) {
-                Text(
-                    RouteManager.formatDistance(dist.toInt()),
-                    color = Orange, fontSize = 32.sp,
-                    fontWeight = FontWeight.ExtraBold,
-                    fontFamily = FontFamily.Monospace
-                )
-                Text(step.instruction, color = Color.White, fontSize = 14.sp, maxLines = 2)
-                if (step.streetName.isNotEmpty())
+        Column {
+            // Badge "Mode GPS" — visible uniquement en fallback
+            if (mode == TrackingMode.GPS_FALLBACK) {
+                Box(
+                    Modifier
+                        .background(OrangeGlow, RoundedCornerShape(4.dp))
+                        .border(1.dp, OrangeDim, RoundedCornerShape(4.dp))
+                        .padding(horizontal = 6.dp, vertical = 2.dp)
+                ) {
                     Text(
-                        step.streetName, color = GrayText, fontSize = 12.sp,
-                        maxLines = 1, overflow = TextOverflow.Ellipsis
+                        "MODE GPS · AR LIMITÉE",
+                        color = Orange, fontSize = 9.sp,
+                        fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold,
+                        letterSpacing = 1.sp
                     )
+                }
+                Spacer(Modifier.height(8.dp))
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    Modifier
+                        .size(56.dp)
+                        .background(OrangeGlow, CircleShape)
+                        .border(2.dp, Orange, CircleShape),
+                    Alignment.Center
+                ) { Icon(maneuverIcon(step.maneuver), null, tint = Orange, modifier = Modifier.size(28.dp)) }
+
+                Spacer(Modifier.width(14.dp))
+
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        RouteManager.formatDistance(dist.toInt()),
+                        color = Orange, fontSize = 32.sp,
+                        fontWeight = FontWeight.ExtraBold,
+                        fontFamily = FontFamily.Monospace
+                    )
+                    Text(step.instruction, color = Color.White, fontSize = 14.sp, maxLines = 2)
+                    if (step.streetName.isNotEmpty())
+                        Text(
+                            step.streetName, color = GrayText, fontSize = 12.sp,
+                            maxLines = 1, overflow = TextOverflow.Ellipsis
+                        )
+                }
             }
         }
     }
@@ -196,7 +227,20 @@ private fun InstructionPanel(step: NavigationStep, dist: Double) {
 
 // ── Badge VPS ─────────────────────────────────────────────────────
 @Composable
-private fun VpsBadge(acc: VpsAccuracy, modifier: Modifier) {
+private fun VpsBadge(acc: VpsAccuracy, mode: TrackingMode, modifier: Modifier) {
+    if (mode == TrackingMode.GPS_FALLBACK) {
+        // Mode dégradé — badge jaune "GPS"
+        Box(
+            modifier
+                .background(DarkCard, RoundedCornerShape(6.dp))
+                .border(1.dp, Orange.copy(alpha = 0.5f), RoundedCornerShape(6.dp))
+                .padding(horizontal = 7.dp, vertical = 3.dp)
+        ) {
+            Text("GPS", color = Orange, fontSize = 10.sp,
+                fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold)
+        }
+        return
+    }
     val c = when {
         acc.horizontalMeters < 2  -> GreenOK
         acc.horizontalMeters < 5  -> Orange
@@ -215,7 +259,13 @@ private fun VpsBadge(acc: VpsAccuracy, modifier: Modifier) {
 
 // ── Overlay localisation ──────────────────────────────────────────
 @Composable
-private fun LocalizingOverlay(status: NavStatus) {
+private fun LocalizingOverlay(
+    status: NavStatus,
+    vpsAccuracy: VpsAccuracy? = null,
+    bestAccuracy: Double = Double.MAX_VALUE,
+    secondsLeft: Int = 0,
+    onFallback: () -> Unit = {}
+) {
     val label = when (status) {
         NavStatus.LOCATING    -> "GPS…"
         NavStatus.ROUTING     -> "Calcul itinéraire…"
@@ -245,6 +295,46 @@ private fun LocalizingOverlay(status: NavStatus) {
             Spacer(Modifier.height(4.dp))
             Text("Pointez vers les bâtiments", color = GrayText, fontSize = 13.sp,
                 textAlign = TextAlign.Center)
+
+            // Précision actuelle + meilleure observée
+            val currentAcc = vpsAccuracy?.horizontalMeters
+            if (currentAcc != null) {
+                Spacer(Modifier.height(10.dp))
+                Text(
+                    "Précision : ±${"%.1f".format(currentAcc)}m",
+                    color = if (currentAcc < 8) GreenOK else if (currentAcc < 15) Orange else RedBad,
+                    fontSize = 12.sp, fontFamily = FontFamily.Monospace
+                )
+                if (bestAccuracy < Double.MAX_VALUE && bestAccuracy < currentAcc) {
+                    Text(
+                        "Meilleure : ±${"%.1f".format(bestAccuracy)}m",
+                        color = GrayText, fontSize = 10.sp, fontFamily = FontFamily.Monospace
+                    )
+                }
+            }
+
+            // Countdown VPS — informe l'utilisateur du fallback automatique
+            if (secondsLeft > 0) {
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "Bascule GPS dans ${secondsLeft}s",
+                    color = GrayText, fontSize = 11.sp, fontFamily = FontFamily.Monospace
+                )
+            }
+
+            // Bouton manuel "passer en GPS" — l'utilisateur n'attend pas le timeout
+            Spacer(Modifier.height(14.dp))
+            OutlinedButton(
+                onClick = onFallback,
+                border = androidx.compose.foundation.BorderStroke(1.dp, Orange),
+                shape = RoundedCornerShape(8.dp)
+            ) {
+                Text(
+                    "Passer en mode GPS",
+                    color = Orange, fontSize = 12.sp,
+                    fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold
+                )
+            }
         }
     }
 }

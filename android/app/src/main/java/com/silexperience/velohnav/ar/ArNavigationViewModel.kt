@@ -19,6 +19,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.Dispatchers
@@ -26,6 +27,9 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 
 enum class NavStatus { IDLE, LOCATING, ROUTING, LOCALIZING, NAVIGATING, ARRIVED, ERROR }
+
+// Mode de tracking : VPS (haute précision) ou GPS dégradé (fallback)
+enum class TrackingMode { VPS, GPS_FALLBACK }
 
 data class NavState(
     val status: NavStatus        = NavStatus.IDLE,
@@ -37,11 +41,30 @@ data class NavState(
     val etaSeconds: Int          = 0,
     val vpsAccuracy: VpsAccuracy? = null,
     val destName: String         = "",
-    val errorMessage: String?    = null
+    val errorMessage: String?    = null,
+    // Compte à rebours avant fallback GPS si VPS ne converge pas (secondes)
+    val vpsTimeoutSecondsLeft: Int = 0,
+    // Mode actif — basculé en GPS_FALLBACK si VPS timeout
+    val trackingMode: TrackingMode = TrackingMode.VPS,
+    // Meilleure précision VPS observée — pour debug/UX
+    val bestHorizontalAccuracy: Double = Double.MAX_VALUE
 )
 
 class ArNavigationViewModel(application: Application) : AndroidViewModel(application) {
     private val TAG = "ArNavViewModel"
+
+    // ── Constantes VPS ────────────────────────────────────────────
+    // Timeout : si la VPS ne converge pas en 25s, on bascule en GPS dégradé.
+    // Couvre les cas réels : zone sans couverture Street View, ciel obstrué,
+    // intérieur (parking, tunnel), bâtiments trop proches/uniformes.
+    private val VPS_TIMEOUT_SECONDS = 25
+    // Seuil de précision "fiable" — relâché vs avant (5m → 8m horiz, 15° → 20° heading)
+    // Permet de démarrer la nav plus tôt dans les zones à VPS médiocre.
+    private val VPS_RELIABLE_HORIZ_M  = 8.0
+    private val VPS_RELIABLE_HEAD_DEG = 20.0
+    // Seuil "acceptable" — fallback graceful : si on reste bloqué mais qu'on a
+    // une précision raisonnable (<15m), on démarre quand même la nav.
+    private val VPS_ACCEPTABLE_HORIZ_M = 15.0
 
     private val _state = MutableStateFlow(NavState())
     val navState: StateFlow<NavState> = _state.asStateFlow()
@@ -61,7 +84,13 @@ class ArNavigationViewModel(application: Application) : AndroidViewModel(applica
     private var modelAsset: Model? = null
     private var vpsReady = false
     private var navigationJob: Job? = null
+    private var vpsTimeoutJob: Job? = null   // job de timeout VPS — annulé dès que vpsReady
     private var lastEarth: Earth? = null
+    // Position GPS de fallback (mise à jour si VPS down) — utilisée pour avancer
+    // dans les étapes même sans tracking ARCore Geospatial fiable.
+    @Volatile private var lastGpsLat: Double = 0.0
+    @Volatile private var lastGpsLng: Double = 0.0
+    private var gpsWatchJob: Job? = null
 
     // ── Initialisation ─────────────────────────────────────────────
     fun initializeNavigation(
@@ -71,6 +100,8 @@ class ArNavigationViewModel(application: Application) : AndroidViewModel(applica
         mapsKey: String = ""
     ) {
         navigationJob?.cancel()
+        vpsTimeoutJob?.cancel()
+        gpsWatchJob?.cancel()
         // Stocker uniquement pour cleanup — pas pour les opérations de rendu
         cleanupView = arSceneView
         routeManager = RouteManager(mapsKey)
@@ -106,6 +137,10 @@ class ArNavigationViewModel(application: Application) : AndroidViewModel(applica
                 }
             } ?: return setState(NavStatus.ERROR, "GPS indisponible (timeout 10s) — sortez en extérieur")
 
+            // Mémoriser GPS pour fallback éventuel si VPS échoue
+            lastGpsLat = loc.latitude
+            lastGpsLng = loc.longitude
+
             _state.value = _state.value.copy(status = NavStatus.ROUTING)
 
             var lastError: Throwable? = null
@@ -119,9 +154,13 @@ class ArNavigationViewModel(application: Application) : AndroidViewModel(applica
                             totalSteps           = r.steps.size,
                             totalRemainingMeters = r.totalDistanceMeters,
                             etaSeconds           = r.totalDurationSeconds,
-                            currentStep          = r.steps.firstOrNull()
+                            currentStep          = r.steps.firstOrNull(),
+                            vpsTimeoutSecondsLeft = VPS_TIMEOUT_SECONDS
                         )
                         Log.i(TAG, "Route: ${r.steps.size} étapes, ${r.totalDistanceMeters}m")
+                        // Démarrer le timeout VPS et le watcher GPS de fallback
+                        startVpsTimeout(dLat, dLng, mode)
+                        startGpsWatcher()
                         return
                     }
                     .onFailure { lastError = it }
@@ -132,27 +171,136 @@ class ArNavigationViewModel(application: Application) : AndroidViewModel(applica
         }
     }
 
+    // ── Timeout VPS + fallback GPS ─────────────────────────────────
+    // Si la VPS ne devient pas fiable en VPS_TIMEOUT_SECONDS, on bascule
+    // en mode GPS dégradé pour ne pas laisser l'utilisateur bloqué.
+    private fun startVpsTimeout(dLat: Double, dLng: Double, mode: String) {
+        vpsTimeoutJob?.cancel()
+        vpsTimeoutJob = viewModelScope.launch {
+            for (sec in VPS_TIMEOUT_SECONDS downTo 1) {
+                if (vpsReady) return@launch
+                _state.value = _state.value.copy(vpsTimeoutSecondsLeft = sec)
+                delay(1000)
+            }
+            // Timeout atteint — VPS ne convergera probablement pas.
+            if (!vpsReady) {
+                val best = _state.value.bestHorizontalAccuracy
+                Log.w(TAG, "VPS timeout après ${VPS_TIMEOUT_SECONDS}s — best=${best}m → fallback GPS")
+                fallbackToGps()
+            }
+        }
+    }
+
+    // Bascule manuelle (bouton "passer en GPS") ou auto sur timeout.
+    fun fallbackToGps() {
+        if (vpsReady) return  // déjà en nav, rien à faire
+        val r = route ?: return setState(NavStatus.ERROR, "Itinéraire perdu")
+        Log.i(TAG, "Fallback GPS — démarrage navigation dégradée")
+        vpsReady = true  // débloque updateProgress
+        vpsTimeoutJob?.cancel()
+        _state.value = _state.value.copy(
+            status = NavStatus.NAVIGATING,
+            trackingMode = TrackingMode.GPS_FALLBACK,
+            vpsTimeoutSecondsLeft = 0,
+            currentStep = r.steps.firstOrNull()
+        )
+    }
+
+    // Watcher GPS — alimente lastGpsLat/Lng en continu pour le mode fallback
+    // et pour updateProgressGps (calcul distances sans Earth.cameraGeospatialPose).
+    @SuppressLint("MissingPermission")
+    private fun startGpsWatcher() {
+        gpsWatchJob?.cancel()
+        gpsWatchJob = viewModelScope.launch {
+            while (isActive) {
+                try {
+                    withContext(Dispatchers.IO) {
+                        fusedLocation.getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, null).await()
+                    }?.let {
+                        lastGpsLat = it.latitude
+                        lastGpsLng = it.longitude
+                        // Si on est en mode fallback, on met à jour la progression depuis le GPS
+                        if (_state.value.trackingMode == TrackingMode.GPS_FALLBACK &&
+                            _state.value.status == NavStatus.NAVIGATING) {
+                            updateProgressGps()
+                        }
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "GPS watch: ${e.message}")
+                }
+                delay(2000)  // poll toutes les 2s
+            }
+        }
+    }
+
     // ── Appelé depuis main thread (via mainHandler.post dans Activity) ──
     // arView passé en paramètre — jamais stocké
     fun onEarthTracking(earth: Earth, frame: Frame, arView: ARSceneView) {
         lastEarth = earth
         geo.onFrame(earth, frame)
         val acc = geo.accuracy.value ?: return
-        _state.value = _state.value.copy(vpsAccuracy = acc)
+
+        // Suivre la meilleure précision observée (debug + UX)
+        val bestSoFar = minOf(_state.value.bestHorizontalAccuracy, acc.horizontalMeters)
+        _state.value = _state.value.copy(vpsAccuracy = acc, bestHorizontalAccuracy = bestSoFar)
 
         val r = route ?: return
         val st = _state.value.status
 
-        if (!vpsReady && acc.isReliable && st == NavStatus.LOCALIZING) {
-            Log.i(TAG, "VPS fiable (±${acc.horizontalMeters}m) — démarrage navigation")
+        // Critère "fiable" — seuils relâchés (8m / 20°) plus permissifs que le défaut.
+        val reliable = acc.horizontalMeters < VPS_RELIABLE_HORIZ_M &&
+                       acc.headingDegrees   < VPS_RELIABLE_HEAD_DEG
+
+        // Critère "acceptable" — fallback graceful : si on plafonne à <15m
+        // depuis quelques secondes, on démarre quand même la nav.
+        val secondsLeft = _state.value.vpsTimeoutSecondsLeft
+        val acceptable  = acc.horizontalMeters < VPS_ACCEPTABLE_HORIZ_M &&
+                          secondsLeft < VPS_TIMEOUT_SECONDS / 2  // au moins 12s d'attente
+
+        if (!vpsReady && st == NavStatus.LOCALIZING && (reliable || acceptable)) {
+            Log.i(TAG, "VPS OK (±${acc.horizontalMeters}m, head ±${acc.headingDegrees}°, " +
+                       "reliable=$reliable acceptable=$acceptable) — démarrage nav")
             vpsReady = true
+            vpsTimeoutJob?.cancel()
             placeArrows(arView, earth, r, 0, minOf(3, r.steps.size))
-            _state.value = _state.value.copy(status = NavStatus.NAVIGATING)
+            _state.value = _state.value.copy(
+                status = NavStatus.NAVIGATING,
+                trackingMode = TrackingMode.VPS,
+                vpsTimeoutSecondsLeft = 0
+            )
         }
 
         if (st == NavStatus.NAVIGATING || _state.value.status == NavStatus.NAVIGATING) {
             updateProgress(arView, earth, r)
         }
+    }
+
+    // ── Progression GPS (mode fallback) ────────────────────────────
+    // Pas d'Earth fiable — on avance dans les étapes via lastGpsLat/Lng.
+    // Pas de placement d'ancres ARCore : la nav est en mode "boussole + texte".
+    private fun updateProgressGps() {
+        val r = route ?: return
+        if (currentStepIdx >= r.steps.size) {
+            _state.value = _state.value.copy(status = NavStatus.ARRIVED); return
+        }
+        val step = r.steps[currentStepIdx]
+        val dist = GeospatialManager.distanceMeters(lastGpsLat, lastGpsLng, step.endLat, step.endLng)
+
+        if (dist < 20.0) {  // tolérance plus large en mode GPS (précision ±10m typique)
+            currentStepIdx++
+            if (currentStepIdx >= r.steps.size) {
+                _state.value = _state.value.copy(status = NavStatus.ARRIVED)
+                return
+            }
+        }
+
+        _state.value = _state.value.copy(
+            currentStep              = r.steps[currentStepIdx.coerceAtMost(r.steps.size - 1)],
+            stepIndex                = currentStepIdx,
+            distanceToNextTurnMeters = dist,
+            totalRemainingMeters     = r.steps.drop(currentStepIdx).sumOf { it.distanceMeters },
+            etaSeconds               = r.steps.drop(currentStepIdx).sumOf { it.durationSeconds }
+        )
     }
 
     // ── Placement flèches ────────────────────────────────────────────
@@ -233,15 +381,25 @@ class ArNavigationViewModel(application: Application) : AndroidViewModel(applica
     // ── Retry ────────────────────────────────────────────────────────
     fun retry(arView: ARSceneView, destLat: Double, destLng: Double, travelMode: String) {
         navigationJob?.cancel()
+        vpsTimeoutJob?.cancel()
+        gpsWatchJob?.cancel()
         vpsReady = false
         cleanupView = arView
-        _state.value = _state.value.copy(status = NavStatus.LOCATING, errorMessage = null)
+        _state.value = _state.value.copy(
+            status = NavStatus.LOCATING,
+            errorMessage = null,
+            trackingMode = TrackingMode.VPS,
+            bestHorizontalAccuracy = Double.MAX_VALUE,
+            vpsTimeoutSecondsLeft = 0
+        )
         navigationJob = viewModelScope.launch { locateAndRoute(destLat, destLng, travelMode) }
     }
 
     // ── Cleanup — appelé depuis Activity.onDestroy avec la référence courante ──
     fun cleanup(arViewFromActivity: ARSceneView?) {
         navigationJob?.cancel()
+        vpsTimeoutJob?.cancel()
+        gpsWatchJob?.cancel()
         val view = arViewFromActivity ?: cleanupView
         view?.let { v ->
             arrowNodes.values.forEach { node ->

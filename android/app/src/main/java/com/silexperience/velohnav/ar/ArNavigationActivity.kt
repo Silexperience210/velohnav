@@ -128,7 +128,11 @@ class ArNavigationActivity : ComponentActivity() {
                             }
                         }
                     )
-                    NavigationHud(state = state, onClose = { finish() })
+                    NavigationHud(
+                        state           = state,
+                        onClose         = { finish() },
+                        onFallbackToGps = { viewModel.fallbackToGps() }
+                    )
                 }
             }
         }

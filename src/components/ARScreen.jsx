@@ -409,10 +409,91 @@ function ARScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey=""
         </div>
       )}
 
-      {/* Pins Vel'OH */}
-      <div style={{position:"absolute",inset:0,zIndex:15}}>
-        {visiblePins.map(s=><ARPin key={s.id} s={s} sel={sel} setSel={setSel} pulse={pulse}/>)}
-      </div>
+      {/* Pins Vel'OH — masqués pendant la nav active pour focus sur destination */}
+      {!navMode && (
+        <div style={{position:"absolute",inset:0,zIndex:15}}>
+          {visiblePins.map(s=><ARPin key={s.id} s={s} sel={sel} setSel={setSel} pulse={pulse}/>)}
+        </div>
+      )}
+
+      {/* Pin destination dédié — affiché seulement en mode nav, projeté sur la station cible */}
+      {navMode && navStation && navRel !== null && Math.abs(navRel) <= FOV/2 + 10 && (
+        (() => {
+          const x = 50 + (navRel / (FOV/2)) * 50;
+          // Distance projection : proche → bas, loin → horizon
+          const dc = Math.min(navStation.dist, 800);
+          const y = Math.max(20, 60 - (1 - dc/800) * 35);
+          const arriving = navStation.dist < 30;
+          return (
+            <div style={{
+              position:"absolute",
+              left:`${Math.max(8, Math.min(92, x))}%`,
+              top:`${y}%`,
+              transform:"translate(-50%, -100%)",
+              zIndex:18,
+              pointerEvents:"none",
+              display:"flex", flexDirection:"column", alignItems:"center",
+              filter: arriving ? "drop-shadow(0 0 12px #2ECC8F)" : `drop-shadow(0 0 8px ${C.accent})`,
+              animation: pulse ? "navPinPulse 1.1s ease-in-out" : "none",
+            }}>
+              {/* Bandeau destination */}
+              <div style={{
+                background: arriving
+                  ? "linear-gradient(135deg, rgba(46,204,143,0.95), rgba(8,30,18,0.95))"
+                  : "linear-gradient(135deg, rgba(8,12,15,0.96), rgba(20,12,0,0.94))",
+                border: `2px solid ${arriving ? C.good : C.accent}`,
+                borderRadius: 8,
+                padding: "8px 14px",
+                minWidth: 140,
+                textAlign: "center",
+                boxShadow: `0 0 20px ${arriving ? C.good : C.accent}66`,
+              }}>
+                <div style={{
+                  color: arriving ? C.good : C.accent,
+                  fontSize: 7,
+                  fontFamily: C.fnt,
+                  letterSpacing: 2,
+                  marginBottom: 2,
+                  fontWeight: 700,
+                }}>
+                  {arriving ? "🎯 ARRIVÉE" : "🏁 DESTINATION"}
+                </div>
+                <div style={{
+                  color: "#fff", fontSize: 11, fontFamily: C.fnt, fontWeight: 700,
+                  whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+                  maxWidth: 180,
+                }}>
+                  {navStation.name}
+                </div>
+                <div style={{
+                  color: arriving ? C.good : C.muted,
+                  fontSize: 9, fontFamily: C.fnt, marginTop: 3,
+                }}>
+                  {fDist(navStation.dist)} · {navStation.bikes} 🚲
+                </div>
+              </div>
+              {/* Tige descendante vers le sol */}
+              <div style={{
+                width: 2, height: 22,
+                background: `linear-gradient(${arriving ? C.good : C.accent}, transparent)`,
+              }}/>
+              {/* Point d'ancrage au sol */}
+              <div style={{
+                width: 10, height: 10, borderRadius: "50%",
+                background: arriving ? C.good : C.accent,
+                boxShadow: `0 0 14px ${arriving ? C.good : C.accent}`,
+                animation: "navPinDot 1.4s ease-in-out infinite",
+              }}/>
+              <style>{`
+                @keyframes navPinDot {
+                  0%,100% { transform: scale(1); opacity: 1; }
+                  50%     { transform: scale(1.4); opacity: 0.65; }
+                }
+              `}</style>
+            </div>
+          );
+        })()
+      )}
 
       {/* Pins Fischer 🥐 */}
       {fischerPins.map(s=>(
@@ -460,7 +541,44 @@ function ARScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey=""
 
       {/* Bottom panel */}
       <div style={{position:"absolute",bottom:0,left:0,right:0,padding:"0 14px 14px",zIndex:22}}>
-        {navStation?(
+        {/* Mode NAV ACTIVE — bandeau ultra-compact pour libérer la vue AR.
+            Le détail de la station n'est plus affiché : la nav prend toute la place.
+            Seul un bouton "ARRÊTER" reste accessible. */}
+        {navMode && navStation ? (
+          <div style={{
+            background:"rgba(8,12,15,0.85)",
+            border:`1px solid ${C.border}`,
+            borderTop:`2px solid ${bCol(navStation)}`,
+            borderRadius:8,
+            padding:"7px 12px",
+            display:"flex", alignItems:"center", justifyContent:"space-between",
+            gap:10,
+            backdropFilter:"blur(4px)",
+          }}>
+            <div style={{display:"flex",flexDirection:"column",minWidth:0,flex:1}}>
+              <div style={{
+                color:C.muted, fontSize:7, fontFamily:C.fnt, letterSpacing:1.5,
+                marginBottom:1,
+              }}>
+                {navMode === "walking" ? "🚶 PIED" : "🚲 VÉLO"} · DEST.
+              </div>
+              <div style={{
+                color:C.text, fontSize:11, fontFamily:C.fnt, fontWeight:700,
+                whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis",
+              }}>{navStation.name}</div>
+            </div>
+            <div onPointerDown={stopNav}
+              style={{
+                padding:"6px 12px",
+                background:`${C.bad}15`, border:`1px solid ${C.bad}66`,
+                borderRadius:5, cursor:"pointer", whiteSpace:"nowrap",
+              }}>
+              <span style={{color:C.bad,fontSize:8,fontFamily:C.fnt,fontWeight:700,letterSpacing:1}}>
+                {t("ar.nav_stop")}
+              </span>
+            </div>
+          </div>
+        ) : navStation ? (
           <div style={{background:"rgba(8,12,15,0.97)",borderRadius:8,padding:"13px 15px",
             border:`1px solid ${C.border}`,borderTop:`2px solid ${bCol(navStation)}`,
             boxShadow:"0 -4px 24px rgba(0,0,0,0.85)"}}>
@@ -492,25 +610,23 @@ function ARScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey=""
                 </div>
               ))}
             </div>
-            {/* Boutons navigation AR */}
-            {!navMode&&(
-              <div style={{display:"flex",gap:6,marginTop:10}}>
-                <div onPointerDown={()=>startNav("cycling")}
-                  style={{flex:1,display:"flex",alignItems:"center",justifyContent:"center",gap:5,
-                    background:"rgba(59,130,246,0.12)",border:`1px solid #3B82F644`,
-                    borderRadius:6,padding:"8px 0",cursor:"pointer"}}>
-                  <span style={{fontSize:13}}>🚲</span>
-                  <span style={{color:"#3B82F6",fontSize:8,fontFamily:C.fnt,fontWeight:700,letterSpacing:1}}>{t("ar.nav_cycling")}</span>
-                </div>
-                <div onPointerDown={()=>startNav("walking")}
-                  style={{flex:1,display:"flex",alignItems:"center",justifyContent:"center",gap:5,
-                    background:"rgba(167,139,250,0.12)",border:`1px solid #A78BFA44`,
-                    borderRadius:6,padding:"8px 0",cursor:"pointer"}}>
-                  <span style={{fontSize:13}}>🚶</span>
-                  <span style={{color:"#A78BFA",fontSize:8,fontFamily:C.fnt,fontWeight:700,letterSpacing:1}}>{t("ar.nav_walking")}</span>
-                </div>
+            {/* Boutons navigation AR — affichés uniquement hors nav active */}
+            <div style={{display:"flex",gap:6,marginTop:10}}>
+              <div onPointerDown={()=>startNav("cycling")}
+                style={{flex:1,display:"flex",alignItems:"center",justifyContent:"center",gap:5,
+                  background:"rgba(59,130,246,0.12)",border:`1px solid #3B82F644`,
+                  borderRadius:6,padding:"8px 0",cursor:"pointer"}}>
+                <span style={{fontSize:13}}>🚲</span>
+                <span style={{color:"#3B82F6",fontSize:8,fontFamily:C.fnt,fontWeight:700,letterSpacing:1}}>{t("ar.nav_cycling")}</span>
               </div>
-            )}
+              <div onPointerDown={()=>startNav("walking")}
+                style={{flex:1,display:"flex",alignItems:"center",justifyContent:"center",gap:5,
+                  background:"rgba(167,139,250,0.12)",border:`1px solid #A78BFA44`,
+                  borderRadius:6,padding:"8px 0",cursor:"pointer"}}>
+                <span style={{fontSize:13}}>🚶</span>
+                <span style={{color:"#A78BFA",fontSize:8,fontFamily:C.fnt,fontWeight:700,letterSpacing:1}}>{t("ar.nav_walking")}</span>
+              </div>
+            </div>
             {/* Toggle Fischer AR — toujours visible quand caméra active */}
             {cam==="active"&&(
               <div onPointerDown={()=>setFischerOn(f=>!f)}
@@ -518,21 +634,14 @@ function ARScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey=""
                   display:"flex", alignItems:"center", gap:5, padding:"6px 11px",
                   background: fischerOn ? "rgba(212,120,0,0.2)" : "rgba(0,0,0,0.4)",
                   border:`1px solid ${fischerOn ? "#D47800" : C.border}`,
-                  borderRadius:5, cursor:"pointer", marginBottom:6,
+                  borderRadius:5, cursor:"pointer", marginTop:8,
                   boxShadow: fischerOn ? "0 0 8px #D4780044" : "none",
+                  width:"fit-content",
                 }}>
                 <span style={{fontSize:12}}>🥐</span>
                 <span style={{color: fischerOn ? "#D47800" : C.muted, fontSize:8, fontFamily:C.fnt, letterSpacing:1}}>
                   FISCHER {fischerOn ? "ON" : "OFF"}
                 </span>
-              </div>
-            )}
-            {navMode&&(
-            <div onPointerDown={stopNav}
-                style={{marginTop:10,textAlign:"center",padding:"7px",
-                  background:"rgba(224,62,62,0.1)",border:`1px solid ${C.bad}44`,
-                  borderRadius:6,cursor:"pointer"}}>
-                <span style={{color:C.bad,fontSize:8,fontFamily:C.fnt,fontWeight:700}}>{t("ar.nav_stop")}</span>
               </div>
             )}
           </div>

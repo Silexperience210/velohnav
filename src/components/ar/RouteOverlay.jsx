@@ -11,6 +11,38 @@ function RouteOverlay({ route, gpsPos, heading, mode, onClose }) {
   const cvRef = useRef();
   const [step, setStep] = useState(0); // index du prochain waypoint
 
+  // Tick d'animation à ~30 fps — alimente les tirets animés et le pulse
+  // waypoint. Inclus dans les deps du useEffect canvas pour forcer redraw.
+  const [tick, setTick] = useState(0);
+  useEffect(() => {
+    let raf;
+    let last = 0;
+    const loop = (now) => {
+      if (now - last > 33) {  // ~30 fps
+        last = now;
+        setTick(t => (t + 1) % 1000);
+      }
+      raf = requestAnimationFrame(loop);
+    };
+    raf = requestAnimationFrame(loop);
+    return () => cancelAnimationFrame(raf);
+  }, []);
+
+  // Heading lissé via low-pass filter — évite que le tracé "tremble" à chaque
+  // micro-variation de la boussole. Utilise une moyenne exponentielle (alpha=0.25).
+  // Géré en ref : pas de re-render à chaque update du heading lissé.
+  const smoothedHdgRef = useRef(heading);
+  useEffect(() => {
+    if (heading === null) return;
+    if (smoothedHdgRef.current === null) {
+      smoothedHdgRef.current = heading;
+      return;
+    }
+    // Différence shortest-path en degrés (gestion du wrap 0/360)
+    const diff = ((heading - smoothedHdgRef.current + 540) % 360) - 180;
+    smoothedHdgRef.current = (smoothedHdgRef.current + diff * 0.25 + 360) % 360;
+  }, [heading]);
+
   // Avancer automatiquement vers le prochain waypoint quand on en est à <25m
   useEffect(()=>{
     if (!route || !gpsPos) return;
@@ -24,59 +56,113 @@ function RouteOverlay({ route, gpsPos, heading, mode, onClose }) {
   useEffect(()=>{
     const cv = cvRef.current; if (!cv || !route || !gpsPos || heading === null) return;
     const W = cv.offsetWidth || 360, H = cv.offsetHeight || 500;
-    cv.width = W; cv.height = H;
+    // Support DPI (rétine) pour un tracé net
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    cv.width = W * dpr; cv.height = H * dpr;
     const ctx = cv.getContext("2d");
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, W, H);
 
     const col = mode === "walking" ? "#A78BFA" : "#3B82F6"; // violet=pieds, bleu=vélo
+    const hdgUsed = smoothedHdgRef.current ?? heading;
 
-    // ── 1. Tracer la ligne de route (coords complètes)
-    const pts = route.coords
-      .map(p => projectPoint(gpsPos.lat, gpsPos.lng, heading, p.lat, p.lng, W, H))
+    // ── 1. Tracer la ligne de route (avec clamp aux bords pour éviter coupures)
+    // Échantillonnage : on garde 1 pt sur N pour les routes très denses (perf).
+    const STRIDE = Math.max(1, Math.floor(route.coords.length / 80));
+    const sampled = route.coords.filter((_, i) => i % STRIDE === 0 || i === route.coords.length - 1);
+
+    const pts = sampled
+      .map(p => projectPoint(gpsPos.lat, gpsPos.lng, hdgUsed, p.lat, p.lng, W, H, true))
       .filter(Boolean);
 
-    if (pts.length >= 2) {
-      // Ombre portée
-      ctx.beginPath();
-      pts.forEach((p,i) => i===0 ? ctx.moveTo(p.x,p.y) : ctx.lineTo(p.x,p.y));
-      ctx.strokeStyle = "rgba(0,0,0,0.35)";
-      ctx.lineWidth = 9; ctx.lineCap = "round"; ctx.lineJoin = "round";
-      ctx.setLineDash([]); ctx.stroke();
+    // Garder uniquement la portion contiguë qui passe par le FOV
+    // (évite de dessiner des segments de la fin de route en haut de l'écran)
+    const segments = [];
+    let cur = [];
+    pts.forEach(p => {
+      if (p.inFov) {
+        cur.push(p);
+      } else if (cur.length > 0) {
+        cur.push(p); // un seul point hors FOV pour la transition douce
+        segments.push(cur);
+        cur = [];
+      }
+    });
+    if (cur.length > 0) segments.push(cur);
 
-      // Ligne principale
+    segments.forEach(seg => {
+      if (seg.length < 2) return;
+
+      // ── HALO externe (glow) — couche 1
       ctx.beginPath();
-      pts.forEach((p,i) => i===0 ? ctx.moveTo(p.x,p.y) : ctx.lineTo(p.x,p.y));
+      seg.forEach((p,i) => i===0 ? ctx.moveTo(p.x,p.y) : ctx.lineTo(p.x,p.y));
       ctx.strokeStyle = col;
-      ctx.lineWidth = 5; ctx.globalAlpha = 0.85; ctx.stroke();
-      ctx.globalAlpha = 1;
+      ctx.lineWidth = 18; ctx.lineCap = "round"; ctx.lineJoin = "round";
+      ctx.globalAlpha = 0.18; ctx.shadowBlur = 14; ctx.shadowColor = col;
+      ctx.setLineDash([]); ctx.stroke();
+      ctx.shadowBlur = 0; ctx.globalAlpha = 1;
 
-      // Tirets blancs par-dessus (effet route)
+      // ── Ombre portée — couche 2
       ctx.beginPath();
-      pts.forEach((p,i) => i===0 ? ctx.moveTo(p.x,p.y) : ctx.lineTo(p.x,p.y));
-      ctx.strokeStyle = "rgba(255,255,255,0.3)";
-      ctx.lineWidth = 2; ctx.setLineDash([12, 18]); ctx.stroke();
-      ctx.setLineDash([]);
-    }
+      seg.forEach((p,i) => i===0 ? ctx.moveTo(p.x,p.y) : ctx.lineTo(p.x,p.y));
+      ctx.strokeStyle = "rgba(0,0,0,0.55)";
+      ctx.lineWidth = 11; ctx.stroke();
+
+      // ── Bord blanc (lisibilité sur fonds variés) — couche 3
+      ctx.beginPath();
+      seg.forEach((p,i) => i===0 ? ctx.moveTo(p.x,p.y) : ctx.lineTo(p.x,p.y));
+      ctx.strokeStyle = "rgba(255,255,255,0.95)";
+      ctx.lineWidth = 8; ctx.stroke();
+
+      // ── Ligne principale colorée — couche 4
+      ctx.beginPath();
+      seg.forEach((p,i) => i===0 ? ctx.moveTo(p.x,p.y) : ctx.lineTo(p.x,p.y));
+      ctx.strokeStyle = col;
+      ctx.lineWidth = 5; ctx.stroke();
+
+      // ── Tirets blancs animés — couche 5 (effet "marche/avance")
+      ctx.beginPath();
+      seg.forEach((p,i) => i===0 ? ctx.moveTo(p.x,p.y) : ctx.lineTo(p.x,p.y));
+      ctx.strokeStyle = "rgba(255,255,255,0.8)";
+      ctx.lineWidth = 2;
+      ctx.setLineDash([10, 16]);
+      // Offset basé sur le temps pour l'animation "qui avance"
+      ctx.lineDashOffset = -((Date.now() / 60) % 26);
+      ctx.stroke();
+      ctx.setLineDash([]); ctx.lineDashOffset = 0;
+    });
 
     // ── 2. Dessiner les flèches de virage aux waypoints
     route.waypoints.slice(step, step+4).forEach((wp, wi)=>{
-      const p = projectPoint(gpsPos.lat, gpsPos.lng, heading, wp.lat, wp.lng, W, H);
+      const p = projectPoint(gpsPos.lat, gpsPos.lng, hdgUsed, wp.lat, wp.lng, W, H);
       if (!p) return;
       const isNext = wi === 0;
-      const r = isNext ? 14 : 9;
+      const r = isNext ? 16 : 10;
       const alpha = isNext ? 1 : 0.55;
 
-      // Cercle de fond
+      // Halo pulsant pour le prochain virage
+      if (isNext) {
+        const pulseR = r + 6 + Math.sin(Date.now()/300) * 3;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, pulseR, 0, Math.PI*2);
+        ctx.fillStyle = `${col}33`;
+        ctx.fill();
+      }
+
+      // Cercle de fond noir
       ctx.beginPath();
       ctx.arc(p.x, p.y, r+3, 0, Math.PI*2);
-      ctx.fillStyle = `rgba(0,0,0,${alpha*0.6})`;
+      ctx.fillStyle = `rgba(0,0,0,${alpha*0.7})`;
       ctx.fill();
 
       // Cercle coloré
       ctx.beginPath();
       ctx.arc(p.x, p.y, r, 0, Math.PI*2);
-      ctx.fillStyle = isNext ? col : col+"88";
+      ctx.fillStyle = isNext ? col : col+"99";
+      ctx.shadowBlur = isNext ? 12 : 0;
+      ctx.shadowColor = col;
       ctx.fill();
+      ctx.shadowBlur = 0;
 
       // Flèche directionnelle selon modifier
       ctx.save(); ctx.translate(p.x, p.y);
@@ -87,25 +173,27 @@ function RouteOverlay({ route, gpsPos, heading, mode, onClose }) {
                 : 0;
       ctx.rotate(rot * Math.PI/180);
       ctx.fillStyle = "white";
-      ctx.font = `bold ${isNext?14:10}px sans-serif`;
+      ctx.font = `bold ${isNext?16:11}px sans-serif`;
       ctx.textAlign = "center"; ctx.textBaseline = "middle";
       ctx.fillText("↑", 0, 0);
       ctx.restore();
     });
 
     // ── 3. Indicateur "sol" — ligne horizon perspective
-    if (pts.length > 0) {
-      const foot = pts[0];
+    if (segments.length > 0 && segments[0].length > 0) {
+      const foot = segments[0][0];
       const footGrad = ctx.createLinearGradient(W/2, H, W/2, foot.y);
-      footGrad.addColorStop(0, `${col}50`);
+      footGrad.addColorStop(0, `${col}90`);
       footGrad.addColorStop(1, `${col}00`);
       ctx.beginPath();
-      ctx.moveTo(W/2-30, H); ctx.lineTo(foot.x-4, foot.y);
-      ctx.lineTo(foot.x+4, foot.y); ctx.lineTo(W/2+30, H);
+      ctx.moveTo(W/2-40, H); ctx.lineTo(foot.x-5, foot.y);
+      ctx.lineTo(foot.x+5, foot.y); ctx.lineTo(W/2+40, H);
       ctx.fillStyle = footGrad; ctx.fill();
     }
 
-  },[route, gpsPos, heading, mode, step]);
+  },[route, gpsPos, heading, mode, step, tick]);
+
+  // (tick déclaré plus haut — alimente le redraw à 30 fps)
 
   if (!route) return null;
 
