@@ -1,13 +1,14 @@
 // ── RouteOverlay — tracé OSRM/Google projeté sur caméra AR ──────────
 // Dessine la route en canvas 2D au-dessus de la vue caméra.
 // Se met à jour à chaque frame (heading, GPS) via requestAnimationFrame.
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useMemo } from "react";
 import { t } from "../../i18n.js";
 import { C } from "../../constants.js";
-import { haversine, fDist } from "../../utils.js";
+import { haversine, fDist, getBearing } from "../../utils.js";
 import { projectPoint } from "./projection.js";
+import { windImpact } from "../../hooks/useWeather.js";
 
-function RouteOverlay({ route, gpsPos, heading, mode, onClose }) {
+function RouteOverlay({ route, gpsPos, heading, mode, onClose, weather=null }) {
   const cvRef = useRef();
   const [step, setStep] = useState(0); // index du prochain waypoint
 
@@ -204,6 +205,21 @@ function RouteOverlay({ route, gpsPos, heading, mode, onClose }) {
   const modeIcon = mode === "walking" ? "🚶" : "🚲";
   const modeCol  = mode === "walking" ? "#A78BFA" : "#3B82F6";
 
+  // ── Wind-aware ETA ────────────────────────────────────────────
+  // Calcule le bearing du segment en cours (depuis la position vers le
+  // prochain waypoint) et applique le facteur d'impact vent sur l'ETA.
+  // Pas applicable en mode walking (impact négligeable < 5 km/h).
+  const wind = useMemo(() => {
+    if (!weather || mode === "walking" || !gpsPos || !nextWp) {
+      return { factor: 1, label: null, headWindKmh: 0 };
+    }
+    const bear = getBearing(gpsPos.lat, gpsPos.lng, nextWp.lat, nextWp.lng);
+    return windImpact(bear, weather.windDir ?? 0, weather.wind ?? 0);
+  }, [weather, mode, gpsPos?.lat, gpsPos?.lng, nextWp?.lat, nextWp?.lng]);
+
+  const correctedTime = Math.round(route.totalTime * wind.factor / 60);
+  const baseTime      = Math.round(route.totalTime / 60);
+
   // Étiquette de direction textuelle
   const dirText = arriving ? t("nav.arrived") : (
     nextWp?.modifier === "left"         ? "◀ TOURNEZ À GAUCHE"
@@ -245,15 +261,37 @@ function RouteOverlay({ route, gpsPos, heading, mode, onClose }) {
           </div>
         </div>
 
-        {/* Total restant */}
+        {/* Total restant + impact vent */}
         <div style={{
           background:"rgba(8,12,15,0.75)", border:`1px solid ${modeCol}44`,
           borderRadius:6, padding:"4px 12px",
           color:C.muted, fontSize:8, fontFamily:C.fnt,
+          display:"flex", alignItems:"center", gap:8,
         }}>
-          {modeIcon} {fDist(route.totalDist)} · {Math.round(route.totalTime/60)} min total
-          · étape {step+1}/{route.waypoints.length}
+          <span>{modeIcon} {fDist(route.totalDist)} · {correctedTime} min total
+            · étape {step+1}/{route.waypoints.length}</span>
         </div>
+
+        {/* Badge vent — visible uniquement en mode vélo si impact significatif */}
+        {wind.label && Math.abs(wind.headWindKmh) >= 5 && (
+          <div style={{
+            background: wind.headWindKmh > 0 ? "rgba(224,62,62,0.15)" : "rgba(46,204,143,0.15)",
+            border: `1px solid ${wind.headWindKmh > 0 ? C.bad : C.good}66`,
+            borderRadius: 5, padding: "3px 10px",
+            color: wind.headWindKmh > 0 ? C.bad : C.good,
+            fontSize: 8, fontFamily: C.fnt, letterSpacing: 1,
+            display: "flex", alignItems: "center", gap: 6,
+          }}>
+            <span>🌬️</span>
+            <span style={{fontWeight:700}}>
+              {wind.headWindKmh > 0 ? "+" : ""}{Math.round((wind.factor - 1) * 100)}%
+            </span>
+            <span>· {wind.label} {Math.abs(wind.headWindKmh)}km/h</span>
+            {baseTime !== correctedTime && (
+              <span style={{color:C.muted}}>· était {baseTime}min</span>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Bouton fermer la navigation */}

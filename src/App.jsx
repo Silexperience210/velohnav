@@ -269,7 +269,7 @@ export default function App() {
 
       <div style={{ flex:1,display:"flex",flexDirection:"column",overflow:"hidden",minHeight:0 }}>
         {tab==="ar"       &&<ARScreen  stations={stations} sel={sel} setSel={setSel} gpsPos={gpsPos}
-          trip={trip} onStartTrip={startTrip} mapsKey={mapsKey}/>}
+          trip={trip} onStartTrip={startTrip} mapsKey={mapsKey} weather={weather}/>}
         {tab==="map"      &&<MapScreen stations={stations} sel={sel} setSel={setSel} gpsPos={gpsPos}
           trip={trip} onStartTrip={startTrip}
           mapsKey={mapsKey} weather={weather}

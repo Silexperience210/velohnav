@@ -61,7 +61,7 @@ async function payLnAddress(lnAddress, satsAmount, comment="VelohNav trajet") {
 // ── AR SCREEN ─────────────────────────────────────────────────────
 
 
-function ARScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey="", fischerVisible=false }) {
+function ARScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey="", fischerVisible=false, weather=null }) {
   const vidRef=useRef(null);
   const [cam,   setCam]  =useState("idle");
   const [pulse, setPulse]=useState(false);
@@ -270,7 +270,7 @@ function ARScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey=""
         <RouteOverlay
           key={`${navStation?.id}-${navMode}`}
           route={route} gpsPos={gpsPos} heading={heading}
-          mode={navMode} onClose={stopNav}
+          mode={navMode} onClose={stopNav} weather={weather}
         />
       )}
       {/* Chargement itinéraire */}
