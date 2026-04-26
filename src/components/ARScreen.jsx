@@ -7,6 +7,7 @@ import { useCompass } from "../hooks/useCompass.js";
 import { useRoute } from "../hooks/useRoute.js";
 import { usePredictiveRouting } from "../hooks/usePredictiveRouting.js";
 import { useGhostTrail } from "../hooks/useGhostTrail.js";
+import { useObstacles } from "../hooks/useObstacles.js";
 import { launchNativeArNav } from "../utils.js";
 
 
@@ -16,6 +17,7 @@ import NavOverlay from "./ar/NavOverlay.jsx";
 import CityBG from "./ar/CityBG.jsx";
 import ARPin from "./ar/ARPin.jsx";
 import GhostPin from "./ar/GhostPin.jsx";
+import { ObstaclePins, ObstacleReportMenu } from "./ar/ObstaclesAR.jsx";
 import { projectPoint } from "./ar/projection.js";
 
 
@@ -118,6 +120,20 @@ function ARScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey=""
     gpsPos, navStation, originStation, navMode,
     active: navMode !== null,
   });
+
+  // ── Crowd-sourced obstacles (Nostr) ───────────────────────────────
+  const { obstacles, report: reportObstacle } = useObstacles(gpsPos, { enabled: cam === "active" });
+
+  // ── Long-press → menu de signalement obstacle ─────────────────────
+  const [reportMenuOpen, setReportMenuOpen] = useState(false);
+  const lpTimerRef = useRef(null);
+  const handleLongPressStart = useCallback(() => {
+    if (cam !== "active" || !gpsPos) return;
+    lpTimerRef.current = setTimeout(() => setReportMenuOpen(true), 700);
+  }, [cam, gpsPos]);
+  const handleLongPressEnd = useCallback(() => {
+    if (lpTimerRef.current) { clearTimeout(lpTimerRef.current); lpTimerRef.current = null; }
+  }, []);
 
   // ── Predictive Routing — surveille la station de destination en live ────
   // Si elle devient saturée pendant qu'on roule, propose une alternative.
@@ -557,6 +573,37 @@ function ARScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey=""
           bestTime={bestTime}
         />
       )}
+
+      {/* Obstacles crowd-sourced via Nostr */}
+      <ObstaclePins obstacles={obstacles} gpsPos={gpsPos} heading={heading}/>
+
+      {/* Zone capture long-press — partie centrale de l'écran uniquement.
+          Hors nav, ne couvre pas les pins (qui sont en haut). En nav active,
+          les pins normaux sont masqués donc on peut être plus large.
+          Z-index 11 = entre video (1) et pins (14+) → on ne bloque pas le tap pin. */}
+      {cam === "active" && !reportMenuOpen && (
+        <div
+          onPointerDown={handleLongPressStart}
+          onPointerUp={handleLongPressEnd}
+          onPointerCancel={handleLongPressEnd}
+          onPointerLeave={handleLongPressEnd}
+          style={{
+            position:"absolute",
+            top:"35%", bottom:"30%", left:0, right:0,
+            zIndex:11,
+            // Touch hint discret (visible quelques sec puis fade)
+          }}
+        />
+      )}
+
+      {/* Menu de signalement (modal) */}
+      <ObstacleReportMenu
+        visible={reportMenuOpen}
+        onClose={() => setReportMenuOpen(false)}
+        onReport={reportObstacle}
+        lat={gpsPos?.lat}
+        lng={gpsPos?.lng}
+      />
 
       {/* Pins Fischer 🥐 */}
       {fischerPins.map(s=>(
