@@ -5,6 +5,7 @@ import { haversine, getBearing, fDist, fWalk, bCol, bTag, pins } from "../utils.
 
 import { useCompass } from "../hooks/useCompass.js";
 import { useRoute } from "../hooks/useRoute.js";
+import { usePredictiveRouting } from "../hooks/usePredictiveRouting.js";
 import { launchNativeArNav } from "../utils.js";
 
 
@@ -93,6 +94,32 @@ function ARScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey=""
   },[navStation, mapsKey]);
 
   const stopNav = useCallback(()=>setNavMode(null),[]);
+
+  // ── Predictive Routing — surveille la station de destination en live ────
+  // Si elle devient saturée pendant qu'on roule, propose une alternative.
+  // Heuristique d'intent : si le user a déjà un vélo (trip actif), c'est un
+  // dropoff (besoin de docks). Sinon c'est un pickup (besoin de vélos).
+  const navIntent = trip?.active ? "dropoff" : "pickup";
+  const { suggestion: predSuggestion, dismiss: predDismiss, accept: predAccept } =
+    usePredictiveRouting({
+      stations, navStation, gpsPos, navMode,
+      intent: navIntent,
+      active: navMode !== null,
+    });
+
+  // Switch sur la station alternative — relance la nav vers la nouvelle dest
+  const acceptPredictiveSwitch = useCallback(() => {
+    predAccept((newStation) => {
+      setSel(newStation.id);
+      // Relance la nav avec la nouvelle station — le useEffect du
+      // pendingNavMode dans ARScreen + useRoute s'occupent du reste.
+      // Petit délai pour que sel soit propagé et navStation à jour
+      setTimeout(() => {
+        // navMode est conservé (cycling/walking) — useRoute recalculera
+        // automatiquement avec la nouvelle navStation.
+      }, 100);
+    });
+  }, [predAccept, setSel]);
 
   // Auto-démarrer la nav si l'utilisateur vient de taper AR VÉLO/PIED depuis MAP
   useEffect(()=>{
@@ -538,6 +565,83 @@ function ARScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey=""
             boxShadow:"0 0 5px #D47800"}}/>
         </div>
       ))}
+
+      {/* Bannière suggestion prédictive — re-route auto si station saturée */}
+      {predSuggestion && navMode && (
+        <div style={{
+          position:"absolute", bottom:84, left:14, right:14,
+          zIndex:25,
+          background:"linear-gradient(135deg, rgba(20,12,0,0.97), rgba(8,12,15,0.97))",
+          border:`2px solid ${C.warn}`,
+          borderRadius:10, padding:"11px 13px",
+          boxShadow:`0 0 24px ${C.warn}55, 0 4px 16px rgba(0,0,0,0.6)`,
+          animation:"predSlideUp 0.35s ease-out",
+        }}>
+          <style>{`
+            @keyframes predSlideUp {
+              from { transform: translateY(20px); opacity: 0; }
+              to   { transform: translateY(0); opacity: 1; }
+            }
+          `}</style>
+          <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:7}}>
+            <span style={{fontSize:16}}>⚠️</span>
+            <div style={{flex:1,minWidth:0}}>
+              <div style={{color:C.warn,fontSize:8,fontFamily:C.fnt,letterSpacing:1.5,fontWeight:700}}>
+                STATION SATURÉE · ALTERNATIVE TROUVÉE
+              </div>
+              <div style={{color:C.muted,fontSize:8,fontFamily:C.fnt,marginTop:1}}>
+                {predSuggestion.reason}
+              </div>
+            </div>
+          </div>
+          <div style={{
+            background:"rgba(0,0,0,0.35)", border:`1px solid ${C.border}`,
+            borderRadius:6, padding:"7px 10px", marginBottom:7,
+          }}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+              <div style={{minWidth:0,flex:1}}>
+                <div style={{color:C.text,fontSize:11,fontFamily:C.fnt,fontWeight:700,
+                  whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>
+                  {predSuggestion.station.name}
+                </div>
+                <div style={{color:C.muted,fontSize:8,fontFamily:C.fnt,marginTop:2,letterSpacing:1}}>
+                  {predSuggestion.detourMeters > 0 ? "+" : ""}{predSuggestion.detourMeters}m détour ·
+                  {" "}{predSuggestion.stockAvailable} {navIntent === "dropoff" ? "docks libres" : "vélos"}
+                </div>
+              </div>
+              <div style={{
+                background:`${C.good}22`, border:`1px solid ${C.good}66`,
+                borderRadius:4, padding:"3px 7px",
+                color:C.good, fontSize:11, fontFamily:C.fnt, fontWeight:700,
+              }}>
+                ✓ {predSuggestion.stockAvailable}
+              </div>
+            </div>
+          </div>
+          <div style={{display:"flex",gap:6}}>
+            <div onPointerDown={acceptPredictiveSwitch}
+              style={{
+                flex:2, textAlign:"center", padding:"8px 0",
+                background:`${C.accent}22`, border:`1px solid ${C.accent}`,
+                borderRadius:5, cursor:"pointer",
+              }}>
+              <span style={{color:C.accent,fontSize:9,fontFamily:C.fnt,fontWeight:700,letterSpacing:1.5}}>
+                BASCULER
+              </span>
+            </div>
+            <div onPointerDown={predDismiss}
+              style={{
+                flex:1, textAlign:"center", padding:"8px 0",
+                background:"rgba(255,255,255,0.04)", border:`1px solid ${C.border}`,
+                borderRadius:5, cursor:"pointer",
+              }}>
+              <span style={{color:C.muted,fontSize:9,fontFamily:C.fnt,letterSpacing:1.5}}>
+                IGNORER
+              </span>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Bottom panel */}
       <div style={{position:"absolute",bottom:0,left:0,right:0,padding:"0 14px 14px",zIndex:22}}>
