@@ -47,7 +47,9 @@ data class NavState(
     // Mode actif — basculé en GPS_FALLBACK si VPS timeout
     val trackingMode: TrackingMode = TrackingMode.VPS,
     // Meilleure précision VPS observée — pour debug/UX
-    val bestHorizontalAccuracy: Double = Double.MAX_VALUE
+    val bestHorizontalAccuracy: Double = Double.MAX_VALUE,
+    // Diagnostic Earth — affiché dans le HUD si bloqué
+    val earthDiagnostic: EarthDiagnostic? = null
 )
 
 class ArNavigationViewModel(application: Application) : AndroidViewModel(application) {
@@ -192,9 +194,21 @@ class ArNavigationViewModel(application: Application) : AndroidViewModel(applica
     }
 
     // Bascule manuelle (bouton "passer en GPS") ou auto sur timeout.
+    // Tolérant : ne fait rien si l'état n'est pas LOCALIZING (déjà en nav,
+    // pas encore en route, en erreur, etc.) — évite les transitions bizarres.
     fun fallbackToGps() {
         if (vpsReady) return  // déjà en nav, rien à faire
-        val r = route ?: return setState(NavStatus.ERROR, "Itinéraire perdu")
+        val st = _state.value.status
+        // Pas en LOCALIZING → on ne peut pas bypass (route pas encore prête, etc.)
+        if (st != NavStatus.LOCALIZING) {
+            Log.d(TAG, "fallbackToGps ignoré (état=$st, pas LOCALIZING)")
+            return
+        }
+        val r = route
+        if (r == null) {
+            Log.w(TAG, "fallbackToGps: route null en LOCALIZING (cas anormal)")
+            return
+        }
         Log.i(TAG, "Fallback GPS — démarrage navigation dégradée")
         vpsReady = true  // débloque updateProgress
         vpsTimeoutJob?.cancel()
@@ -235,9 +249,30 @@ class ArNavigationViewModel(application: Application) : AndroidViewModel(applica
 
     // ── Appelé depuis main thread (via mainHandler.post dans Activity) ──
     // arView passé en paramètre — jamais stocké
+    // FIX : appelé MÊME quand earth.trackingState != TRACKING (pour diagnostic)
     fun onEarthTracking(earth: Earth, frame: Frame, arView: ARSceneView) {
         lastEarth = earth
         geo.onFrame(earth, frame)
+
+        // Toujours mettre à jour le diagnostic Earth (visible dans le HUD)
+        val diag = geo.diagnostic.value
+        if (diag != null && _state.value.earthDiagnostic != diag) {
+            _state.value = _state.value.copy(earthDiagnostic = diag)
+
+            // Si Earth est en erreur permanente (clé API, version trop vieille, etc.),
+            // bascule immédiatement en mode GPS sans attendre le timeout 25s.
+            val isPermanentError = diag.state in setOf(
+                Earth.EarthState.ERROR_NOT_AUTHORIZED,
+                Earth.EarthState.ERROR_APK_VERSION_TOO_OLD,
+                Earth.EarthState.ERROR_RESOURCE_EXHAUSTED
+            )
+            if (isPermanentError && !vpsReady && _state.value.status == NavStatus.LOCALIZING) {
+                Log.w(TAG, "Earth en erreur permanente (${diag.state}) — fallback GPS immédiat")
+                fallbackToGps()
+                return
+            }
+        }
+
         val acc = geo.accuracy.value ?: return
 
         // Suivre la meilleure précision observée (debug + UX)

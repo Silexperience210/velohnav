@@ -27,7 +27,6 @@ import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import com.google.ar.core.ArCoreApk
 import com.google.ar.core.Config
-import com.google.ar.core.TrackingState
 import io.github.sceneview.ar.ARSceneView
 import kotlinx.coroutines.launch
 import com.silexperience.velohnav.ar.ui.NavigationHud
@@ -39,6 +38,9 @@ class ArNavigationActivity : ComponentActivity() {
     private var arView: ARSceneView? = null
     private val mainHandler = Handler(Looper.getMainLooper())
     private val TAG = "ArNavActivity"
+    // Compteur de frames ARCore reçus — utilisé par le watchdog 5s pour détecter
+    // si ARCore ne démarre pas du tout (clé API invalide, capteur HS, etc.)
+    @Volatile private var sessionUpdateCount = 0
 
     private var pendingDestLat: Double = 0.0
     private var pendingDestLng: Double = 0.0
@@ -93,13 +95,18 @@ class ArNavigationActivity : ComponentActivity() {
                                     config.geospatialMode      = Config.GeospatialMode.ENABLED
                                     config.lightEstimationMode = Config.LightEstimationMode.ENVIRONMENTAL_HDR
                                     config.planeFindingMode    = Config.PlaneFindingMode.DISABLED
+                                    Log.d(TAG, "ARCore config: Geospatial=ENABLED")
                                 }
                             ).also { v ->
                                 arView = v
 
                                 v.onSessionUpdated = { session, frame ->
+                                    sessionUpdateCount++
                                     val earth = session.earth
-                                    if (earth != null && earth.trackingState == TrackingState.TRACKING) {
+                                    if (earth != null) {
+                                        // FIX : appeler onEarthTracking MÊME si pas tracking,
+                                        // pour que le diagnostic Earth soit toujours à jour.
+                                        // Le ViewModel gérera le cas non-tracking en interne.
                                         mainHandler.post {
                                             try {
                                                 viewModel.onEarthTracking(earth, frame, v)
@@ -107,6 +114,8 @@ class ArNavigationActivity : ComponentActivity() {
                                                 Log.e(TAG, "onEarthTracking error", e)
                                             }
                                         }
+                                    } else if (sessionUpdateCount % 60 == 0) {
+                                        Log.w(TAG, "session.earth est null (frame $sessionUpdateCount)")
                                     }
                                 }
 
@@ -134,6 +143,24 @@ class ArNavigationActivity : ComponentActivity() {
                         onFallbackToGps = { viewModel.fallbackToGps() }
                     )
                 }
+            }
+        }
+
+        // FIX : watchdog qui vérifie après 8s qu'on a bien reçu des frames ARCore.
+        // Si sessionUpdateCount = 0, ARCore n'a pas démarré → diagnostic explicite.
+        // Délai 8s pour laisser le temps au routing OSRM + initialisation ARCore.
+        lifecycleScope.launch {
+            kotlinx.coroutines.delay(8000)
+            if (sessionUpdateCount == 0) {
+                Log.e(TAG, "Aucun onSessionUpdated reçu après 8s — ARCore ne démarre pas")
+                Toast.makeText(
+                    this@ArNavigationActivity,
+                    "ARCore ne répond pas — vérifiez clé API + extérieur",
+                    Toast.LENGTH_LONG
+                ).show()
+                viewModel.fallbackToGps()
+            } else {
+                Log.d(TAG, "Watchdog OK : $sessionUpdateCount frames ARCore reçus en 8s")
             }
         }
 

@@ -77,6 +77,7 @@ fun NavigationHud(
                 vpsAccuracy    = state.vpsAccuracy,
                 bestAccuracy   = state.bestHorizontalAccuracy,
                 secondsLeft    = state.vpsTimeoutSecondsLeft,
+                earthDiagnostic = state.earthDiagnostic,
                 onFallback     = onFallbackToGps
             )
         }
@@ -264,6 +265,7 @@ private fun LocalizingOverlay(
     vpsAccuracy: VpsAccuracy? = null,
     bestAccuracy: Double = Double.MAX_VALUE,
     secondsLeft: Int = 0,
+    earthDiagnostic: EarthDiagnostic? = null,
     onFallback: () -> Unit = {}
 ) {
     val label = when (status) {
@@ -281,7 +283,7 @@ private fun LocalizingOverlay(
         Modifier
             .background(DarkCard, RoundedCornerShape(20.dp))
             .border(1.dp, OrangeDim, RoundedCornerShape(20.dp))
-            .padding(32.dp),
+            .padding(28.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         CircularProgressIndicator(
@@ -296,10 +298,33 @@ private fun LocalizingOverlay(
             Text("Pointez vers les bâtiments", color = GrayText, fontSize = 13.sp,
                 textAlign = TextAlign.Center)
 
+            // Diagnostic Earth — affiché si on a reçu un état Earth
+            // Crucial pour identifier les blocages (clé API, version trop vieille...)
+            if (earthDiagnostic != null) {
+                Spacer(Modifier.height(8.dp))
+                val diagColor = when {
+                    earthDiagnostic.state.toString().startsWith("ERROR") -> RedBad
+                    earthDiagnostic.isTracking -> GreenOK
+                    else -> Orange
+                }
+                Text(
+                    "ARCore: ${earthDiagnostic.message}",
+                    color = diagColor, fontSize = 10.sp, fontFamily = FontFamily.Monospace,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth(0.9f)
+                )
+            } else {
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "En attente d'ARCore…",
+                    color = GrayText, fontSize = 10.sp, fontFamily = FontFamily.Monospace
+                )
+            }
+
             // Précision actuelle + meilleure observée
             val currentAcc = vpsAccuracy?.horizontalMeters
             if (currentAcc != null) {
-                Spacer(Modifier.height(10.dp))
+                Spacer(Modifier.height(8.dp))
                 Text(
                     "Précision : ±${"%.1f".format(currentAcc)}m",
                     color = if (currentAcc < 8) GreenOK else if (currentAcc < 15) Orange else RedBad,
@@ -315,7 +340,7 @@ private fun LocalizingOverlay(
 
             // Countdown VPS — informe l'utilisateur du fallback automatique
             if (secondsLeft > 0) {
-                Spacer(Modifier.height(8.dp))
+                Spacer(Modifier.height(6.dp))
                 Text(
                     "Bascule GPS dans ${secondsLeft}s",
                     color = GrayText, fontSize = 11.sp, fontFamily = FontFamily.Monospace
@@ -323,7 +348,7 @@ private fun LocalizingOverlay(
             }
 
             // Bouton manuel "passer en GPS" — l'utilisateur n'attend pas le timeout
-            Spacer(Modifier.height(14.dp))
+            Spacer(Modifier.height(12.dp))
             OutlinedButton(
                 onClick = onFallback,
                 border = androidx.compose.foundation.BorderStroke(1.dp, Orange),

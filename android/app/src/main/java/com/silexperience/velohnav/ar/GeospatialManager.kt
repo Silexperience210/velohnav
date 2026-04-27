@@ -22,24 +22,79 @@ data class TerrainAnchorData(
     val anchor: Anchor? = null
 )
 
+/**
+ * État Earth ARCore — utilisé pour diagnostiquer pourquoi VPS ne converge pas.
+ * Mappe sur com.google.ar.core.Earth.EarthState avec un message user-friendly.
+ */
+data class EarthDiagnostic(
+    val state: Earth.EarthState,
+    val isTracking: Boolean,
+    val message: String
+)
+
 class GeospatialManager {
     private val TAG = "GeospatialManager"
     private val _accuracy = MutableStateFlow<VpsAccuracy?>(null)
     val accuracy: StateFlow<VpsAccuracy?> = _accuracy
 
+    // Diagnostic Earth — pour identifier les blocages VPS (clé API manquante, etc.)
+    private val _diagnostic = MutableStateFlow<EarthDiagnostic?>(null)
+    val diagnostic: StateFlow<EarthDiagnostic?> = _diagnostic
+
+    // Compteurs pour debug — combien de frames reçus, combien avec accuracy valide
+    private var frameCount = 0
+    private var accuracyOkCount = 0
+
     // Appelé depuis le main thread (via mainHandler.post dans Activity)
-    // Précondition : earth.trackingState == TRACKING (vérifié par l'appelant)
     fun onFrame(earth: Earth, frame: Frame) {
+        frameCount++
         try {
-            if (earth.trackingState != com.google.ar.core.TrackingState.TRACKING) return
+            val earthState = earth.earthState
+            val isTracking = earth.trackingState == com.google.ar.core.TrackingState.TRACKING
+
+            // Diagnostic — toujours mettre à jour, même si on ne peut pas lire le pose
+            _diagnostic.value = EarthDiagnostic(
+                state = earthState,
+                isTracking = isTracking,
+                message = when (earthState) {
+                    Earth.EarthState.ENABLED ->
+                        if (isTracking) "Tracking actif" else "En attente de tracking"
+                    Earth.EarthState.ERROR_INTERNAL ->
+                        "Erreur interne ARCore — redémarrer l'app"
+                    Earth.EarthState.ERROR_NOT_AUTHORIZED ->
+                        "Clé API non autorisée — activer ARCore API dans Google Cloud Console"
+                    Earth.EarthState.ERROR_RESOURCE_EXHAUSTED ->
+                        "Quota Geospatial dépassé — patienter ou augmenter quota GCP"
+                    Earth.EarthState.ERROR_GEOSPATIAL_MODE_DISABLED ->
+                        "Geospatial désactivé dans la session"
+                    Earth.EarthState.ERROR_APK_VERSION_TOO_OLD ->
+                        "ARCore obsolète — mettre à jour Google Play Services for AR"
+                    else -> "État Earth inconnu : $earthState"
+                }
+            )
+
+            // Si pas tracking ou pas enabled, pas la peine d'essayer de lire le pose
+            if (!isTracking || earthState != Earth.EarthState.ENABLED) {
+                if (frameCount % 60 == 0) {
+                    Log.w(TAG, "Earth state=$earthState tracking=$isTracking " +
+                              "frames=$frameCount accuracyOk=$accuracyOkCount")
+                }
+                return
+            }
+
             val p = earth.cameraGeospatialPose
+            accuracyOkCount++
             _accuracy.value = VpsAccuracy(
                 p.horizontalAccuracy,
                 p.headingAccuracy,
                 p.horizontalAccuracy < 5.0 && p.headingAccuracy < 15.0
             )
+            if (frameCount % 60 == 0) {
+                Log.d(TAG, "VPS pose: horiz=±${p.horizontalAccuracy}m head=±${p.headingAccuracy}° " +
+                          "lat=${p.latitude} lng=${p.longitude}")
+            }
         } catch (e: Exception) {
-            Log.w(TAG, "onFrame error: ${e.message}")
+            Log.w(TAG, "onFrame error (frame=$frameCount): ${e.message}", e)
         }
     }
 
@@ -61,7 +116,12 @@ class GeospatialManager {
         }
     }
 
-    fun cleanup() { _accuracy.value = null }
+    fun cleanup() {
+        _accuracy.value = null
+        _diagnostic.value = null
+        frameCount = 0
+        accuracyOkCount = 0
+    }
 
     companion object {
         fun computeBearing(fromLat: Double, fromLng: Double, toLat: Double, toLng: Double): Float {
