@@ -5,6 +5,7 @@ import { haversine, getBearing, fDist, bTag, bCol, enrich, parseStation,
          addToHistory, fetchJCDecaux, startWatchingGPS, notifyStation,
          requestNotifPerm, launchNativeArNav, payLnAddress } from "./utils.js";
 import { useWeather } from "./hooks/useWeather.js";
+import { useTransit } from "./hooks/useTransit.js";
 import { saveStations, loadStations } from "./hooks/useStationsCache.js";
 import ARScreen    from "./components/ARScreen.jsx";
 import MapScreen   from "./components/MapScreen.jsx";
@@ -98,6 +99,9 @@ export default function App() {
 
   // Météo OpenMeteo — hook réactif à la position GPS
   const { weather } = useWeather(gpsPos);
+
+  // Transit RGTR — partagé entre ARScreen (multimodal switch) et AIScreen
+  const { stops: transitStops, departures: transitDepartures } = useTransit(gpsPos, hafasKey);
 
   // FIX #3 : Système de trajet — départ/arrivée pour Sats Rewards
   const [trip,setTrip] = useState(null); // null | { stationId, name, startAt }
@@ -269,7 +273,8 @@ export default function App() {
 
       <div style={{ flex:1,display:"flex",flexDirection:"column",overflow:"hidden",minHeight:0 }}>
         {tab==="ar"       &&<ARScreen  stations={stations} sel={sel} setSel={setSel} gpsPos={gpsPos}
-          trip={trip} onStartTrip={startTrip} mapsKey={mapsKey} weather={weather}/>}
+          trip={trip} onStartTrip={startTrip} mapsKey={mapsKey} weather={weather}
+          transitStops={transitStops} transitDepartures={transitDepartures}/>}
         {tab==="map"      &&<MapScreen stations={stations} sel={sel} setSel={setSel} gpsPos={gpsPos}
           trip={trip} onStartTrip={startTrip}
           mapsKey={mapsKey} weather={weather}

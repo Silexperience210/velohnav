@@ -8,6 +8,7 @@ import { useRoute } from "../hooks/useRoute.js";
 import { usePredictiveRouting } from "../hooks/usePredictiveRouting.js";
 import { useGhostTrail } from "../hooks/useGhostTrail.js";
 import { useObstacles } from "../hooks/useObstacles.js";
+import { useMultimodalSwitch } from "../hooks/useMultimodalSwitch.js";
 import { launchNativeArNav } from "../utils.js";
 
 
@@ -66,7 +67,7 @@ async function payLnAddress(lnAddress, satsAmount, comment="VelohNav trajet") {
 // ── AR SCREEN ─────────────────────────────────────────────────────
 
 
-function ARScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey="", fischerVisible=false, weather=null }) {
+function ARScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey="", fischerVisible=false, weather=null, transitStops=[], transitDepartures={} }) {
   const vidRef=useRef(null);
   const [cam,   setCam]  =useState("idle");
   const [pulse, setPulse]=useState(false);
@@ -160,6 +161,20 @@ function ARScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey=""
       }, 100);
     });
   }, [predAccept, setSel]);
+
+  // ── Multimodal switch — bascule vélo→bus si météo dégrade ────────
+  const { mmSuggestion, mmDismiss, mmAccept } = useMultimodalSwitch({
+    gpsPos, weather, navStation, navMode,
+    stations, transitStops, transitDepartures,
+    active: navMode !== null,
+  });
+
+  const acceptMultimodalSwitch = useCallback(() => {
+    mmAccept((pivotStation) => {
+      // Bascule la nav vers la station-pivot (lieu de transition vélo→bus)
+      setSel(pivotStation.id);
+    });
+  }, [mmAccept, setSel]);
 
   // Auto-démarrer la nav si l'utilisateur vient de taper AR VÉLO/PIED depuis MAP
   useEffect(()=>{
@@ -648,6 +663,74 @@ function ARScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey=""
             boxShadow:"0 0 5px #D47800"}}/>
         </div>
       ))}
+
+      {/* Bannière multimodal switch — bascule vélo→bus si pluie en cours.
+          Priorité haute, placée au-dessus de la bannière prédictive. */}
+      {mmSuggestion && navMode === "cycling" && (
+        <div style={{
+          position:"absolute", bottom: predSuggestion ? 220 : 84, left:14, right:14,
+          zIndex:26,
+          background:"linear-gradient(135deg, rgba(0,16,40,0.97), rgba(8,12,15,0.97))",
+          border:`2px solid #60A5FA`,
+          borderRadius:10, padding:"11px 13px",
+          boxShadow:`0 0 24px #60A5FA66, 0 4px 16px rgba(0,0,0,0.7)`,
+          animation:"mmSlideUp 0.4s ease-out",
+        }}>
+          <style>{`
+            @keyframes mmSlideUp {
+              from { transform: translateY(20px); opacity: 0; }
+              to   { transform: translateY(0); opacity: 1; }
+            }
+          `}</style>
+          <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:8}}>
+            <span style={{fontSize:18}}>🌧️</span>
+            <div style={{flex:1,minWidth:0}}>
+              <div style={{color:"#60A5FA",fontSize:8,fontFamily:C.fnt,letterSpacing:1.5,fontWeight:700}}>
+                MÉTÉO DÉGRADE · BASCULE BUS RECOMMANDÉE
+              </div>
+              <div style={{color:C.muted,fontSize:8,fontFamily:C.fnt,marginTop:1}}>
+                {mmSuggestion.reason}
+              </div>
+            </div>
+          </div>
+          <div style={{
+            background:"rgba(0,0,0,0.4)", border:`1px solid ${C.border}`,
+            borderRadius:6, padding:"8px 10px", marginBottom:8,
+          }}>
+            <div style={{color:C.muted,fontSize:7,fontFamily:C.fnt,letterSpacing:1.2,marginBottom:4}}>
+              ITINÉRAIRE COMBINÉ:
+            </div>
+            <div style={{color:C.text,fontSize:10,fontFamily:C.fnt,lineHeight:1.6}}>
+              <div>🚲 Vélo → <span style={{color:"#60A5FA",fontWeight:700}}>{mmSuggestion.pivotStation.name}</span> ({Math.round(mmSuggestion.distFromUser)}m)</div>
+              <div style={{paddingLeft:14,color:C.muted,fontSize:8}}>déposer ici · {mmSuggestion.pivotStation.docks} docks libres</div>
+              <div style={{marginTop:3}}>🚌 <span style={{color:C.warn,fontWeight:700}}>{mmSuggestion.busLine}</span> à <span style={{color:C.good,fontWeight:700}}>{mmSuggestion.busTime}</span> · {mmSuggestion.busDirection}</div>
+              <div style={{paddingLeft:14,color:C.muted,fontSize:8}}>arrêt à {mmSuggestion.stopDistFromStation}m de la station</div>
+            </div>
+          </div>
+          <div style={{display:"flex",gap:6}}>
+            <div onPointerDown={acceptMultimodalSwitch}
+              style={{
+                flex:2, textAlign:"center", padding:"8px 0",
+                background:"rgba(96,165,250,0.18)", border:`1px solid #60A5FA`,
+                borderRadius:5, cursor:"pointer",
+              }}>
+              <span style={{color:"#60A5FA",fontSize:9,fontFamily:C.fnt,fontWeight:700,letterSpacing:1.5}}>
+                BASCULER VERS PIVOT
+              </span>
+            </div>
+            <div onPointerDown={mmDismiss}
+              style={{
+                flex:1, textAlign:"center", padding:"8px 0",
+                background:"rgba(255,255,255,0.04)", border:`1px solid ${C.border}`,
+                borderRadius:5, cursor:"pointer",
+              }}>
+              <span style={{color:C.muted,fontSize:9,fontFamily:C.fnt,letterSpacing:1.5}}>
+                CONTINUER
+              </span>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Bannière suggestion prédictive — re-route auto si station saturée */}
       {predSuggestion && navMode && (
