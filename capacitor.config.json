@@ -12,6 +12,9 @@
   "plugins": {
     "Geolocation": {
       "permissions": ["location"]
+    },
+    "CapacitorHttp": {
+      "enabled": true
     }
   }
 }

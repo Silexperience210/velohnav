@@ -6,19 +6,35 @@
 // (zéro coup d'œil au téléphone).
 //
 // Stack:
-// - SpeechSynthesis API (TTS gratuit, hors-ligne sur Android Chrome)
-// - Web Audio API (AudioContext, PannerNode HRTF, MediaStreamDestination)
-// - getBearing + heading (déjà dispo) → calcul de la position 3D virtuelle
+// - TTS gratuit via Google Translate (endpoint public, no key, MP3 24kHz)
+// - Web Audio API (AudioContext, PannerNode HRTF, AudioBufferSource)
+// - Fallback: SpeechSynthesis natif si réseau down ou TTS échoue
+// - getBearing + heading → calcul de la position 3D virtuelle
 //
-// Architecture: TTS → MediaStreamSource → HRTF Panner → Output
-// Le panner positionne le son dans l'espace 3D selon (x, y, z) calculés
+// Architecture:
+//   fetch(translate.google.com/translate_tts) → arrayBuffer (MP3)
+//   → ctx.decodeAudioData → AudioBuffer
+//   → AudioBufferSource → HRTF Panner → ctx.destination
+// Le panner positionne la voix dans l'espace 3D selon (x, y, z) calculés
 // depuis l'angle relatif entre cap user et bearing du virage.
+//
+// Cache: les annonces communes ("Tournez à droite", "Continuez tout droit"...)
+// sont mises en cache (Map en mémoire) pour éviter de re-fetch à chaque
+// trigger — plus rapide + économise data mobile.
 
 import { useEffect, useRef, useCallback } from "react";
 import { haversine, getBearing } from "../utils.js";
 
 const ANNOUNCE_DISTANCES = [200, 100, 50, 20];  // m — déclenche annonces
 const REPEAT_COOLDOWN_MS = 12_000;              // 12s mini entre 2 annonces du même waypoint
+const TTS_TIMEOUT_MS     = 4500;                // timeout fetch TTS — fallback si lent
+// Endpoint public Google Translate TTS — gratuit, no auth, ~200 char max par requête
+const GTTS_BASE = "https://translate.google.com/translate_tts";
+
+// Cache des AudioBuffers pour annonces récurrentes — Map<text, AudioBuffer>
+// Évite de re-fetch + re-décoder les phrases standards.
+const ttsCache = new Map();
+const CACHE_MAX_ENTRIES = 50;
 
 /**
  * Convertit (angle relatif, distance) en coordonnées 3D pour le PannerNode.
@@ -60,11 +76,88 @@ function buildAnnouncement(modifier, distance, streetName = "") {
     : `${prefix}${dir}.`;
 }
 
+/**
+ * Fetch + decode un mp3 TTS depuis Google Translate.
+ * Retourne un AudioBuffer prêt à connecter au panner, ou null si échec.
+ * Cache automatique sur le texte (max CACHE_MAX_ENTRIES entrées).
+ *
+ * Stratégie réseau:
+ * 1. CapacitorHttp si dispo (Capacitor Android/iOS) — bypass CORS native
+ * 2. fetch() classique sinon — fonctionne en dev (vite proxy) ou si le
+ *    WebView accepte la requête sans CORS strict
+ */
+async function fetchTTSBuffer(ctx, text) {
+  if (ttsCache.has(text)) return ttsCache.get(text);
+  const url = `${GTTS_BASE}?ie=UTF-8&q=${encodeURIComponent(text)}&tl=fr&client=tw-ob`;
+  let arrayBuffer = null;
+
+  // Tentative #1 : CapacitorHttp (native Android/iOS — bypass CORS)
+  try {
+    const Cap = window.Capacitor;
+    if (Cap?.isNativePlatform?.() && Cap.Plugins?.CapacitorHttp) {
+      const r = await Cap.Plugins.CapacitorHttp.request({
+        url,
+        method: "GET",
+        responseType: "arraybuffer",
+        connectTimeout: TTS_TIMEOUT_MS,
+        readTimeout: TTS_TIMEOUT_MS,
+        headers: {
+          "User-Agent": "Mozilla/5.0 (Linux; Android) VelohNav",
+          "Accept": "audio/mpeg, */*",
+        },
+      });
+      if (r.status === 200 && r.data) {
+        // CapacitorHttp retourne soit ArrayBuffer, soit base64 selon plateforme
+        if (typeof r.data === "string") {
+          // Base64 → Uint8Array → ArrayBuffer
+          const binStr = atob(r.data);
+          const bytes = new Uint8Array(binStr.length);
+          for (let i = 0; i < binStr.length; i++) bytes[i] = binStr.charCodeAt(i);
+          arrayBuffer = bytes.buffer;
+        } else {
+          arrayBuffer = r.data;
+        }
+      }
+    }
+  } catch (e) {
+    console.warn("[SpatialAudio] CapacitorHttp failed, fallback fetch:", e.message);
+  }
+
+  // Tentative #2 : fetch standard (sera bloqué par CORS en browser desktop, OK en dev avec proxy)
+  if (!arrayBuffer) {
+    try {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), TTS_TIMEOUT_MS);
+      const r = await fetch(url, { signal: ctrl.signal, mode: "cors" });
+      clearTimeout(timer);
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      arrayBuffer = await r.arrayBuffer();
+    } catch (e) {
+      console.warn("[SpatialAudio] fetch TTS failed:", e.message);
+      return null;
+    }
+  }
+
+  // Décodage MP3 → AudioBuffer
+  try {
+    const buffer = await ctx.decodeAudioData(arrayBuffer);
+    // Cache LRU: éviction si trop d'entrées
+    if (ttsCache.size >= CACHE_MAX_ENTRIES) {
+      const firstKey = ttsCache.keys().next().value;
+      ttsCache.delete(firstKey);
+    }
+    ttsCache.set(text, buffer);
+    return buffer;
+  } catch (e) {
+    console.warn("[SpatialAudio] decodeAudioData failed:", e.message);
+    return null;
+  }
+}
+
 export function useSpatialAudio({ enabled, gpsPos, heading, route }) {
   const ctxRef        = useRef(null);            // AudioContext
   const pannerRef     = useRef(null);            // PannerNode HRTF
-  const sourceRef     = useRef(null);            // MediaStreamSource
-  const utterRef      = useRef(null);            // SpeechSynthesisUtterance courante
+  const currentSrcRef = useRef(null);            // AudioBufferSource en cours
   const announcedRef  = useRef(new Map());       // waypointIdx → { distAnnonced, ts }
   const initFailedRef = useRef(false);
 
@@ -84,7 +177,7 @@ export function useSpatialAudio({ enabled, gpsPos, heading, route }) {
       panner.distanceModel = "inverse";
       panner.refDistance   = 1;
       panner.maxDistance   = 10;
-      panner.rolloffFactor = 0;       // pas d'atténuation — on veut que la voix soit toujours intelligible
+      panner.rolloffFactor = 0;       // pas d'atténuation — voix toujours intelligible
       panner.coneInnerAngle  = 360;
       panner.coneOuterAngle  = 0;
       panner.coneOuterGain   = 0;
@@ -102,82 +195,58 @@ export function useSpatialAudio({ enabled, gpsPos, heading, route }) {
   // ── Annonce vocale spatialisée ──────────────────────────────────────
   const announce = useCallback(async (text, relAngleDeg) => {
     const ctx = await ensureCtx();
-    if (!ctx || !pannerRef.current) {
-      // Fallback: TTS classique non-spatialisé
-      try {
-        const u = new SpeechSynthesisUtterance(text);
-        u.lang = "fr-FR";
-        u.rate = 1.05;
-        u.pitch = 1.0;
-        utterRef.current = u;
-        speechSynthesis.speak(u);
-      } catch {}
-      return;
-    }
+
     // Position 3D selon angle relatif
     const { x, y, z } = relAngleToXYZ(relAngleDeg);
-    try {
-      pannerRef.current.positionX.value = x;
-      pannerRef.current.positionY.value = y;
-      pannerRef.current.positionZ.value = z;
-    } catch {
-      // Old browsers: setPosition fallback
-      try { pannerRef.current.setPosition(x, y, z); } catch {}
-    }
 
-    // Stratégie multi-canal SpeechSynthesis → Web Audio:
-    // Malheureusement SpeechSynthesis n'a pas de pipe direct vers Web Audio
-    // sur la plupart des navigateurs. Pour spatialiser, on utilise un
-    // hack: on joue le TTS en parallèle d'un "white noise burst" très bref
-    // panné, qui donne un cue directionnel auditif au cerveau.
-    //
-    // En production, remplacer par une vraie API TTS qui rend en blob
-    // (ex: Google Cloud TTS, ElevenLabs) et créer un AudioBufferSource
-    // depuis le blob → connect au panner.
-
-    // 1. Cue directionnel (burst de bruit blanc panné, ~120ms)
-    try {
-      const burstDuration = 0.18;
-      const sampleRate = ctx.sampleRate;
-      const buffer = ctx.createBuffer(1, sampleRate * burstDuration, sampleRate);
-      const data = buffer.getChannelData(0);
-      // Bruit rose filtré — plus agréable qu'un bruit blanc pur
-      let lastOut = 0;
-      for (let i = 0; i < data.length; i++) {
-        const white = (Math.random() * 2 - 1) * 0.3;
-        // Lissage 1-pole (low-pass)
-        lastOut = lastOut * 0.95 + white * 0.05;
-        // Enveloppe ADSR rapide
-        const t = i / data.length;
-        const env = t < 0.1 ? t * 10
-                  : t > 0.7 ? (1 - t) / 0.3
-                  : 1;
-        data[i] = lastOut * env * 0.6;
-      }
-      const src = ctx.createBufferSource();
-      src.buffer = buffer;
-      src.connect(pannerRef.current);
-      src.start();
-      sourceRef.current = src;
-    } catch (e) {
-      console.warn("[SpatialAudio] burst failed:", e.message);
-    }
-
-    // 2. TTS classique légèrement décalé (200ms après le cue) — non-spatialisé
-    //    mais la perception spatiale a déjà été établie par le burst.
-    setTimeout(() => {
+    // Fallback SpeechSynthesis si Web Audio indisponible
+    const fallbackTTS = () => {
       try {
-        // Cancel toute annonce précédente
         speechSynthesis.cancel();
         const u = new SpeechSynthesisUtterance(text);
         u.lang = "fr-FR";
         u.rate = 1.05;
         u.pitch = 1.0;
-        u.volume = 1.0;
-        utterRef.current = u;
         speechSynthesis.speak(u);
       } catch {}
-    }, 200);
+    };
+
+    if (!ctx || !pannerRef.current) return fallbackTTS();
+
+    // Update position panner pour la prochaine source
+    try {
+      pannerRef.current.positionX.value = x;
+      pannerRef.current.positionY.value = y;
+      pannerRef.current.positionZ.value = z;
+    } catch {
+      try { pannerRef.current.setPosition(x, y, z); } catch {}
+    }
+
+    // Fetch TTS + decode → AudioBuffer
+    const buffer = await fetchTTSBuffer(ctx, text);
+    if (!buffer) {
+      // Réseau down ou TTS rejette: SpeechSynthesis fallback (non-spatialisé
+      // mais audible). Le user reste guidé même en zone sans data.
+      return fallbackTTS();
+    }
+
+    // Cancel toute source précédente (coupe les annonces qui se chevauchent)
+    try {
+      if (currentSrcRef.current) {
+        currentSrcRef.current.stop();
+        currentSrcRef.current.disconnect();
+      }
+    } catch {}
+
+    // Connect: source → panner → destination
+    const src = ctx.createBufferSource();
+    src.buffer = buffer;
+    src.connect(pannerRef.current);
+    src.start();
+    currentSrcRef.current = src;
+    src.onended = () => {
+      if (currentSrcRef.current === src) currentSrcRef.current = null;
+    };
   }, [ensureCtx]);
 
   // ── Update de la position du panner à chaque frame heading ──────────
@@ -237,6 +306,13 @@ export function useSpatialAudio({ enabled, gpsPos, heading, route }) {
   useEffect(() => {
     if (!enabled) {
       try { speechSynthesis.cancel(); } catch {}
+      try {
+        if (currentSrcRef.current) {
+          currentSrcRef.current.stop();
+          currentSrcRef.current.disconnect();
+          currentSrcRef.current = null;
+        }
+      } catch {}
       announcedRef.current.clear();
       // On ne ferme pas l'AudioContext — il sera réutilisé à la prochaine nav
     }
@@ -247,7 +323,10 @@ export function useSpatialAudio({ enabled, gpsPos, heading, route }) {
     return () => {
       try { speechSynthesis.cancel(); } catch {}
       try {
-        if (sourceRef.current) sourceRef.current.disconnect();
+        if (currentSrcRef.current) {
+          currentSrcRef.current.stop();
+          currentSrcRef.current.disconnect();
+        }
         if (pannerRef.current) pannerRef.current.disconnect();
         if (ctxRef.current && ctxRef.current.state !== "closed") ctxRef.current.close();
       } catch {}
