@@ -5,7 +5,7 @@ import { haversine, getBearing, fDist, fWalk, bCol, bTag, pins } from "../utils.
 
 import { useI18n } from "../i18n.js";
 
-function SettingsScreen({ apiKey, setApiKey, claudeKey, setClaudeKey, onRefresh, apiLive, isMock, gpsPos, lnAddr, setLnAddr, lnOn, setLnOn, ads, setAds, mapsKey, setMapsKey, hafasKey="", setHafasKey }) {
+function SettingsScreen({ apiKey, setApiKey, claudeKey, setClaudeKey, onRefresh, apiLive, isMock, gpsPos, lnAddr, setLnAddr, lnOn, setLnOn, ads, setAds, mapsKey, setMapsKey, hafasKey="", setHafasKey, spatialAudio=false, setSpatialAudio=()=>{} }) {
   const [draft,setDraft]=useState(apiKey);
   const [saved,setSaved]=useState(false);
   const [claudeDraft,setClaudeDraft]=useState(claudeKey);
@@ -172,6 +172,9 @@ function SettingsScreen({ apiKey, setApiKey, claudeKey, setClaudeKey, onRefresh,
         <div style={{ color:C.muted,fontSize:8,fontFamily:C.fnt,letterSpacing:2,marginBottom:10 }}>APPLICATION</div>
         <div style={{ background:"rgba(255,255,255,0.02)",border:`1px solid ${C.border}`,borderRadius:8,padding:"0 14px" }}>
           <Toggle label="Publicités AR" sub="Overlays sponsors dans la vue caméra" val={ads} set={setAds}/>
+          <Toggle label="🎧 Audio spatial 3D"
+            sub="Guidage vocal HRTF — la voix vient de la direction du virage. Casque/écouteurs requis."
+            val={spatialAudio} set={setSpatialAudio}/>
           {/* Sélecteur de langue */}
           <div style={{ display:"flex",justifyContent:"space-between",alignItems:"center",
             padding:"11px 0",borderBottom:`1px solid ${C.border}` }}>

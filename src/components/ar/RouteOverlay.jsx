@@ -8,7 +8,7 @@ import { haversine, fDist, getBearing } from "../../utils.js";
 import { projectPoint } from "./projection.js";
 import { windImpact } from "../../hooks/useWeather.js";
 
-function RouteOverlay({ route, gpsPos, heading, mode, onClose, weather=null }) {
+function RouteOverlay({ route, gpsPos, heading, mode, onClose, weather=null, spatialAudio=false }) {
   const cvRef = useRef();
   const [step, setStep] = useState(0); // index du prochain waypoint
 
@@ -270,6 +270,13 @@ function RouteOverlay({ route, gpsPos, heading, mode, onClose, weather=null }) {
         }}>
           <span>{modeIcon} {fDist(route.totalDist)} · {correctedTime} min total
             · étape {step+1}/{route.waypoints.length}</span>
+          {spatialAudio && (
+            <span style={{
+              color: C.good, fontSize: 9, letterSpacing: 1,
+              background: `${C.good}15`, padding: "1px 5px",
+              borderRadius: 3, border: `1px solid ${C.good}55`,
+            }} title="Audio spatial 3D actif">🎧 3D</span>
+          )}
         </div>
 
         {/* Badge vent — visible uniquement en mode vélo si impact significatif */}

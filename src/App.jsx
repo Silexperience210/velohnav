@@ -91,6 +91,8 @@ export default function App() {
   // BUG-1/BUG-4 fix: mapsKey géré en state React → réactif + exposé dans Settings
   const [mapsKey,setMapsKey]   = useState(()=>localStorage.getItem("velohnav_mapsKey")||"");
   const [hafasKey,setHafasKey] = useState(()=>localStorage.getItem("velohnav_hafasKey")||"");
+  // Spatial Audio HRTF — guidage vocal 3D pendant nav AR
+  const [spatialAudio, setSpatialAudio] = useState(()=>localStorage.getItem("velohnav_spatialAudio")==="true");
   const [stations,setStations] = useState(()=>enrich(FALLBACK,null));
   const [apiLive,setApiLive]   = useState(false);
   const [isMock,setIsMock]     = useState(true);
@@ -129,6 +131,7 @@ export default function App() {
   useEffect(()=>{ localStorage.setItem("velohnav_ads",      ads);       },[ads]);
   useEffect(()=>{ localStorage.setItem("velohnav_mapsKey",  mapsKey);   },[mapsKey]);
   useEffect(()=>{ localStorage.setItem("velohnav_hafasKey", hafasKey);  },[hafasKey]);
+  useEffect(()=>{ localStorage.setItem("velohnav_spatialAudio", spatialAudio); },[spatialAudio]);
 
   // GPS
   useEffect(()=>{
@@ -274,7 +277,8 @@ export default function App() {
       <div style={{ flex:1,display:"flex",flexDirection:"column",overflow:"hidden",minHeight:0 }}>
         {tab==="ar"       &&<ARScreen  stations={stations} sel={sel} setSel={setSel} gpsPos={gpsPos}
           trip={trip} onStartTrip={startTrip} mapsKey={mapsKey} weather={weather}
-          transitStops={transitStops} transitDepartures={transitDepartures}/>}
+          transitStops={transitStops} transitDepartures={transitDepartures}
+          spatialAudio={spatialAudio}/>}
         {tab==="map"      &&<MapScreen stations={stations} sel={sel} setSel={setSel} gpsPos={gpsPos}
           trip={trip} onStartTrip={startTrip}
           mapsKey={mapsKey} weather={weather}
@@ -293,6 +297,7 @@ export default function App() {
           ads={ads}          setAds={setAds}
           mapsKey={mapsKey}  setMapsKey={setMapsKey}
           hafasKey={hafasKey} setHafasKey={setHafasKey}
+          spatialAudio={spatialAudio} setSpatialAudio={setSpatialAudio}
           onRefresh={loadData} apiLive={apiLive} isMock={isMock} gpsPos={gpsPos}/>}
       </div>
       <NavBar tab={tab} setTab={setTab}/>

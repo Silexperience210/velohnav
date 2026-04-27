@@ -9,6 +9,7 @@ import { usePredictiveRouting } from "../hooks/usePredictiveRouting.js";
 import { useGhostTrail } from "../hooks/useGhostTrail.js";
 import { useObstacles } from "../hooks/useObstacles.js";
 import { useMultimodalSwitch } from "../hooks/useMultimodalSwitch.js";
+import { useSpatialAudio } from "../hooks/useSpatialAudio.js";
 import { launchNativeArNav } from "../utils.js";
 
 
@@ -67,7 +68,7 @@ async function payLnAddress(lnAddress, satsAmount, comment="VelohNav trajet") {
 // ── AR SCREEN ─────────────────────────────────────────────────────
 
 
-function ARScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey="", fischerVisible=false, weather=null, transitStops=[], transitDepartures={} }) {
+function ARScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey="", fischerVisible=false, weather=null, transitStops=[], transitDepartures={}, spatialAudio=false }) {
   const vidRef=useRef(null);
   const [cam,   setCam]  =useState("idle");
   const [pulse, setPulse]=useState(false);
@@ -175,6 +176,15 @@ function ARScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey=""
       setSel(pivotStation.id);
     });
   }, [mmAccept, setSel]);
+
+  // ── Spatial Audio HRTF — guidage vocal 3D ────────────────────────
+  // Activé uniquement si le toggle Settings est ON ET nav active.
+  // Le hook calcule lui-même le waypoint courant et déclenche les annonces
+  // aux seuils de distance (200m, 100m, 50m, 20m).
+  useSpatialAudio({
+    enabled: spatialAudio && navMode !== null,
+    gpsPos, heading, route,
+  });
 
   // Auto-démarrer la nav si l'utilisateur vient de taper AR VÉLO/PIED depuis MAP
   useEffect(()=>{
@@ -353,6 +363,7 @@ function ARScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey=""
           key={`${navStation?.id}-${navMode}`}
           route={route} gpsPos={gpsPos} heading={heading}
           mode={navMode} onClose={stopNav} weather={weather}
+          spatialAudio={spatialAudio}
         />
       )}
       {/* Chargement itinéraire */}
