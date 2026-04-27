@@ -53,11 +53,6 @@ function generateEphemeralKey() {
 function bytesToHex(bytes) {
   return Array.from(bytes).map(b => b.toString(16).padStart(2, "0")).join("");
 }
-function hexToBytes(hex) {
-  const out = new Uint8Array(hex.length / 2);
-  for (let i = 0; i < out.length; i++) out[i] = parseInt(hex.substr(i*2, 2), 16);
-  return out;
-}
 
 // ── Construction event Nostr (signé Schnorr BIP-340) ──────────────
 // Format NIP-01 : event_id = sha256(canonical_serialization), sig = Schnorr.
@@ -106,11 +101,14 @@ function parseObstacle(evt) {
 
 // ── Pool de connexions WebSocket multi-relay ──────────────────────
 // Stratégie minimaliste : 1 WS par relay, message broadcasté vers tous.
+// La Map `seen` est au niveau du pool (singleton) pour persister entre
+// unmount/remount du hook (ex: user désactive puis réactive la caméra).
 class NostrPool {
   constructor(relays = DEFAULT_RELAYS) {
     this.relays = relays;
     this.sockets = new Map();         // url → WebSocket
     this.subscribers = new Set();     // listeners pour events reçus
+    this.seen = new Map();            // event_id → obstacle (dedup persisté)
     this.subId = "velohnav-obs-" + Math.random().toString(36).slice(2, 10);
   }
 
@@ -136,7 +134,10 @@ class NostrPool {
           const msg = JSON.parse(e.data);
           if (msg[0] === "EVENT" && msg[1] === this.subId && msg[2]) {
             const obs = parseObstacle(msg[2]);
-            if (obs) this.subscribers.forEach(cb => cb(obs));
+            if (obs && !this.seen.has(obs.id)) {
+              this.seen.set(obs.id, obs);
+              this.subscribers.forEach(cb => cb(obs, this.allObstacles()));
+            }
           }
         } catch {}
       };
@@ -150,6 +151,30 @@ class NostrPool {
     } catch {}
   }
 
+  /** Retourne la liste de tous les obstacles vus, en élaguant ceux qui ont expiré. */
+  allObstacles() {
+    const now = Date.now();
+    const fresh = [];
+    for (const [id, o] of this.seen) {
+      if (now - o.createdAt > DECAY_MS) {
+        this.seen.delete(id);
+      } else {
+        fresh.push(o);
+      }
+    }
+    return fresh;
+  }
+
+  subscribe(cb) {
+    this.subscribers.add(cb);
+    // Notify immediately of all known obstacles to avoid losing history on remount
+    if (this.seen.size > 0) {
+      // Async pour ne pas bloquer la subscription
+      Promise.resolve().then(() => cb(null, this.allObstacles()));
+    }
+    return () => this.subscribers.delete(cb);
+  }
+
   publish(evt) {
     const msg = JSON.stringify(["EVENT", evt]);
     let sent = 0;
@@ -160,8 +185,6 @@ class NostrPool {
     });
     return sent;
   }
-
-  subscribe(cb) { this.subscribers.add(cb); return () => this.subscribers.delete(cb); }
 
   close() {
     this.sockets.forEach(ws => {
@@ -188,15 +211,13 @@ export function useObstacles(gpsPos, { enabled = true, relays = DEFAULT_RELAYS }
   const keyRef = useRef(null);
   if (!keyRef.current) keyRef.current = generateEphemeralKey();
 
-  // Subscription au pool
+  // Subscription au pool — reçoit (latest, fullList) à chaque event ou au mount
   useEffect(() => {
     if (!enabled) return;
     const pool = getPool();
-    const seen = new Map();  // id → obstacle (dedup)
-    const unsub = pool.subscribe((obs) => {
-      seen.set(obs.id, obs);
-      // Refresh list filtré par gps proximité
-      setObstacles(Array.from(seen.values()));
+    const unsub = pool.subscribe((latest, fullList) => {
+      // fullList est garanti par le pool — utilisé pour bootstrapper après remount
+      setObstacles(fullList);
     });
     return () => unsub();
   }, [enabled]);

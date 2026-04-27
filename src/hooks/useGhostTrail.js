@@ -114,10 +114,12 @@ export function useGhostTrail({ gpsPos, navStation, originStation, navMode, acti
   const [ghostData, setGhostData]   = useState(null);  // best run loaded from IDB
   const [ghostPos,  setGhostPos]    = useState(null);  // current ghost position
   const [currentDelta, setDelta]    = useState(0);     // seconds vs best
-  // Recording state
+  // started est un state (pas ref) pour déclencher le useEffect d'animation
+  // dès qu'on commence à enregistrer (sinon il faut attendre un changement GPS).
+  const [recordingActive, setRecordingActive] = useState(false);
+  // Recording state — refs car pas besoin de re-render sur chaque update
   const recordingRef = useRef([]);
   const startTimeRef = useRef(0);
-  const startedRef   = useRef(false);
 
   const originId = originStation?.id;
   const destId   = navStation?.id;
@@ -139,7 +141,7 @@ export function useGhostTrail({ gpsPos, navStation, originStation, navMode, acti
   useEffect(() => {
     if (!active || !gpsPos) {
       // Si on était en train d'enregistrer et qu'on coupe, on sauve le run
-      if (startedRef.current && recordingRef.current.length >= 5 && originId && destId && navMode) {
+      if (recordingActive && recordingRef.current.length >= 5 && originId && destId && navMode) {
         const last = recordingRef.current[recordingRef.current.length - 1];
         // Vérifie qu'on a bien atteint la zone de destination
         if (navStation && haversine(last.lat, last.lng, navStation.lat, navStation.lng) < ENDPOINT_RADIUS) {
@@ -147,18 +149,18 @@ export function useGhostTrail({ gpsPos, navStation, originStation, navMode, acti
         }
       }
       recordingRef.current = [];
-      startedRef.current = false;
+      if (recordingActive) setRecordingActive(false);
       return;
     }
     // Init le recording quand la nav démarre vraiment (user proche du départ)
-    if (!startedRef.current && originStation &&
+    if (!recordingActive && originStation &&
         haversine(gpsPos.lat, gpsPos.lng, originStation.lat, originStation.lng) < ENDPOINT_RADIUS) {
-      startedRef.current = true;
       startTimeRef.current = Date.now();
       recordingRef.current = [{ lat: gpsPos.lat, lng: gpsPos.lng, t: 0 }];
+      setRecordingActive(true);
       return;
     }
-    if (!startedRef.current) return;
+    if (!recordingActive) return;
     // Append point si distance >= MIN_RECORD_DIST
     const last = recordingRef.current[recordingRef.current.length - 1];
     const d = haversine(last.lat, last.lng, gpsPos.lat, gpsPos.lng);
@@ -168,11 +170,17 @@ export function useGhostTrail({ gpsPos, navStation, originStation, navMode, acti
         t: Date.now() - startTimeRef.current,
       });
     }
-  }, [active, gpsPos?.lat, gpsPos?.lng, originId, destId, navMode]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active, gpsPos?.lat, gpsPos?.lng, originId, destId, navMode, recordingActive]);
 
   // Tick d'animation pour faire avancer le fantôme à 5 fps
+  // setInterval déclenché UNE fois à l'init du ghost, pas à chaque update GPS
+  // (lit gpsPos courant via une ref pour rester à jour sans recréer l'interval)
+  const gpsPosRef = useRef(gpsPos);
+  useEffect(() => { gpsPosRef.current = gpsPos; }, [gpsPos]);
+
   useEffect(() => {
-    if (!active || !ghostData || !startedRef.current) {
+    if (!active || !ghostData || !recordingActive) {
       setGhostPos(null);
       return;
     }
@@ -180,13 +188,14 @@ export function useGhostTrail({ gpsPos, navStation, originStation, navMode, acti
       const elapsed = Date.now() - startTimeRef.current;
       const pos = interpolateGhost(ghostData.points, elapsed);
       setGhostPos(pos);
+      const cur = gpsPosRef.current;
       // Calcul du delta : où en serait le ghost vs où on est
-      if (pos && gpsPos) {
+      if (pos && cur) {
         // Trouve le point du ghost le plus proche de la position user
         let bestIdx = 0, bestDist = Infinity;
         for (let i = 0; i < ghostData.points.length; i++) {
           const p = ghostData.points[i];
-          const dd = haversine(p.lat, p.lng, gpsPos.lat, gpsPos.lng);
+          const dd = haversine(p.lat, p.lng, cur.lat, cur.lng);
           if (dd < bestDist) { bestDist = dd; bestIdx = i; }
         }
         // Le user est à ce point au temps `elapsed`. Le ghost l'était à `points[bestIdx].t`.
@@ -196,8 +205,7 @@ export function useGhostTrail({ gpsPos, navStation, originStation, navMode, acti
       }
     }, 200);  // 5 fps suffisant pour un fantôme
     return () => clearInterval(interval);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active, ghostData?.key, gpsPos?.lat, gpsPos?.lng]);
+  }, [active, ghostData, recordingActive]);
 
   return {
     ghostPos,                          // {lat,lng,finished} | null

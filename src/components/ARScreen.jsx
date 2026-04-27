@@ -129,10 +129,15 @@ function ARScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey=""
   // ── Long-press → menu de signalement obstacle ─────────────────────
   const [reportMenuOpen, setReportMenuOpen] = useState(false);
   const lpTimerRef = useRef(null);
+  // Refs pour éviter de recréer le callback à chaque tick GPS
+  const camRef = useRef(cam);
+  const gpsPosRef = useRef(gpsPos);
+  useEffect(() => { camRef.current = cam; }, [cam]);
+  useEffect(() => { gpsPosRef.current = gpsPos; }, [gpsPos]);
   const handleLongPressStart = useCallback(() => {
-    if (cam !== "active" || !gpsPos) return;
+    if (camRef.current !== "active" || !gpsPosRef.current) return;
     lpTimerRef.current = setTimeout(() => setReportMenuOpen(true), 700);
-  }, [cam, gpsPos]);
+  }, []);
   const handleLongPressEnd = useCallback(() => {
     if (lpTimerRef.current) { clearTimeout(lpTimerRef.current); lpTimerRef.current = null; }
   }, []);
@@ -150,16 +155,11 @@ function ARScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey=""
     });
 
   // Switch sur la station alternative — relance la nav vers la nouvelle dest
+  // navMode est conservé (cycling/walking) — useRoute recalculera automatiquement
+  // avec la nouvelle navStation dès que sel est propagé.
   const acceptPredictiveSwitch = useCallback(() => {
     predAccept((newStation) => {
       setSel(newStation.id);
-      // Relance la nav avec la nouvelle station — le useEffect du
-      // pendingNavMode dans ARScreen + useRoute s'occupent du reste.
-      // Petit délai pour que sel soit propagé et navStation à jour
-      setTimeout(() => {
-        // navMode est conservé (cycling/walking) — useRoute recalculera
-        // automatiquement avec la nouvelle navStation.
-      }, 100);
     });
   }, [predAccept, setSel]);
 

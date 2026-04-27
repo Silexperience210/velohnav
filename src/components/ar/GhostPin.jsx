@@ -2,8 +2,7 @@
 // Projette la position fantôme calculée par useGhostTrail sur le canvas AR.
 // Affiche un indicateur de delta (avance/retard) flottant + visuel "vélo
 // orange semi-transparent" qui suit le tracé du best run.
-import { C } from "../../constants.js";
-import { FOV } from "../../constants.js";
+import { C, FOV } from "../../constants.js";
 import { haversine, getBearing } from "../../utils.js";
 
 function GhostPin({ ghostPos, gpsPos, heading, currentDelta, hasGhost, bestTime }) {

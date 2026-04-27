@@ -27,15 +27,33 @@ const MIN_TRIP_LENGTH  = 1500;         // m — pas de switch si trajet court
 const COOLDOWN_MS      = 5 * 60_000;   // 5 min entre 2 suggestions
 
 /**
+ * Calcule les minutes restantes jusqu'à l'heure HH:MM (gère le passage à minuit).
+ * Retourne NaN si le format est invalide.
+ */
+function minutesUntilTime(timeStr) {
+  if (!timeStr || typeof timeStr !== "string") return NaN;
+  const parts = timeStr.split(":");
+  if (parts.length < 2) return NaN;
+  const h = parseInt(parts[0], 10);
+  const m = parseInt(parts[1], 10);
+  if (isNaN(h) || isNaN(m)) return NaN;
+  const now = new Date();
+  const targetMin = h * 60 + m;
+  const nowMin    = now.getHours() * 60 + now.getMinutes();
+  let diff = targetMin - nowMin;
+  // Si l'écart est négatif (≤ -2h), c'est probablement le lendemain
+  if (diff < -120) diff += 24 * 60;
+  return diff;
+}
+
+/**
  * Score un point de pivot — combinaison station vélo + arrêt bus proche.
- * On veut: station avec docks libres + arrêt bus < 200m + bus dans 2-12 min.
+ * On veut: station avec docks libres + arrêt bus < 200m + bus dans 2-15 min.
  */
 function scorePivot({ station, busStop, departure, distFromUser }) {
   if (!departure) return -Infinity;
-  const minutesToBus = parseInt(departure.time?.split(":")[0]) * 60 +
-                       parseInt(departure.time?.split(":")[1]) -
-                       (new Date().getHours() * 60 + new Date().getMinutes());
-  if (minutesToBus < 2 || minutesToBus > 15) return -Infinity;
+  const minutesToBus = minutesUntilTime(departure.rtTime || departure.time);
+  if (isNaN(minutesToBus) || minutesToBus < 2 || minutesToBus > 15) return -Infinity;
   if (departure.cancelled) return -Infinity;
 
   const stopDist = haversine(station.lat, station.lng, busStop.lat, busStop.lng);

@@ -192,8 +192,14 @@ export function useSpatialAudio({ enabled, gpsPos, heading, route }) {
     }
   }, []);
 
+  // Génération de version pour invalider les annonces obsolètes en flight.
+  // Si une nouvelle annonce démarre avant que le fetch de la précédente
+  // soit terminé, l'ancienne ne sera pas jouée.
+  const announceVersionRef = useRef(0);
+
   // ── Annonce vocale spatialisée ──────────────────────────────────────
   const announce = useCallback(async (text, relAngleDeg) => {
+    const myVersion = ++announceVersionRef.current;
     const ctx = await ensureCtx();
 
     // Position 3D selon angle relatif
@@ -224,6 +230,11 @@ export function useSpatialAudio({ enabled, gpsPos, heading, route }) {
 
     // Fetch TTS + decode → AudioBuffer
     const buffer = await fetchTTSBuffer(ctx, text);
+
+    // Si une annonce plus récente a été déclenchée pendant le fetch,
+    // on abandonne celle-ci (sa situation est probablement obsolète).
+    if (myVersion !== announceVersionRef.current) return;
+
     if (!buffer) {
       // Réseau down ou TTS rejette: SpeechSynthesis fallback (non-spatialisé
       // mais audible). Le user reste guidé même en zone sans data.

@@ -196,16 +196,15 @@ function RouteOverlay({ route, gpsPos, heading, mode, onClose, weather=null, spa
 
   // (tick déclaré plus haut — alimente le redraw à 30 fps)
 
-  if (!route) return null;
-
-  const nextWp   = route.waypoints[step];
+  // ── Calculs dérivés (avant early return — règle des hooks React) ──
+  const nextWp   = route?.waypoints?.[step];
   const distNext = nextWp && gpsPos
     ? haversine(gpsPos.lat, gpsPos.lng, nextWp.lat, nextWp.lng) : 0;
-  const arriving = distNext < 30 && step === route.waypoints.length - 1;
+  const arriving = route && distNext < 30 && step === (route.waypoints.length - 1);
   const modeIcon = mode === "walking" ? "🚶" : "🚲";
   const modeCol  = mode === "walking" ? "#A78BFA" : "#3B82F6";
 
-  // ── Wind-aware ETA ────────────────────────────────────────────
+  // ── Wind-aware ETA — DOIT être avant early return ──────────────
   // Calcule le bearing du segment en cours (depuis la position vers le
   // prochain waypoint) et applique le facteur d'impact vent sur l'ETA.
   // Pas applicable en mode walking (impact négligeable < 5 km/h).
@@ -216,6 +215,9 @@ function RouteOverlay({ route, gpsPos, heading, mode, onClose, weather=null, spa
     const bear = getBearing(gpsPos.lat, gpsPos.lng, nextWp.lat, nextWp.lng);
     return windImpact(bear, weather.windDir ?? 0, weather.wind ?? 0);
   }, [weather, mode, gpsPos?.lat, gpsPos?.lng, nextWp?.lat, nextWp?.lng]);
+
+  // Early return APRÈS tous les hooks
+  if (!route) return null;
 
   const correctedTime = Math.round(route.totalTime * wind.factor / 60);
   const baseTime      = Math.round(route.totalTime / 60);
