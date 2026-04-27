@@ -4,13 +4,19 @@
 // Récupéré en live via subscription WebSocket aux relays.
 //
 // Décay 24h : les obstacles disparaissent automatiquement passé ce délai
-// même sans suppression explicite (filtre côté client sur created_at).
+// même sans suppression explicite (filtre côté client sur created_at + tag
+// NIP-40 expiration).
 //
-// Implémentation : WebSocket natif, schnorr-sig optionnel via @noble/curves
-// (déjà disponible si tu installes la dep, sinon mode "anonyme non signé"
-// pour les relays publics qui acceptent — fallback gracieux).
+// Signature: Schnorr BIP-340 via @noble/secp256k1 — events validés par tous
+// les relays Nostr standards. Clé éphémère (32-byte privkey) générée à la
+// session, jamais persistée. L'identité du reporter est anonyme et non liée
+// à une vraie identité Nostr.
+//
+// Architecture: pool WebSocket multi-relay singleton, reconnect auto avec
+// backoff, dedup par event_id côté client.
 
 import { useState, useEffect, useRef, useCallback } from "react";
+import { schnorr } from "@noble/secp256k1";
 import { haversine } from "../utils.js";
 
 // Relays Nostr publics — à compléter selon préférence
@@ -36,32 +42,45 @@ export const OBSTACLE_TYPES = {
 // Pour signer les events sans exposer une vraie identité Nostr de l'user.
 // Session-only : nouvelle clé à chaque ouverture d'app.
 function generateEphemeralKey() {
-  // 32 bytes random — non-sécurité-critique (signalement public)
-  const bytes = new Uint8Array(32);
-  crypto.getRandomValues(bytes);
+  // Utilise l'API standard @noble: 32 bytes random + dérive la pubkey x-only
+  const sk = new Uint8Array(32);
+  crypto.getRandomValues(sk);
+  // schnorr.getPublicKey retourne 32 bytes (x-only, BIP-340)
+  const pk = schnorr.getPublicKey(sk);
+  return { sk, pk: bytesToHex(pk) };
+}
+
+function bytesToHex(bytes) {
   return Array.from(bytes).map(b => b.toString(16).padStart(2, "0")).join("");
 }
-
-// ── SHA-256 helper ────────────────────────────────────────────────
-async function sha256(text) {
-  const buf = new TextEncoder().encode(text);
-  const hash = await crypto.subtle.digest("SHA-256", buf);
-  return Array.from(new Uint8Array(hash)).map(b => b.toString(16).padStart(2, "0")).join("");
+function hexToBytes(hex) {
+  const out = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < out.length; i++) out[i] = parseInt(hex.substr(i*2, 2), 16);
+  return out;
 }
 
-// ── Construction event Nostr (non signé — signé côté pool si possible) ──
-// Format minimal NIP-01 — l'event_id est calculé via sha256 du tableau
-// canonique [0, pubkey, created_at, kind, tags, content]
-async function buildEvent({ pubkey, kind, content, tags }) {
+// ── Construction event Nostr (signé Schnorr BIP-340) ──────────────
+// Format NIP-01 : event_id = sha256(canonical_serialization), sig = Schnorr.
+// Compatible avec tous les relays publics standards.
+async function buildEvent({ secretKey, pubkeyHex, kind, content, tags }) {
   const created_at = Math.floor(Date.now() / 1000);
-  const evt = { pubkey, created_at, kind, tags, content };
-  const serialized = JSON.stringify([0, pubkey, created_at, kind, tags, content]);
-  evt.id = await sha256(serialized);
-  // Signature schnorr non implémentée ici — relays non-restricted accepteront
-  // l'event uniquement s'ils sont configurés laxistes. Pour prod : utiliser
-  // @noble/curves avec @noble/secp256k1 pour signer les events.
-  evt.sig = "0".repeat(128);  // placeholder — TODO signer en prod
-  return evt;
+  const serialized = JSON.stringify([0, pubkeyHex, created_at, kind, tags, content]);
+  // event_id = sha256 du serialized
+  const idBytes = new Uint8Array(
+    await crypto.subtle.digest("SHA-256", new TextEncoder().encode(serialized))
+  );
+  const id = bytesToHex(idBytes);
+  // Signature Schnorr BIP-340 — async (utilise crypto.subtle pour HMAC-SHA-256)
+  const sigBytes = await schnorr.signAsync(idBytes, secretKey);
+  return {
+    id,
+    pubkey: pubkeyHex,
+    created_at,
+    kind,
+    tags,
+    content,
+    sig: bytesToHex(sigBytes),
+  };
 }
 
 // ── Parsing d'event obstacle reçu ──────────────────────────────────
@@ -165,9 +184,9 @@ function getPool() {
 // ── Hook React ────────────────────────────────────────────────────
 export function useObstacles(gpsPos, { enabled = true, relays = DEFAULT_RELAYS } = {}) {
   const [obstacles, setObstacles] = useState([]);
-  // Clé éphémère (1 par session)
-  const pubkeyRef = useRef(null);
-  if (!pubkeyRef.current) pubkeyRef.current = generateEphemeralKey();
+  // Clé éphémère (1 par session) — { sk: Uint8Array, pk: hex string }
+  const keyRef = useRef(null);
+  if (!keyRef.current) keyRef.current = generateEphemeralKey();
 
   // Subscription au pool
   useEffect(() => {
@@ -197,7 +216,8 @@ export function useObstacles(gpsPos, { enabled = true, relays = DEFAULT_RELAYS }
     const content = JSON.stringify({ type, lat, lng, note });
     const dTag = `velohnav-obstacle-${Math.round(lat*1e4)}-${Math.round(lng*1e4)}-${Date.now()}`;
     const evt = await buildEvent({
-      pubkey: pubkeyRef.current,
+      secretKey: keyRef.current.sk,
+      pubkeyHex: keyRef.current.pk,
       kind: KIND_OBSTACLE,
       content,
       tags: [
