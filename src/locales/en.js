@@ -59,6 +59,13 @@ export default {
   "nav.arrived":           "ARRIVED!",
   "nav.continue":          "CONTINUE STRAIGHT",
   "nav.total":             "{dist} · {min} min total · step {step}/{total}",
+  "nav.wrong_way":         "WRONG WAY",
+  "nav.wrong_way_desc":    "Destination is behind you. Turn around.",
+  "nav.off_route":         "OFF ROUTE",
+  "nav.off_route_desc":    "You drifted off the path — auto-recalculating…",
+  "nav.recalculating":     "RECALCULATING ROUTE…",
+  "nav.recalc_btn":        "↻ RECALCULATE",
+  "nav.cam_lost":          "CAMERA STOPPED — tap to restart",
 
   // ── AI ─────────────────────────────────────────────────────────
   "ai.title":              "VELOH·AI",

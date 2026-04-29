@@ -5,10 +5,11 @@ import { useState, useEffect, useRef, useMemo } from "react";
 import { t } from "../../i18n.js";
 import { C } from "../../constants.js";
 import { haversine, fDist, getBearing } from "../../utils.js";
-import { projectPoint } from "./projection.js";
+import { projectPoint, detectWrongWay } from "./projection.js";
 import { windImpact } from "../../hooks/useWeather.js";
 
-function RouteOverlay({ route, gpsPos, heading, mode, onClose, weather=null, spatialAudio=false }) {
+function RouteOverlay({ route, gpsPos, heading, mode, onClose, weather=null, spatialAudio=false,
+                        offRoute=false, recalculating=false, manualRecalc=null }) {
   const cvRef = useRef();
   const [step, setStep] = useState(0); // index du prochain waypoint
 
@@ -53,9 +54,43 @@ function RouteOverlay({ route, gpsPos, heading, mode, onClose, weather=null, spa
     if (d < 25 && step < route.waypoints.length - 1) setStep(s=>s+1);
   },[gpsPos, route, step]);
 
+  // FIX BUG-1 : détection "destination derrière" — si l'utilisateur regarde dans
+  // le mauvais sens, on N'AFFICHE PAS le tracé canvas (qui partirait sur les
+  // bords de l'écran et donnerait l'illusion d'un virage). À la place, le rendu
+  // affiche un overlay "FAITES DEMI-TOUR" plein écran.
+  // On échantillonne les coords après le step courant pour que le ré-alignement
+  // suive bien la progression (ex : après le u-turn, plus de wrong way).
+  const wrongWay = useMemo(() => {
+    if (!route?.coords?.length || !gpsPos || heading === null) {
+      return { wrongWay: false, ratio: 0, sampleSize: 0 };
+    }
+    // Filtrer les coords en gardant celles devant nous dans le tracé.
+    // Approximation : on commence à partir du sommet le plus proche.
+    let nearestIdx = 0, nearestD = Infinity;
+    for (let i = 0; i < route.coords.length; i++) {
+      const d = haversine(gpsPos.lat, gpsPos.lng, route.coords[i].lat, route.coords[i].lng);
+      if (d < nearestD) { nearestD = d; nearestIdx = i; }
+    }
+    const ahead = route.coords.slice(nearestIdx);
+    return detectWrongWay(ahead, gpsPos, heading, 150);
+  }, [
+    route?.coords,
+    gpsPos ? Math.round(gpsPos.lat * 10000) : null,
+    gpsPos ? Math.round(gpsPos.lng * 10000) : null,
+    heading != null ? Math.round(heading / 5) : null, // re-eval tous les 5°
+  ]);
+
   // Canvas : dessine le tracé de la route projeté en AR
   useEffect(()=>{
     const cv = cvRef.current; if (!cv || !route || !gpsPos || heading === null) return;
+    // FIX BUG-1 : si on regarde dans le mauvais sens, on ne dessine pas le tracé
+    // (sinon il se replie aux bords et trompe l'utilisateur). L'overlay U-turn
+    // pleine page prend le relais.
+    if (wrongWay.wrongWay) {
+      const ctx0 = cv.getContext("2d");
+      ctx0.clearRect(0, 0, cv.width, cv.height);
+      return;
+    }
     const W = cv.offsetWidth || 360, H = cv.offsetHeight || 500;
     // Support DPI (rétine) pour un tracé net
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
@@ -192,7 +227,7 @@ function RouteOverlay({ route, gpsPos, heading, mode, onClose, weather=null, spa
       ctx.fillStyle = footGrad; ctx.fill();
     }
 
-  },[route, gpsPos, heading, mode, step, tick]);
+  },[route, gpsPos, heading, mode, step, tick, wrongWay.wrongWay]);
 
   // (tick déclaré plus haut — alimente le redraw à 30 fps)
 
@@ -329,6 +364,90 @@ function RouteOverlay({ route, gpsPos, heading, mode, onClose, weather=null, spa
           <div style={{ color:C.good, fontSize:18, fontFamily:C.fnt, fontWeight:700, letterSpacing:4, marginTop:8 }}>
             ARRIVÉE !
           </div>
+        </div>
+      )}
+
+      {/* FIX BUG-1 : Overlay "Mauvais sens" — affiché quand la majorité de la
+          polyline ahead est physiquement derrière la caméra. Plus utile qu'un
+          tracé tordu projeté sur les bords de l'écran. */}
+      {wrongWay.wrongWay && !arriving && (
+        <div style={{
+          position:"absolute", top:"38%", left:"50%",
+          transform:"translate(-50%,-50%)", zIndex:24, pointerEvents:"none",
+          background:"rgba(8,12,15,0.96)",
+          border:`3px solid ${C.warn}`,
+          borderRadius:16, padding:"22px 28px", textAlign:"center",
+          boxShadow:`0 0 50px ${C.warn}66`,
+          minWidth:260, maxWidth:320,
+          animation:"wrongWayPulse 1.4s ease-in-out infinite",
+        }}>
+          <style>{`
+            @keyframes wrongWayPulse {
+              0%,100% { transform: translate(-50%,-50%) scale(1);    box-shadow: 0 0 50px ${C.warn}66; }
+              50%     { transform: translate(-50%,-50%) scale(1.03); box-shadow: 0 0 70px ${C.warn}99; }
+            }
+            @keyframes wrongWayArrow {
+              0%,100% { transform: translateY(0)  rotate(180deg); }
+              50%     { transform: translateY(-6px) rotate(180deg); }
+            }
+          `}</style>
+          <div style={{
+            fontSize:48, lineHeight:1, marginBottom:8,
+            animation:"wrongWayArrow 1s ease-in-out infinite",
+            display:"inline-block",
+          }}>↑</div>
+          <div style={{
+            color:C.warn, fontSize:16, fontFamily:C.fnt, fontWeight:700,
+            letterSpacing:3, marginBottom:6,
+          }}>
+            {t("nav.wrong_way")}
+          </div>
+          <div style={{ color:"#fff", fontSize:10, fontFamily:C.fnt, lineHeight:1.6 }}>
+            {t("nav.wrong_way_desc")}
+          </div>
+        </div>
+      )}
+
+      {/* FIX BUG-3 : Bandeau off-route + bouton recalcul manuel.
+          Affiché en bas (au-dessus du panneau station) pour ne pas masquer la vue. */}
+      {(offRoute || recalculating) && !arriving && !wrongWay.wrongWay && (
+        <div style={{
+          position:"absolute", bottom:90, left:14, right:14,
+          zIndex:25,
+          background: recalculating
+            ? "linear-gradient(135deg, rgba(0,16,40,0.96), rgba(8,12,15,0.96))"
+            : "linear-gradient(135deg, rgba(40,12,0,0.96), rgba(8,12,15,0.96))",
+          border:`2px solid ${recalculating ? "#60A5FA" : C.warn}`,
+          borderRadius:10, padding:"10px 13px",
+          boxShadow:`0 4px 20px rgba(0,0,0,0.6)`,
+          display:"flex", alignItems:"center", gap:10,
+        }}>
+          <span style={{ fontSize:18 }}>{recalculating ? "🔄" : "⚠️"}</span>
+          <div style={{ flex:1, minWidth:0 }}>
+            <div style={{
+              color: recalculating ? "#60A5FA" : C.warn,
+              fontSize:9, fontFamily:C.fnt, fontWeight:700, letterSpacing:1.5,
+            }}>
+              {recalculating ? t("nav.recalculating") : t("nav.off_route")}
+            </div>
+            {!recalculating && (
+              <div style={{ color:C.muted, fontSize:8, fontFamily:C.fnt, marginTop:1 }}>
+                {t("nav.off_route_desc")}
+              </div>
+            )}
+          </div>
+          {!recalculating && manualRecalc && (
+            <div onPointerDown={manualRecalc}
+              style={{
+                padding:"6px 10px",
+                background:`${C.warn}22`, border:`1px solid ${C.warn}`,
+                borderRadius:5, cursor:"pointer", whiteSpace:"nowrap",
+              }}>
+              <span style={{ color:C.warn, fontSize:8, fontFamily:C.fnt, fontWeight:700, letterSpacing:1 }}>
+                {t("nav.recalc_btn")}
+              </span>
+            </div>
+          )}
         </div>
       )}
     </>

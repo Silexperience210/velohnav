@@ -60,6 +60,13 @@ export default {
   "nav.arrived":           "ARRIVÉE !",
   "nav.continue":          "CONTINUEZ TOUT DROIT",
   "nav.total":             "{dist} · {min} min total · étape {step}/{total}",
+  "nav.wrong_way":         "MAUVAIS SENS",
+  "nav.wrong_way_desc":    "La destination est derrière toi. Fais demi-tour.",
+  "nav.off_route":         "HORS ITINÉRAIRE",
+  "nav.off_route_desc":    "Tu t'es écarté du tracé — recalcul automatique…",
+  "nav.recalculating":     "RECALCUL ITINÉRAIRE…",
+  "nav.recalc_btn":        "↻ RECALCULER",
+  "nav.cam_lost":          "CAMÉRA ARRÊTÉE — appuie pour relancer",
 
   // ── AI ─────────────────────────────────────────────────────────
   "ai.title":              "VELOH·AI",

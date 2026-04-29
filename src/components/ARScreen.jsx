@@ -79,7 +79,8 @@ function ARScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey=""
   const [navMode, setNavMode] = useState(null);   // null | "cycling" | "walking"
   const navStation = stations.find(s=>s.id===sel);
   // mapsKey reçu en prop depuis Root (réactif si l'utilisateur le change dans Settings)
-  const { route, loading: routeLoading, error: routeError } =
+  const { route, loading: routeLoading, error: routeError,
+          offRoute, recalculating, manualRecalc } =
     useRoute(gpsPos, navMode ? navStation : null, navMode||"cycling", mapsKey);
 
   const startNav = useCallback(async(mode)=>{
@@ -211,22 +212,112 @@ function ARScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey=""
   },[]);
 
   // ── Activation unique : caméra + boussole dans le même geste ──
+  // FIX BUG-2 : ajout de listeners robustes sur le track vidéo + lifecycle
+  // pour relancer automatiquement si le stream se termine (autre app prend
+  // la caméra, OS le tue, retour foreground après mise en arrière-plan).
+  const camRestartingRef = useRef(false);
   const startAR=useCallback(async()=>{
+    if (camRestartingRef.current) return;
+    camRestartingRef.current = true;
     setCam("requesting");
     // Boussole en premier (iOS 13 : requestPermission doit être dans le geste)
     await startCompass();
     // Puis caméra
     try{
-      const stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:"environment"}});
-      if(vidRef.current){vidRef.current.srcObject=stream; await vidRef.current.play();}
+      // Couper l'ancien stream si présent (au cas où on relance)
+      const oldStream = vidRef.current?.srcObject;
+      if (oldStream) {
+        try { oldStream.getTracks().forEach(t=>t.stop()); } catch {}
+      }
+      const stream = await navigator.mediaDevices.getUserMedia({video:{facingMode:"environment"}});
+      // FIX BUG-2 : si un track se termine, on bascule en état "lost" pour que
+      // le useEffect watchdog le détecte et relance. On ne peut PAS appeler
+      // startAR direct ici (risque de double mount sur les unmount cleanup).
+      stream.getVideoTracks().forEach(t => {
+        t.onended = () => {
+          console.warn("[AR Cam] Video track ended unexpectedly");
+          setCam(c => c === "active" ? "lost" : c);
+        };
+      });
+      if(vidRef.current){
+        vidRef.current.srcObject = stream;
+        try { await vidRef.current.play(); } catch(e) { console.warn("[AR Cam] play() rejected:", e); }
+      }
       setCam("active");
-    }catch(e){console.warn("Cam:",e);setCam("denied");}
+    }catch(e){
+      console.warn("Cam:",e);
+      setCam("denied");
+    } finally {
+      camRestartingRef.current = false;
+    }
   },[startCompass]);
 
+  // Cleanup au démontage uniquement
   useEffect(()=>{
-    const vid=vidRef.current;
-    return()=>{vid?.srcObject?.getTracks().forEach(t=>t.stop());};
+    const vid = vidRef.current;
+    return ()=>{
+      try { vid?.srcObject?.getTracks().forEach(t=>t.stop()); } catch {}
+    };
   },[]);
+
+  // FIX BUG-2 : Watchdog — relance la caméra si :
+  //   - on revient au foreground et la caméra est en état "active" mais en pause
+  //   - le track a été perdu (onended → cam="lost")
+  //   - readyState devient < 2 alors qu'on est censé être actif
+  useEffect(() => {
+    if (cam === "lost") {
+      // Délai 300ms pour éviter une boucle infernale si le hardware refuse
+      const t = setTimeout(() => startAR(), 300);
+      return () => clearTimeout(t);
+    }
+  }, [cam, startAR]);
+
+  useEffect(() => {
+    const onVis = () => {
+      if (document.visibilityState !== "visible") return;
+      if (cam !== "active") return;
+      const vid = vidRef.current;
+      // Relancer si le stream est mort, paused, ou readyState insuffisant
+      const broken = !vid?.srcObject ||
+                     vid.paused ||
+                     vid.readyState < 2 ||
+                     !vid.srcObject.active ||
+                     vid.srcObject.getVideoTracks().some(t => t.readyState === "ended");
+      if (broken) {
+        console.warn("[AR Cam] Watchdog visibility: stream broken, restarting");
+        setCam("lost");
+      } else {
+        // Stream OK mais vidéo en pause (cas Android après lock screen)
+        try { vid.play(); } catch {}
+      }
+    };
+    document.addEventListener("visibilitychange", onVis);
+    window.addEventListener("focus", onVis);
+    return () => {
+      document.removeEventListener("visibilitychange", onVis);
+      window.removeEventListener("focus", onVis);
+    };
+  }, [cam]);
+
+  // Ping périodique : 1× / 5s, vérifie que la vidéo joue effectivement.
+  // Couvre les cas où ni onended ni visibilitychange ne se déclenchent
+  // (ex : caméra qui freeze sans erreur — frames en cache mais plus de capture).
+  useEffect(() => {
+    if (cam !== "active") return;
+    const id = setInterval(() => {
+      const vid = vidRef.current;
+      if (!vid) return;
+      const stream = vid.srcObject;
+      if (!stream) { setCam("lost"); return; }
+      const tracks = stream.getVideoTracks?.() ?? [];
+      const allEnded = tracks.length > 0 && tracks.every(t => t.readyState === "ended");
+      if (allEnded || !stream.active) {
+        console.warn("[AR Cam] Watchdog ping: stream inactive");
+        setCam("lost");
+      }
+    }, 5000);
+    return () => clearInterval(id);
+  }, [cam]);
 
   // ── Projection AR réelle ───────────────────────────────────────
   const arPins=useMemo(()=>{
@@ -364,6 +455,8 @@ function ARScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey=""
           route={route} gpsPos={gpsPos} heading={heading}
           mode={navMode} onClose={stopNav} weather={weather}
           spatialAudio={spatialAudio}
+          offRoute={offRoute} recalculating={recalculating}
+          manualRecalc={manualRecalc}
         />
       )}
       {/* Chargement itinéraire */}
@@ -450,6 +543,22 @@ function ARScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey=""
                 background:"rgba(224,62,62,0.1)",border:`1px solid ${C.bad}`,color:C.bad,
                 borderRadius:4,padding:"8px 20px",fontSize:9,fontFamily:C.fnt,
                 cursor:"pointer",marginTop:12}}>{t("ar.retry")}</button>
+            </div>
+          )}
+          {/* FIX BUG-2 : état "lost" — la caméra a été coupée par l'OS / une autre
+              app / le lifecycle. Le watchdog tente déjà un restart automatique,
+              mais on offre un bouton manuel au cas où ça boucle. */}
+          {cam==="lost"&&(
+            <div style={{textAlign:"center",padding:"0 32px"}}>
+              <div style={{color:C.warn,fontSize:11,fontFamily:C.fnt,marginBottom:8,letterSpacing:1.5}}>
+                {t("nav.cam_lost")}
+              </div>
+              <button onPointerDown={startAR} style={{
+                background:C.accentBg,border:`1px solid ${C.accent}`,color:C.accent,
+                borderRadius:4,padding:"10px 24px",fontSize:10,fontFamily:C.fnt,
+                fontWeight:700,letterSpacing:2,cursor:"pointer",marginTop:8}}>
+                {t("ar.retry")}
+              </button>
             </div>
           )}
         </div>

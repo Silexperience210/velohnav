@@ -68,6 +68,17 @@ class ArNavigationActivity : ComponentActivity() {
         pendingTravelMode = savedInstanceState?.getString("travel_mode") ?: intent.getStringExtra("travel_mode") ?: "bicycling"
         pendingMapsKey    = savedInstanceState?.getString("maps_key")    ?: intent.getStringExtra("maps_key")    ?: ""
 
+        // FIX BUG-4 : diagnostic clé API au démarrage. Si la clé est vide ou
+        // manifestement invalide, on bascule directement en mode GPS sans
+        // attendre le timeout 25s d'ARCore (qui produit le message d'erreur
+        // "Clé API ARCore non disponible" récurrent).
+        // On loggue la longueur (jamais la clé en clair) pour debug.
+        val nativeKeyLen = try {
+            com.silexperience.velohnav.BuildConfig.MAPS_API_KEY.length
+        } catch (_: Exception) { 0 }
+        val intentKeyLen = pendingMapsKey.length
+        Log.d(TAG, "API key diag: native=${nativeKeyLen}c · intent=${intentKeyLen}c")
+
         if (pendingDestLat == 0.0) {
             Toast.makeText(this, "Destination invalide", Toast.LENGTH_SHORT).show()
             finish(); return

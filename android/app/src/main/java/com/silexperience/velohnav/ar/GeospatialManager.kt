@@ -62,7 +62,9 @@ class GeospatialManager {
                     Earth.EarthState.ERROR_INTERNAL ->
                         "Erreur interne ARCore — redémarrer l'app"
                     Earth.EarthState.ERROR_NOT_AUTHORIZED ->
-                        "Clé API non autorisée — activer ARCore API dans Google Cloud Console"
+                        "Clé API ARCore non autorisée — bascule en mode GPS. " +
+                        "Pour activer ARCore Geospatial : Google Cloud Console → " +
+                        "API ARCore activée + restriction Android (package + SHA-1)"
                     Earth.EarthState.ERROR_RESOURCE_EXHAUSTED ->
                         "Quota Geospatial dépassé — patienter ou augmenter quota GCP"
                     Earth.EarthState.ERROR_GEOSPATIAL_MODE_DISABLED ->
