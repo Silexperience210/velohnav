@@ -12,8 +12,8 @@ android {
         applicationId "com.silexperience.velohnav"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 31
-        versionName "3.1.0"
+        versionCode 32
+        versionName "3.1.1"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
 
         def mapsKey = project.findProperty("MAPS_API_KEY") ?: ""

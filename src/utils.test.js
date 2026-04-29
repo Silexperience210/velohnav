@@ -428,3 +428,105 @@ describe('nearestStop', () => {
     expect(s.distM).toBeLessThan(5000);
   });
 });
+
+// ── projection AR (BUG-1 fix) ─────────────────────────────────────
+import { projectPoint, detectWrongWay, distanceToRoute } from './components/ar/projection.js';
+
+describe('projectPoint (BUG-1: pas de projection des points derrière)', () => {
+  // Helper : place un point à `dist` mètres dans la direction `bearingDeg`
+  // depuis (lat0, lng0). Approximation plate suffisante pour les tests.
+  const at = (lat0, lng0, bearingDeg, distM) => {
+    const ang = bearingDeg * Math.PI / 180;
+    const dLat = (distM * Math.cos(ang)) / 111111;
+    const dLng = (distM * Math.sin(ang)) / (111111 * Math.cos(lat0 * Math.PI / 180));
+    return { lat: lat0 + dLat, lng: lng0 + dLng };
+  };
+
+  it('projette un point devant (cap N, point au N) au centre', () => {
+    const p = at(49.6, 6.13, 0, 200);
+    const r = projectPoint(49.6, 6.13, 0, p.lat, p.lng, 360, 640);
+    expect(r).not.toBeNull();
+    expect(r.inFov).toBe(true);
+    expect(Math.abs(r.x - 180)).toBeLessThan(5); // centré
+  });
+
+  it('retourne null pour un point derrière (cap N, point au S) — fix BUG-1', () => {
+    const p = at(49.6, 6.13, 180, 200);
+    const r = projectPoint(49.6, 6.13, 0, p.lat, p.lng, 360, 640);
+    expect(r).toBeNull();
+  });
+
+  it('retourne null pour un point à >90° même avec clamp=true', () => {
+    const p = at(49.6, 6.13, 100, 200); // 100° = 10° derrière le E
+    const r = projectPoint(49.6, 6.13, 0, p.lat, p.lng, 360, 640, true);
+    expect(r).toBeNull();
+  });
+
+  it('clamp les points latéraux (>FOV mais <90°) DANS l\'écran', () => {
+    const p = at(49.6, 6.13, 70, 200); // 70° = hors FOV, dans la zone clamp
+    const r = projectPoint(49.6, 6.13, 0, p.lat, p.lng, 360, 640, true);
+    expect(r).not.toBeNull();
+    expect(r.behind).toBe(true);
+    expect(r.x).toBeGreaterThanOrEqual(0);
+    expect(r.x).toBeLessThanOrEqual(360); // jamais hors écran
+  });
+
+  it('point au-delà de PROJ_MAX_DIST (>500m) → null', () => {
+    const p = at(49.6, 6.13, 0, 800);
+    const r = projectPoint(49.6, 6.13, 0, p.lat, p.lng, 360, 640);
+    expect(r).toBeNull();
+  });
+});
+
+describe('detectWrongWay (BUG-1: détection mauvais sens)', () => {
+  it('détecte route au S quand l\'utilisateur regarde au N', () => {
+    const route = [
+      { lat: 49.598, lng: 6.13 }, { lat: 49.595, lng: 6.13 }, { lat: 49.59, lng: 6.13 }
+    ];
+    const r = detectWrongWay(route, { lat: 49.6, lng: 6.13 }, 0, 200);
+    expect(r.wrongWay).toBe(true);
+    expect(r.ratio).toBeGreaterThanOrEqual(0.6);
+  });
+
+  it('ne déclenche PAS si l\'utilisateur regarde dans la bonne direction', () => {
+    const route = [
+      { lat: 49.598, lng: 6.13 }, { lat: 49.595, lng: 6.13 }, { lat: 49.59, lng: 6.13 }
+    ];
+    const r = detectWrongWay(route, { lat: 49.6, lng: 6.13 }, 180, 200);
+    expect(r.wrongWay).toBe(false);
+  });
+
+  it('retourne wrongWay=false sur entrée vide', () => {
+    const r = detectWrongWay([], { lat: 49.6, lng: 6.13 }, 0);
+    expect(r.wrongWay).toBe(false);
+    expect(r.sampleSize).toBe(0);
+  });
+
+  it('retourne wrongWay=false si heading null', () => {
+    const r = detectWrongWay([{ lat: 49.59, lng: 6.13 }], { lat: 49.6, lng: 6.13 }, null);
+    expect(r.wrongWay).toBe(false);
+  });
+});
+
+describe('distanceToRoute (BUG-3: détection off-route)', () => {
+  const route = [
+    { lat: 49.600, lng: 6.130 },
+    { lat: 49.601, lng: 6.131 },
+    { lat: 49.602, lng: 6.132 },
+  ];
+
+  it('proche de la polyline → faible distance', () => {
+    const d = distanceToRoute(route, 49.6005, 6.1305);
+    expect(d).toBeLessThan(100);
+  });
+
+  it('loin de la polyline → grande distance', () => {
+    const d = distanceToRoute(route, 49.610, 6.140);
+    expect(d).toBeGreaterThan(500);
+  });
+
+  it('polyline vide → Infinity', () => {
+    expect(distanceToRoute([], 49.6, 6.13)).toBe(Infinity);
+    expect(distanceToRoute(null, 49.6, 6.13)).toBe(Infinity);
+  });
+});

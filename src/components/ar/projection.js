@@ -41,10 +41,10 @@ export function projectPoint(fromLat, fromLng, heading, toLat, toLng, W, H, clam
   if (!inFov && !clamp) return null;
 
   // Clamp horizontal aux bords du FOV pour les points proches mais hors champ.
-  // Limite à ±60° de relBear → x reste dans une zone raisonnable proche des bords
-  // (au lieu de partir hors écran comme avant).
-  const CLAMP_DEG = 60;
-  const clamped = Math.max(-CLAMP_DEG, Math.min(CLAMP_DEG, relBear));
+  // On limite à ±PROJ_FOV_H : ainsi x reste strictement dans [0, W].
+  // (Les points entre FOV et 90° sont "collés" au bord d'écran — c'est la
+  // bonne UX : indique la direction sans laisser le tracé sortir de l'écran.)
+  const clamped = Math.max(-PROJ_FOV_H, Math.min(PROJ_FOV_H, relBear));
   const x = W / 2 + (clamped / PROJ_FOV_H) * (W / 2);
 
   // Proche = bas de l'écran (y grand), lointain = horizon (~30% du haut).
