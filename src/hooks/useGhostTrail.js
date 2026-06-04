@@ -17,7 +17,7 @@ import { haversine } from "../utils.js";
 
 const DB_NAME    = "velohnav";
 const STORE      = "ghosts";
-const DB_VERSION = 2;  // bumped pour ajouter le store ghosts
+const DB_VERSION = 3;  // aligné avec useStationsCache (store routes ajouté)
 // Distance min entre 2 points enregistrés (anti-spam GPS)
 const MIN_RECORD_DIST = 8;
 // Distance max entre point et station pour être considéré comme "départ" / "arrivée"

@@ -5,6 +5,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { haversine } from "../utils.js";
 import { distanceToRoute } from "../components/ar/projection.js";
+import { saveRoute, loadRoute } from "./useStationsCache.js";
 
 const OSRM_BASE = "https://router.project-osrm.org/route/v1";
 const CACHE_TTL = 30 * 60 * 1000;          // 30min (avant 24h — trop long si circulation change)
@@ -14,21 +15,9 @@ const OFF_ROUTE_HOLD_MS      = 4000;        // ms — combien de temps on doit r
 const REROUTE_COOLDOWN_MS    = 8000;        // ms — délai mini entre deux re-routes
 const ON_ROUTE_REFETCH_M     = 60;          // m — déplacement mini pour refresh "calme" (sur la route)
 
-// ── Cache localStorage ────────────────────────────────────────────
+// ── Cache IndexedDB ──────────────────────────────────────────────
 function cacheKey(fLat, fLng, tLat, tLng, mode) {
-  return `velohnav_route_${fLat.toFixed(4)}_${fLng.toFixed(4)}_${tLat.toFixed(4)}_${tLng.toFixed(4)}_${mode}`;
-}
-function getCache(key) {
-  try {
-    const raw = localStorage.getItem(key);
-    if (!raw) return null;
-    const { data, ts } = JSON.parse(raw);
-    if (Date.now() - ts > CACHE_TTL) { localStorage.removeItem(key); return null; }
-    return data;
-  } catch { return null; }
-}
-function setCache(key, data) {
-  try { localStorage.setItem(key, JSON.stringify({ data, ts: Date.now() })); } catch {}
+  return `${fLat.toFixed(4)}_${fLng.toFixed(4)}_${tLat.toFixed(4)}_${tLng.toFixed(4)}_${mode}`;
 }
 
 // ── Décodeur polyline Google ──────────────────────────────────────
@@ -51,7 +40,7 @@ export async function fetchOSRM(fromLat, fromLng, toLat, toLng, mode = "cycling"
   const profile = mode === "walking" ? "foot" : mode === "driving" ? "car" : "cycling";
   const key = cacheKey(fromLat, fromLng, toLat, toLng, mode);
   if (!skipCache) {
-    const cached = getCache(key);
+    const cached = await loadRoute(key, CACHE_TTL);
     if (cached) return cached;
   }
   const url = `${OSRM_BASE}/${profile}/${fromLng},${fromLat};${toLng},${toLat}?overview=full&geometries=geojson&steps=true`;
@@ -73,11 +62,11 @@ export async function fetchOSRM(fromLat, fromLng, toLat, toLng, mode = "cycling"
       totalTime: Math.round(data.routes[0].duration),
       computedAt: Date.now(),
     };
-    setCache(key, result);
+    saveRoute(key, result).catch(() => {});
     return result;
   } catch {
     // Réseau indisponible — tenter le cache expiré en dernier recours
-    try { const raw = localStorage.getItem(key); if (raw) return JSON.parse(raw).data; } catch {}
+    try { const expired = await loadRoute(key, Infinity); if (expired) return expired; } catch {}
     return null;
   }
 }

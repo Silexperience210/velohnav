@@ -1,5 +1,34 @@
 # Changelog
 
+## v3.2.0 — 2026-06-04
+
+Release mineure : mode nuit AR, lazy loading ARScreen, cache OSRM IndexedDB, et correctifs build.
+
+### ✨ Nouveautés
+
+#### 🌙 Mode nuit AR
+- Détection automatique 20h00–06h00 (override possible via `localStorage`)
+- Tracé canvas en néon : cyan `#00F0FF` (vélo) / orange `#FF6B00` (marche)
+- Glow x1.5 sur la route, opacité augmentée, vignettage renforcé pour le contraste
+- Composants impactés : `ARScreen.jsx`, `RouteOverlay.jsx`, hook `useDarkMode.js`
+
+#### ⚡ Lazy load ARScreen
+- `React.lazy()` + `Suspense` : ARScreen n'est chargé que quand l'onglet AR est ouvert
+- **Bundle initial** : 305 kB → 227 kB (-25%)
+- Chunk AR séparé : 80 kB (gzip 25 kB)
+
+#### 💾 Cache OSRM IndexedDB
+- Remplace le `localStorage` pour les itinéraires calculés
+- Store dédié `"routes"` dans la même IndexedDB `velohnav`
+- Même TTL 30 min, mais capacité bien supérieure + pas de pollution `localStorage`
+- DB version bumpée à 3 (compatibilité `stations`, `meta`, `ghosts`)
+
+### 🔧 Correctifs build
+- `useMultimodalSwitch.js` : fermeture correcte du `useCallback`
+- `ArNavigationActivity.kt` : remplacement `isDestroyed` par `lifecycle.currentState` (compatibilité AndroidX)
+
+---
+
 ## v3.1.2 — 2026-06-04
 
 Patch release : correctifs navigation AR (intent predictive, stale closures, cleanup Nostr, atomicité Android) + sécurité config.

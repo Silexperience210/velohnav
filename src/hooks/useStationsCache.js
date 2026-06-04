@@ -6,7 +6,8 @@
 const DB_NAME    = "velohnav";
 const STORE      = "stations";
 const META_STORE = "meta";
-const DB_VERSION = 2;  // bumped pour ajouter le store "ghosts" (cf. useGhostTrail)
+const ROUTES_STORE = "routes";
+const DB_VERSION = 3;  // bumped pour ajouter le store "routes"
 
 let dbPromise = null;
 
@@ -19,10 +20,10 @@ function openDB() {
     req.onsuccess = () => resolve(req.result);
     req.onupgradeneeded = (e) => {
       const db = e.target.result;
-      if (!db.objectStoreNames.contains(STORE))      db.createObjectStore(STORE, { keyPath: "id" });
-      if (!db.objectStoreNames.contains(META_STORE)) db.createObjectStore(META_STORE, { keyPath: "key" });
-      // Store ghost trails — clé = "originId__destId__mode"
-      if (!db.objectStoreNames.contains("ghosts"))   db.createObjectStore("ghosts", { keyPath: "key" });
+      if (!db.objectStoreNames.contains(STORE))       db.createObjectStore(STORE, { keyPath: "id" });
+      if (!db.objectStoreNames.contains(META_STORE))  db.createObjectStore(META_STORE, { keyPath: "key" });
+      if (!db.objectStoreNames.contains("ghosts"))    db.createObjectStore("ghosts", { keyPath: "key" });
+      if (!db.objectStoreNames.contains(ROUTES_STORE)) db.createObjectStore(ROUTES_STORE, { keyPath: "key" });
     };
   });
   return dbPromise;
@@ -95,4 +96,32 @@ export async function clearStations() {
     tx.objectStore(META_STORE).clear();
     return new Promise((res) => { tx.oncomplete = () => res(true); });
   } catch { return false; }
+}
+
+// ── Cache OSRM routes ──────────────────────────────────────────────
+export async function saveRoute(key, data) {
+  try {
+    const db = await openDB();
+    const tx = db.transaction(ROUTES_STORE, "readwrite");
+    tx.objectStore(ROUTES_STORE).put({ key, data, ts: Date.now() });
+    return new Promise((res, rej) => { tx.oncomplete = () => res(true); tx.onerror = () => rej(tx.error); });
+  } catch (e) {
+    console.warn("[RouteCache] save:", e.message);
+    return false;
+  }
+}
+
+export async function loadRoute(key, ttlMs = 30 * 60 * 1000) {
+  try {
+    const db = await openDB();
+    const tx = db.transaction(ROUTES_STORE, "readonly");
+    const req = tx.objectStore(ROUTES_STORE).get(key);
+    const result = await new Promise((res) => { req.onsuccess = () => res(req.result); req.onerror = () => res(null); });
+    if (!result) return null;
+    if (Date.now() - result.ts > ttlMs) return null;
+    return result.data;
+  } catch (e) {
+    console.warn("[RouteCache] load:", e.message);
+    return null;
+  }
 }

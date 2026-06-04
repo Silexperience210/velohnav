@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, lazy, Suspense } from "react";
 import { t } from "./i18n.js";
 import { C, REF, FALLBACK } from "./constants.js";
 import { haversine, getBearing, fDist, bTag, bCol, enrich, parseStation,
@@ -7,7 +7,7 @@ import { haversine, getBearing, fDist, bTag, bCol, enrich, parseStation,
 import { useWeather } from "./hooks/useWeather.js";
 import { useTransit } from "./hooks/useTransit.js";
 import { saveStations, loadStations } from "./hooks/useStationsCache.js";
-import ARScreen    from "./components/ARScreen.jsx";
+const ARScreen    = lazy(() => import("./components/ARScreen.jsx"));
 import MapScreen   from "./components/MapScreen.jsx";
 import AIScreen    from "./components/AIScreen.jsx";
 import SettingsScreen from "./components/SettingsScreen.jsx";
@@ -275,10 +275,18 @@ export default function App() {
       )}
 
       <div style={{ flex:1,display:"flex",flexDirection:"column",overflow:"hidden",minHeight:0 }}>
-        {tab==="ar"       &&<ARScreen  stations={stations} sel={sel} setSel={setSel} gpsPos={gpsPos}
-          trip={trip} onStartTrip={startTrip} mapsKey={mapsKey} weather={weather}
-          transitStops={transitStops} transitDepartures={transitDepartures}
-          spatialAudio={spatialAudio}/>}
+        {tab==="ar"       &&(
+          <Suspense fallback={
+            <div style={{flex:1,display:"flex",alignItems:"center",justifyContent:"center",background:C.bg}}>
+              <div style={{color:C.accent,fontFamily:C.fnt,fontSize:10,letterSpacing:2}}>CHARGEMENT AR…</div>
+            </div>
+          }>
+            <ARScreen  stations={stations} sel={sel} setSel={setSel} gpsPos={gpsPos}
+              trip={trip} onStartTrip={startTrip} mapsKey={mapsKey} weather={weather}
+              transitStops={transitStops} transitDepartures={transitDepartures}
+              spatialAudio={spatialAudio}/>
+          </Suspense>
+        )}
         {tab==="map"      &&<MapScreen stations={stations} sel={sel} setSel={setSel} gpsPos={gpsPos}
           trip={trip} onStartTrip={startTrip}
           mapsKey={mapsKey} weather={weather}

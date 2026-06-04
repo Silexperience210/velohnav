@@ -10,6 +10,7 @@ import { useGhostTrail } from "../hooks/useGhostTrail.js";
 import { useObstacles } from "../hooks/useObstacles.js";
 import { useMultimodalSwitch } from "../hooks/useMultimodalSwitch.js";
 import { useSpatialAudio } from "../hooks/useSpatialAudio.js";
+import { useDarkMode } from "../hooks/useDarkMode.js";
 import { launchNativeArNav } from "../utils.js";
 
 
@@ -37,6 +38,7 @@ import { projectPoint } from "./ar/projection.js";
 
 
 function ARScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey="", fischerVisible=false, weather=null, transitStops=[], transitDepartures={}, spatialAudio=false }) {
+  const isNight = useDarkMode();
   const vidRef=useRef(null);
   const [cam,   setCam]  =useState("idle");
   const [pulse, setPulse]=useState(false);
@@ -410,9 +412,15 @@ function ARScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey=""
       {cam!=="active"&&<div style={{position:"absolute",inset:0,zIndex:2}}><CityBG/></div>}
 
       <div style={{position:"absolute",inset:0,zIndex:5,pointerEvents:"none"}}>
-        <div style={{position:"absolute",inset:0,background:"radial-gradient(ellipse at center,transparent 30%,rgba(0,0,0,0.35) 100%)"}}/>
-        <div style={{position:"absolute",top:0,left:0,right:0,height:70,background:"linear-gradient(to bottom,rgba(8,12,15,0.65),transparent)"}}/>
-        <div style={{position:"absolute",bottom:0,left:0,right:0,height:230,background:"linear-gradient(to top,rgba(8,12,15,0.98),rgba(8,12,15,0.4) 60%,transparent)"}}/>
+        <div style={{position:"absolute",inset:0,background:isNight
+          ? "radial-gradient(ellipse at center,transparent 40%,rgba(0,0,0,0.55) 100%)"
+          : "radial-gradient(ellipse at center,transparent 30%,rgba(0,0,0,0.35) 100%)"}}/>
+        <div style={{position:"absolute",top:0,left:0,right:0,height:70,background:isNight
+          ? "linear-gradient(to bottom,rgba(8,12,15,0.85),transparent)"
+          : "linear-gradient(to bottom,rgba(8,12,15,0.65),transparent)"}}/>
+        <div style={{position:"absolute",bottom:0,left:0,right:0,height:230,background:isNight
+          ? "linear-gradient(to top,rgba(8,12,15,0.98),rgba(8,12,15,0.6) 60%,transparent)"
+          : "linear-gradient(to top,rgba(8,12,15,0.98),rgba(8,12,15,0.4) 60%,transparent)"}}/>
       </div>
 
       {navRel!==null&&!navMode&&<NavOverlay relBear={navRel} dist={navStation?.dist??0} name={navStation?.name??""}/>}
@@ -426,6 +434,7 @@ function ARScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey=""
           spatialAudio={spatialAudio}
           offRoute={offRoute} recalculating={recalculating}
           manualRecalc={manualRecalc}
+          isNight={isNight}
         />
       )}
       {/* Chargement itinéraire */}

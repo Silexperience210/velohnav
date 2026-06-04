@@ -9,7 +9,7 @@ import { projectPoint, detectWrongWay } from "./projection.js";
 import { windImpact } from "../../hooks/useWeather.js";
 
 function RouteOverlay({ route, gpsPos, heading, mode, onClose, weather=null, spatialAudio=false,
-                        offRoute=false, recalculating=false, manualRecalc=null }) {
+                        offRoute=false, recalculating=false, manualRecalc=null, isNight=false }) {
   const cvRef = useRef();
   const [step, setStep] = useState(0); // index du prochain waypoint
 
@@ -99,7 +99,9 @@ function RouteOverlay({ route, gpsPos, heading, mode, onClose, weather=null, spa
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, W, H);
 
-    const col = mode === "walking" ? "#A78BFA" : "#3B82F6"; // violet=pieds, bleu=vélo
+    const col = mode === "walking"
+      ? (isNight ? "#FF6B00" : "#A78BFA")
+      : (isNight ? "#00F0FF" : "#3B82F6"); // nuit: néon orange/cyan, jour: violet/bleu
     const hdgUsed = smoothedHdgRef.current ?? heading;
 
     // ── 1. Tracer la ligne de route (avec clamp aux bords pour éviter coupures)
@@ -134,7 +136,7 @@ function RouteOverlay({ route, gpsPos, heading, mode, onClose, weather=null, spa
       seg.forEach((p,i) => i===0 ? ctx.moveTo(p.x,p.y) : ctx.lineTo(p.x,p.y));
       ctx.strokeStyle = col;
       ctx.lineWidth = 18; ctx.lineCap = "round"; ctx.lineJoin = "round";
-      ctx.globalAlpha = 0.18; ctx.shadowBlur = 14; ctx.shadowColor = col;
+      ctx.globalAlpha = isNight ? 0.28 : 0.18; ctx.shadowBlur = isNight ? 22 : 14; ctx.shadowColor = col;
       ctx.setLineDash([]); ctx.stroke();
       ctx.shadowBlur = 0; ctx.globalAlpha = 1;
 
@@ -147,20 +149,20 @@ function RouteOverlay({ route, gpsPos, heading, mode, onClose, weather=null, spa
       // ── Bord blanc (lisibilité sur fonds variés) — couche 3
       ctx.beginPath();
       seg.forEach((p,i) => i===0 ? ctx.moveTo(p.x,p.y) : ctx.lineTo(p.x,p.y));
-      ctx.strokeStyle = "rgba(255,255,255,0.95)";
-      ctx.lineWidth = 8; ctx.stroke();
+      ctx.strokeStyle = isNight ? "rgba(255,255,255,0.98)" : "rgba(255,255,255,0.95)";
+      ctx.lineWidth = isNight ? 9 : 8; ctx.stroke();
 
       // ── Ligne principale colorée — couche 4
       ctx.beginPath();
       seg.forEach((p,i) => i===0 ? ctx.moveTo(p.x,p.y) : ctx.lineTo(p.x,p.y));
       ctx.strokeStyle = col;
-      ctx.lineWidth = 5; ctx.stroke();
+      ctx.lineWidth = isNight ? 6 : 5; ctx.stroke();
 
       // ── Tirets blancs animés — couche 5 (effet "marche/avance")
       ctx.beginPath();
       seg.forEach((p,i) => i===0 ? ctx.moveTo(p.x,p.y) : ctx.lineTo(p.x,p.y));
-      ctx.strokeStyle = "rgba(255,255,255,0.8)";
-      ctx.lineWidth = 2;
+      ctx.strokeStyle = isNight ? "rgba(255,255,255,0.95)" : "rgba(255,255,255,0.8)";
+      ctx.lineWidth = isNight ? 3 : 2;
       ctx.setLineDash([10, 16]);
       // Offset basé sur le temps pour l'animation "qui avance"
       ctx.lineDashOffset = -((Date.now() / 60) % 26);

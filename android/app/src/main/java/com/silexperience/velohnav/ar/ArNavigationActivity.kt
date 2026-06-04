@@ -164,7 +164,7 @@ class ArNavigationActivity : ComponentActivity() {
         // Délai 8s pour laisser le temps au routing OSRM + initialisation ARCore.
         lifecycleScope.launch {
             kotlinx.coroutines.delay(8000)
-            if (isFinishing || isDestroyed) return@launch
+            if (isFinishing || lifecycle.currentState == Lifecycle.State.DESTROYED) return@launch
             val count = sessionUpdateCount.get()
             if (count == 0) {
                 Log.e(TAG, "Aucun onSessionUpdated reçu après 8s — ARCore ne démarre pas")
