@@ -63,6 +63,7 @@ jobs:
 
       - name: Inject local.properties
         run: |
+          set +x
           echo "sdk.dir=$ANDROID_HOME" > android/local.properties
           echo "MAPS_API_KEY=${{ secrets.MAPS_API_KEY }}" >> android/local.properties
 

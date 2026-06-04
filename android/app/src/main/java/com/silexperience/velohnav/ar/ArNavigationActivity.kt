@@ -31,6 +31,7 @@ import io.github.sceneview.ar.ARSceneView
 import kotlinx.coroutines.launch
 import com.silexperience.velohnav.ar.ui.NavigationHud
 import com.silexperience.velohnav.ar.ui.VelohNavArTheme
+import java.util.concurrent.atomic.AtomicInteger
 
 class ArNavigationActivity : ComponentActivity() {
 
@@ -38,9 +39,10 @@ class ArNavigationActivity : ComponentActivity() {
     private var arView: ARSceneView? = null
     private val mainHandler = Handler(Looper.getMainLooper())
     private val TAG = "ArNavActivity"
-    // Compteur de frames ARCore reçus — utilisé par le watchdog 5s pour détecter
+    // Compteur de frames ARCore reçus — utilisé par le watchdog 8s pour détecter
     // si ARCore ne démarre pas du tout (clé API invalide, capteur HS, etc.)
-    @Volatile private var sessionUpdateCount = 0
+    // AtomicInteger pour garantir l'atomicité de l'incrément cross-thread.
+    private val sessionUpdateCount = AtomicInteger(0)
 
     private var pendingDestLat: Double = 0.0
     private var pendingDestLng: Double = 0.0
@@ -112,7 +114,7 @@ class ArNavigationActivity : ComponentActivity() {
                                 arView = v
 
                                 v.onSessionUpdated = { session, frame ->
-                                    sessionUpdateCount++
+                                    sessionUpdateCount.incrementAndGet()
                                     val earth = session.earth
                                     if (earth != null) {
                                         // FIX : appeler onEarthTracking MÊME si pas tracking,
@@ -162,7 +164,9 @@ class ArNavigationActivity : ComponentActivity() {
         // Délai 8s pour laisser le temps au routing OSRM + initialisation ARCore.
         lifecycleScope.launch {
             kotlinx.coroutines.delay(8000)
-            if (sessionUpdateCount == 0) {
+            if (isFinishing || isDestroyed) return@launch
+            val count = sessionUpdateCount.get()
+            if (count == 0) {
                 Log.e(TAG, "Aucun onSessionUpdated reçu après 8s — ARCore ne démarre pas")
                 Toast.makeText(
                     this@ArNavigationActivity,
@@ -171,7 +175,7 @@ class ArNavigationActivity : ComponentActivity() {
                 ).show()
                 viewModel.fallbackToGps()
             } else {
-                Log.d(TAG, "Watchdog OK : $sessionUpdateCount frames ARCore reçus en 8s")
+                Log.d(TAG, "Watchdog OK : $count frames ARCore reçus en 8s")
             }
         }
 

@@ -74,7 +74,7 @@ class RouteManager(private val mapsApiKey: String) {
         val profile = when (mode) {
             "walking" -> "foot"
             "driving" -> "car"
-            else -> "bike"
+            else -> "bicycle"
         }
         
         return try {

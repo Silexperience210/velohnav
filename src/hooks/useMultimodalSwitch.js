@@ -16,7 +16,7 @@
 //   Z heures, descendre à arrêt B, station Y à 200m"
 // - L'user accepte → la nav redirige vers la station X intermédiaire
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { haversine } from "../utils.js";
 import { fetchWeather } from "./useWeather.js";
 
@@ -100,7 +100,7 @@ export function useMultimodalSwitch({
   }, [active, gpsPos?.lat, gpsPos?.lng, navMode]);
 
   // Évalue si on doit déclencher une suggestion
-  const evaluateSwitch = (currentWeather) => {
+  const evaluateSwitch = useCallback((currentWeather) => {
     if (!currentWeather || !active || !navStation || !gpsPos || navMode !== "cycling") return;
     if (Date.now() - lastTriggerRef.current < COOLDOWN_MS) return;
 
@@ -174,8 +174,7 @@ export function useMultimodalSwitch({
   // Re-évaluer si la météo prop change (le hook global useWeather)
   useEffect(() => {
     if (weather && active) evaluateSwitch(weather);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [weather?.rain, weather?.code, active, navStation?.id]);
+  }, [weather, active, navStation?.id, evaluateSwitch]);
 
   const dismiss = () => {
     setSuggestion(null);

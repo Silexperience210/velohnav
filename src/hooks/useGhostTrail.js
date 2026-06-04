@@ -137,6 +137,10 @@ export function useGhostTrail({ gpsPos, navStation, originStation, navMode, acti
     return () => { cancelled = true; };
   }, [active, originId, destId, navMode]);
 
+  // Ref stable pour navStation (utilisé dans le cleanup)
+  const navStationRef = useRef(navStation);
+  useEffect(() => { navStationRef.current = navStation; }, [navStation]);
+
   // Enregistrement live des positions GPS
   useEffect(() => {
     if (!active || !gpsPos) {
@@ -144,7 +148,8 @@ export function useGhostTrail({ gpsPos, navStation, originStation, navMode, acti
       if (recordingActive && recordingRef.current.length >= 5 && originId && destId && navMode) {
         const last = recordingRef.current[recordingRef.current.length - 1];
         // Vérifie qu'on a bien atteint la zone de destination
-        if (navStation && haversine(last.lat, last.lng, navStation.lat, navStation.lng) < ENDPOINT_RADIUS) {
+        const target = navStationRef.current;
+        if (target && haversine(last.lat, last.lng, target.lat, target.lng) < ENDPOINT_RADIUS) {
           saveGhost(originId, destId, navMode, recordingRef.current);
         }
       }
@@ -170,8 +175,7 @@ export function useGhostTrail({ gpsPos, navStation, originStation, navMode, acti
         t: Date.now() - startTimeRef.current,
       });
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active, gpsPos?.lat, gpsPos?.lng, originId, destId, navMode, recordingActive]);
+  }, [active, gpsPos?.lat, gpsPos?.lng, originId, destId, navMode, recordingActive, originStation]);
 
   // Tick d'animation pour faire avancer le fantôme à 5 fps
   // setInterval déclenché UNE fois à l'init du ghost, pas à chaque update GPS

@@ -78,10 +78,33 @@ async function buildEvent({ secretKey, pubkeyHex, kind, content, tags }) {
   };
 }
 
+// ── Vérification Schnorr BIP-340 d'un event Nostr ─────────────────
+async function verifyEvent(evt) {
+  try {
+    const serialized = JSON.stringify([0, evt.pubkey, evt.created_at, evt.kind, evt.tags, evt.content]);
+    const idBytes = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(serialized)));
+    const idHex = bytesToHex(idBytes);
+    if (idHex !== evt.id) return false;
+    const sigBytes = hexToBytes(evt.sig);
+    const pubBytes = hexToBytes(evt.pubkey);
+    return schnorr.verify(sigBytes, idBytes, pubBytes);
+  } catch { return false; }
+}
+
+function hexToBytes(hex) {
+  const bytes = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < hex.length; i += 2) {
+    bytes[i / 2] = parseInt(hex.substring(i, i + 2), 16);
+  }
+  return bytes;
+}
+
 // ── Parsing d'event obstacle reçu ──────────────────────────────────
-function parseObstacle(evt) {
+async function parseObstacle(evt) {
   if (evt.kind !== KIND_OBSTACLE) return null;
   try {
+    const valid = await verifyEvent(evt);
+    if (!valid) { console.warn("[Nostr] Event signature invalide", evt.id); return null; }
     const data = JSON.parse(evt.content);
     if (typeof data.lat !== "number" || typeof data.lng !== "number") return null;
     if (!OBSTACLE_TYPES[data.type]) return null;
@@ -129,11 +152,11 @@ class NostrPool {
           "#t": ["velohnav-obstacle"],  // tag canonique
         }]));
       };
-      ws.onmessage = (e) => {
+      ws.onmessage = async (e) => {
         try {
           const msg = JSON.parse(e.data);
           if (msg[0] === "EVENT" && msg[1] === this.subId && msg[2]) {
-            const obs = parseObstacle(msg[2]);
+            const obs = await parseObstacle(msg[2]);
             if (obs && !this.seen.has(obs.id)) {
               this.seen.set(obs.id, obs);
               this.subscribers.forEach(cb => cb(obs, this.allObstacles()));
@@ -202,6 +225,14 @@ function getPool() {
     _pool.connect();
   }
   return _pool;
+}
+
+// Cleanup global au fermeture de l'app / rechargement de page
+if (typeof window !== "undefined") {
+  window.addEventListener("beforeunload", () => {
+    _pool?.close();
+    _pool = null;
+  });
 }
 
 // ── Hook React ────────────────────────────────────────────────────

@@ -57,10 +57,10 @@ export default defineConfig({
   // intercepte les appels @capacitor/* à runtime.
   build: {
     target: 'es2020',
-    sourcemap: false,
+    sourcemap: true,
   },
   test: {
-    environment: 'node',
+    environment: 'jsdom',
     globals: true,
     include: ['src/**/*.test.js', 'src/**/*.spec.js'],
   },

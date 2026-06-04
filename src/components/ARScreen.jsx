@@ -33,38 +33,6 @@ import { projectPoint } from "./ar/projection.js";
 
 
 
-// ── LNURL-PAY (feature #2) ────────────────────────────────────────
-// Envoie des sats via LNURL-pay depuis une Lightning Address (user@domain)
-async function payLnAddress(lnAddress, satsAmount, comment="VelohNav trajet") {
-  try {
-    const [user, domain] = lnAddress.split("@");
-    if (!user || !domain) throw new Error("Adresse invalide");
-    // 1. Fetch LNURL metadata
-    const metaUrl = `https://${domain}/.well-known/lnurlp/${user}`;
-    const meta = await fetch(metaUrl).then(r=>r.json());
-    if (meta.status === "ERROR") throw new Error(meta.reason);
-    const msats = satsAmount * 1000;
-    if (msats < meta.minSendable || msats > meta.maxSendable)
-      throw new Error(`Montant hors limites (${meta.minSendable/1000}–${meta.maxSendable/1000} sats)`);
-    // 2. Request invoice
-    const callbackUrl = new URL(meta.callback);
-    callbackUrl.searchParams.set("amount", msats);
-    if (meta.commentAllowed > 0) callbackUrl.searchParams.set("comment", comment.slice(0, meta.commentAllowed));
-    const inv = await fetch(callbackUrl.toString()).then(r=>r.json());
-    if (inv.status === "ERROR") throw new Error(inv.reason);
-    // 3. Ouvrir dans le wallet via URI lightning:
-    window.location.href = `lightning:${inv.pr}`;
-    return { ok: true, invoice: inv.pr };
-  } catch(e) {
-    return { ok: false, error: e.message };
-  }
-}
-
-
-// ── COMPASS HOOK ──────────────────────────────────────────────────
-
-
-
 // ── AR SCREEN ─────────────────────────────────────────────────────
 
 
@@ -106,17 +74,19 @@ function ARScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey=""
   // Sert de clé "départ" pour le Ghost Trail. On prend la station la plus
   // proche de la position GPS au moment du startNav (rayon 100m).
   const [originStation, setOriginStation] = useState(null);
+  const stationsRef = useRef(stations);
+  useEffect(() => { stationsRef.current = stations; }, [stations]);
   useEffect(() => {
     if (!navMode || !gpsPos) { setOriginStation(null); return; }
     if (originStation) return;  // déjà figée
     let best = null, bestD = 100;
-    for (const s of stations) {
+    for (const s of stationsRef.current) {
       if (!s.lat || !s.lng) continue;
       const d = haversine(gpsPos.lat, gpsPos.lng, s.lat, s.lng);
       if (d < bestD) { bestD = d; best = s; }
     }
     if (best) setOriginStation(best);
-  }, [navMode, gpsPos?.lat, gpsPos?.lng, stations, originStation]);
+  }, [navMode, gpsPos?.lat, gpsPos?.lng, originStation]);
 
   // ── Ghost Trail — fantôme du meilleur temps ──────────────────────
   const { ghostPos, hasGhost, bestTime, currentDelta } = useGhostTrail({
@@ -147,7 +117,7 @@ function ARScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey=""
   // Si elle devient saturée pendant qu'on roule, propose une alternative.
   // Heuristique d'intent : si le user a déjà un vélo (trip actif), c'est un
   // dropoff (besoin de docks). Sinon c'est un pickup (besoin de vélos).
-  const navIntent = trip?.active ? "dropoff" : "pickup";
+  const navIntent = trip ? "dropoff" : "pickup";
   const { suggestion: predSuggestion, dismiss: predDismiss, accept: predAccept } =
     usePredictiveRouting({
       stations, navStation, gpsPos, navMode,
@@ -204,8 +174,7 @@ function ARScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey=""
         return ()=>clearTimeout(t);
       }
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  },[]);
+  },[stations, startNav, setSel]);
   useEffect(()=>{
     const t=setInterval(()=>setPulse(p=>!p),1100);
     return()=>clearInterval(t);
