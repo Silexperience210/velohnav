@@ -127,8 +127,8 @@ class ArNavigationActivity : ComponentActivity() {
                                                 Log.e(TAG, "onEarthTracking error", e)
                                             }
                                         }
-                                    } else if (sessionUpdateCount % 60 == 0) {
-                                        Log.w(TAG, "session.earth est null (frame $sessionUpdateCount)")
+                                    } else if (sessionUpdateCount.get() % 60 == 0) {
+                                        Log.w(TAG, "session.earth est null (frame ${sessionUpdateCount.get()})")
                                     }
                                 }
 
