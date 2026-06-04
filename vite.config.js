@@ -60,7 +60,7 @@ export default defineConfig({
     sourcemap: true,
   },
   test: {
-    environment: 'jsdom',
+    environment: 'node',
     globals: true,
     include: ['src/**/*.test.js', 'src/**/*.spec.js'],
   },
