@@ -169,7 +169,7 @@ export function useMultimodalSwitch({
         best.busStop.lat, best.busStop.lng
       )),
     });
-  };
+  }, [active, gpsPos, navStation, navMode, stations, transitStops, transitDepartures]);
 
   // Re-évaluer si la météo prop change (le hook global useWeather)
   useEffect(() => {
