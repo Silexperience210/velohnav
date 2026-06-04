@@ -1,5 +1,71 @@
 # Changelog
 
+## v3.1.2 — 2026-06-04
+
+Patch release : correctifs navigation AR (intent predictive, stale closures, cleanup Nostr, atomicité Android) + sécurité config.
+
+### 🐛 Bugs corrigés
+
+#### Predictive routing toujours en mode "pickup"
+**Cause** : `trip?.active` dans `ARScreen.jsx` alors que l'objet `trip` n'a pas de champ `active`. L'heuristique d'intent retournait donc toujours `"pickup"`, même quand l'utilisateur avait déjà un vélo et cherchait un dock (`"dropoff"`).
+
+**Fix** : `trip?.active` remplacé par `!!trip`.
+
+#### Stale closure sur la navigation auto Map → AR
+**Cause** : le `useEffect` d'auto-démarrage de la nav avait un tableau de dépendances vide `[]`. Il capturait `stations` et `startNav` du premier render. Si les stations mettaient du temps à charger, la nav auto échouait silencieusement.
+
+**Fix** : ajout de `[stations, startNav, setSel]` dans les dépendances.
+
+#### Recalcul parasite de `originStation` à chaque refresh
+**Cause** : `originStation` dépendait du tableau `stations` (nouvelle référence à chaque `loadData` toutes les 60s). Le hook recalculait l'origine du Ghost Trail en permanence.
+
+**Fix** : `stations` sorti des deps via `useRef`.
+
+#### Sauvegarde Ghost Trail avec mauvaise station
+**Cause** : `navStation` était utilisé dans le cleanup du `useEffect` d'enregistrement sans être dans les dépendances.
+
+**Fix** : `navStationRef` ajouté pour stabiliser la référence dans le cleanup.
+
+#### Re-évaluation spam de `useMultimodalSwitch`
+**Cause** : `evaluateSwitch` était recréée à chaque render, déclenchant les `useEffect` en boucle.
+
+**Fix** : `evaluateSwitch` wrappé dans `useCallback`.
+
+#### Obstacles Nostr falsifiables
+**Cause** : aucune vérification de signature Schnorr BIP-340 sur les events reçus. N'importe qui pouvait injecter de faux obstacles.
+
+**Fix** : `verifyEvent()` + `schnorr.verify()` ajoutés avant le parsing.
+
+#### Fuite de connexions WebSocket Nostr
+**Cause** : le pool WebSocket singleton n'était jamais fermé.
+
+**Fix** : `beforeunload` listener qui appelle `pool.close()`.
+
+#### Incrément non atomique du watchdog ARCore
+**Cause** : `@Volatile private var sessionUpdateCount` avec `++` n'est pas atomique cross-thread.
+
+**Fix** : `AtomicInteger` avec `incrementAndGet()`.
+
+#### Crash potentiel du watchdog si Activity détruite
+**Cause** : le `Toast` du watchdog s'affichait sans vérifier `isFinishing`/`isDestroyed`.
+
+**Fix** : check `isFinishing || isDestroyed` avant toute UI.
+
+#### Divergence profil OSRM natif/web
+**Cause** : natif utilisait `"bike"`, web `"cycling"`. OSRM standard attend `"bicycle"`.
+
+**Fix** : alignement sur `"bicycle"`.
+
+### 🔒 Sécurité
+- Ajout d'une `Content-Security-Policy` dans `index.html`
+- `vite.config.js` : `sourcemap: true` pour rendre Sentry utilisable
+- CI : `set +x` pour masquer l'écriture des secrets dans les logs
+
+### 🧪 Qualité
+- `vite.config.js` : environnement de test passé de `node` à `jsdom`
+
+---
+
 ## v3.1.1 — 2026-04-29
 
 Patch release : 4 bugs critiques sur la navigation AR.
