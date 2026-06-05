@@ -16,8 +16,16 @@
 // backoff, dedup par event_id côté client.
 
 import { useState, useEffect, useRef, useCallback } from "react";
-import { schnorr } from "@noble/secp256k1";
+import { schnorr, hashes } from "@noble/secp256k1";
+import { sha256 } from "@noble/hashes/sha2";
 import { haversine } from "../utils.js";
+
+// @noble/secp256k1 v3 : schnorr.verify (synchrone) exige un sha256 synchrone
+// configuré globalement, sinon il renvoie false pour TOUTE signature — même
+// valide (signAsync, lui, utilise un hash async interne et n'en a pas besoin).
+// Sans cette ligne, verifyEvent rejette tous les events entrants → la feature
+// obstacles crowd-sourced est silencieusement morte.
+if (!hashes.sha256) hashes.sha256 = sha256;
 
 // Relays Nostr publics — à compléter selon préférence
 const DEFAULT_RELAYS = [
@@ -79,7 +87,7 @@ async function buildEvent({ secretKey, pubkeyHex, kind, content, tags }) {
 }
 
 // ── Vérification Schnorr BIP-340 d'un event Nostr ─────────────────
-async function verifyEvent(evt) {
+export async function verifyEvent(evt) {
   try {
     const serialized = JSON.stringify([0, evt.pubkey, evt.created_at, evt.kind, evt.tags, evt.content]);
     const idBytes = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(serialized)));

@@ -1,5 +1,34 @@
 # Changelog
 
+## v3.2.2 — 2026-06-05
+
+Release correctifs de sécurité (audit). Deux failles trouvées et corrigées.
+
+### 🔒 Sécurité / correctifs
+
+#### Vérification Schnorr des obstacles Nostr réparée (régression v3.2.x)
+- `schnorr.verify` de `@noble/secp256k1` v3 est **synchrone** et exige un `sha256`
+  synchrone configuré globalement. Sans lui, `verifyEvent` renvoyait `false` pour
+  **tout** event — même valide — ce qui rejetait silencieusement **tous** les
+  obstacles crowd-sourced reçus (feature morte).
+- Ajout de la dépendance `@noble/hashes` et configuration `hashes.sha256` à
+  l'import de `useObstacles.js`.
+- 4 tests de non-régression ajoutés (`useObstacles.test.js`) : event valide accepté,
+  contenu falsifié / id incohérent / signature d'une autre clé rejetés.
+
+#### La clé API JCDecaux ne fuit plus via un proxy CORS tiers
+- `fetchJCDecaux` ne route plus l'URL (qui contient la clé API) vers `corsproxy.io`.
+  Sur Android (Capacitor) l'appel direct ignore CORS ; en PWA web pur, on retombe
+  sur le cache IndexedDB / les données de démonstration.
+
+### 📦 Versions
+- `package.json` : 3.2.0 → 3.2.2
+- `android/app/build.gradle` : versionCode 34 → 35, versionName 3.2.0 → 3.2.2
+
+> Note : la sélection du mode (vélo/marche/voiture) reste sans effet sur le tracé
+> car le serveur OSRM public ignore le profil (routage voiture). Correctif backend
+> à planifier (OSRM self-hosted / BRouter / GraphHopper).
+
 ## v3.2.0 — 2026-06-04
 
 Release mineure : mode nuit AR, lazy loading ARScreen, cache OSRM IndexedDB, et correctifs build.

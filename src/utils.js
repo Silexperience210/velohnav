@@ -141,14 +141,15 @@ export function notifyStation(station, prevBikes) {
 }
 
 // ── Fetch JCDecaux ─────────────────────────────────────────────────
+// SÉCURITÉ : on n'utilise PAS de proxy CORS tiers (ex. corsproxy.io). L'URL
+// contient la clé API JCDecaux de l'utilisateur ; la router via un proxy la
+// ferait fuiter chez ce tiers. Sur Android (Capacitor), fetch passe par le
+// natif et ignore CORS → l'appel direct fonctionne. Si l'appel direct échoue
+// (CORS en PWA web pure), le caller retombe sur le cache IndexedDB / la démo.
 export async function fetchJCDecaux(apiKey) {
   const url = `https://api.jcdecaux.com/vls/v3/stations?contract=Luxembourg&apiKey=${apiKey}`;
   try {
     const r = await fetch(url);
-    if (r.ok) return await r.json();
-  } catch {}
-  try {
-    const r = await fetch(`https://corsproxy.io/?${encodeURIComponent(url)}`);
     if (r.ok) return await r.json();
   } catch {}
   return null;
