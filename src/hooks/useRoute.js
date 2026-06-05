@@ -1,4 +1,6 @@
-// ── useRoute — calcul d'itinéraire OSRM + fallback Google ─────────
+// ── useRoute — calcul d'itinéraire BRouter (vélo réel) + fallbacks ─────────
+// Primaire : BRouter (vrais profils vélo/piéton). Fallbacks : OSRM (serveur
+// public = routage voiture, dépannage) puis Google Directions (si clé).
 // FIX BUG-3 : détection off-route + recalcul forcé quand on dévie de >35m
 //             du tracé pendant >5s. Avant : recalcul aveugle tous les 11m
 //             via les deps GPS arrondies, pas de re-route ciblé.
@@ -8,6 +10,10 @@ import { distanceToRoute } from "../components/ar/projection.js";
 import { saveRoute, loadRoute } from "./useStationsCache.js";
 
 const OSRM_BASE = "https://router.project-osrm.org/route/v1";
+// BRouter — routeur libre orienté vélo/piéton (vrais profils, contrairement au
+// serveur OSRM public qui ne route qu'en voiture). Gratuit, sans clé, CORS *.
+const BROUTER_BASE = "https://brouter.de/brouter";
+const BROUTER_PROFILE = { cycling: "trekking", walking: "hiking-beta", driving: "car-fast" };
 const CACHE_TTL = 30 * 60 * 1000;          // 30min (avant 24h — trop long si circulation change)
 const OFF_ROUTE_THRESHOLD_M  = 35;          // m — au-delà : on considère qu'on a dévié
 const OFF_ROUTE_HOLD_MS      = 4000;        // ms — combien de temps on doit rester off avant re-route
@@ -15,9 +21,10 @@ const OFF_ROUTE_HOLD_MS      = 4000;        // ms — combien de temps on doit r
 const REROUTE_COOLDOWN_MS    = 8000;        // ms — délai mini entre deux re-routes
 const ON_ROUTE_REFETCH_M     = 60;          // m — déplacement mini pour refresh "calme" (sur la route)
 
-// ── Cache IndexedDB ──────────────────────────────────────────────
-function cacheKey(fLat, fLng, tLat, tLng, mode) {
-  return `${fLat.toFixed(4)}_${fLng.toFixed(4)}_${tLat.toFixed(4)}_${tLng.toFixed(4)}_${mode}`;
+// ── Cache IndexedDB (clé préfixée par fournisseur pour ne pas mélanger
+//    un tracé BRouter vélo avec un tracé OSRM voiture) ──────────────
+function cacheKey(provider, fLat, fLng, tLat, tLng, mode) {
+  return `${provider}_${fLat.toFixed(4)}_${fLng.toFixed(4)}_${tLat.toFixed(4)}_${tLng.toFixed(4)}_${mode}`;
 }
 
 // ── Décodeur polyline Google ──────────────────────────────────────
@@ -38,7 +45,7 @@ function decodePolyline(encoded) {
 // ── OSRM (gratuit, sans clé) ──────────────────────────────────────
 export async function fetchOSRM(fromLat, fromLng, toLat, toLng, mode = "cycling", { skipCache = false } = {}) {
   const profile = mode === "walking" ? "foot" : mode === "driving" ? "car" : "cycling";
-  const key = cacheKey(fromLat, fromLng, toLat, toLng, mode);
+  const key = cacheKey("osrm", fromLat, fromLng, toLat, toLng, mode);
   if (!skipCache) {
     const cached = await loadRoute(key, CACHE_TTL);
     if (cached) return cached;
@@ -97,6 +104,98 @@ export async function fetchGoogleRoute(fromLat, fromLng, toLat, toLng, mode = "b
   } catch { return null; }
 }
 
+// ── BRouter (vélo réel, gratuit, sans clé) ────────────────────────
+// Angle de virage BRouter (élément [4] des voicehints) → modifier textuel
+// compatible avec useSpatialAudio / RouteOverlay. Négatif = gauche, positif =
+// droite (convention BRouter). Pure + testée.
+export function angleToModifier(angle) {
+  const a = Number(angle) || 0;
+  const abs = Math.abs(a);
+  if (abs < 18) return "straight";
+  const side = a < 0 ? "left" : "right";
+  if (abs >= 160) return "uturn";
+  if (abs >= 110) return `sharp ${side}`;
+  if (abs < 40) return `slight ${side}`;
+  return side;
+}
+
+const BROUTER_CMD_LABEL = {
+  1: "continue", 2: "left", 3: "slight-left", 4: "sharp-left",
+  5: "right", 6: "slight-right", 7: "sharp-right", 8: "keep-left",
+  9: "keep-right", 10: "uturn", 11: "uturn", 12: "uturn",
+  13: "off-route", 14: "roundabout",
+};
+
+// Convertit une réponse GeoJSON BRouter en route ({waypoints, coords, ...}).
+// Pure + testée — pas d'I/O, prend l'objet déjà parsé.
+export function brouterToRoute(geojson) {
+  const f = geojson?.features?.[0];
+  const rawCoords = f?.geometry?.coordinates;
+  if (!Array.isArray(rawCoords) || rawCoords.length === 0) return null;
+  // BRouter renvoie [lng, lat, elevation] — on ignore l'altitude.
+  const coords = rawCoords.map(([lng, lat]) => ({ lat, lng }));
+  const p = f.properties || {};
+  const totalDist = parseInt(p["track-length"] ?? "0", 10) || 0;
+  const totalTime = parseInt(p["total-time"] ?? "0", 10) || 0;
+  const hints = Array.isArray(p.voicehints) ? p.voicehints : [];
+
+  let waypoints = hints.map((h) => {
+    const idx = Math.min(Math.max(0, (h[0] | 0)), coords.length - 1);
+    const pt = coords[idx];
+    return {
+      lat: pt.lat, lng: pt.lng,
+      instruction: BROUTER_CMD_LABEL[h[1] | 0] || "continue",
+      modifier: angleToModifier(h[4]),
+      distMeters: Math.round(Number(h[3] ?? 0)),
+      streetName: "",
+    };
+  });
+
+  // Garantir un waypoint final sur la destination (le dernier hint n'y est pas
+  // toujours) — RouteOverlay s'appuie sur le dernier waypoint pour "arrivée".
+  const last = coords[coords.length - 1];
+  if (!waypoints.length) {
+    waypoints = [{ lat: last.lat, lng: last.lng, instruction: "arrive", modifier: "straight", distMeters: totalDist, streetName: "" }];
+  } else {
+    const lw = waypoints[waypoints.length - 1];
+    if (haversine(lw.lat, lw.lng, last.lat, last.lng) > 20) {
+      waypoints.push({ lat: last.lat, lng: last.lng, instruction: "arrive", modifier: "straight", distMeters: 0, streetName: "" });
+    }
+  }
+  return { waypoints, coords, totalDist, totalTime, computedAt: Date.now() };
+}
+
+export async function fetchBRouter(fromLat, fromLng, toLat, toLng, mode = "cycling", { skipCache = false } = {}) {
+  const profile = BROUTER_PROFILE[mode] || BROUTER_PROFILE.cycling;
+  const key = cacheKey("brouter", fromLat, fromLng, toLat, toLng, mode);
+  if (!skipCache) {
+    const cached = await loadRoute(key, CACHE_TTL);
+    if (cached) return cached;
+  }
+  const lonlats = `${fromLng.toFixed(6)},${fromLat.toFixed(6)}%7C${toLng.toFixed(6)},${toLat.toFixed(6)}`;
+  const url = `${BROUTER_BASE}?lonlats=${lonlats}&profile=${profile}&alternativeidx=0&format=geojson&timode=2`;
+  try {
+    const r = await fetch(url);
+    if (!r.ok) return null;
+    const data = await r.json();
+    const result = brouterToRoute(data);
+    if (!result) return null;
+    saveRoute(key, result).catch(() => {});
+    return result;
+  } catch {
+    try { const expired = await loadRoute(key, Infinity); if (expired) return expired; } catch {}
+    return null;
+  }
+}
+
+// ── Orchestrateur : BRouter (vélo réel) → OSRM (dépannage) → Google ──
+export async function fetchRoute(fromLat, fromLng, toLat, toLng, mode = "cycling", { skipCache = false, mapsKey = "" } = {}) {
+  let r = await fetchBRouter(fromLat, fromLng, toLat, toLng, mode, { skipCache });
+  if (!r) r = await fetchOSRM(fromLat, fromLng, toLat, toLng, mode, { skipCache });
+  if (!r && mapsKey) r = await fetchGoogleRoute(fromLat, fromLng, toLat, toLng, mode, mapsKey);
+  return r;
+}
+
 // ── Hook React useRoute ───────────────────────────────────────────
 // gpsPos   : { lat, lng } | null
 // station  : { lat, lng, id, name } | null  (null = navigation inactive)
@@ -130,8 +229,7 @@ export function useRoute(gpsPos, station, mode = "cycling", mapsKey = "") {
     const ctrl = new AbortController();
     abortRef.current = ctrl;
     try {
-      let r = await fetchOSRM(pos.lat, pos.lng, dest.lat, dest.lng, m, { skipCache: force });
-      if (!r && key) r = await fetchGoogleRoute(pos.lat, pos.lng, dest.lat, dest.lng, m, key);
+      const r = await fetchRoute(pos.lat, pos.lng, dest.lat, dest.lng, m, { skipCache: force, mapsKey: key });
       if (ctrl.signal.aborted) return;
       if (r) {
         setRoute(r);
@@ -208,9 +306,9 @@ export function useRoute(gpsPos, station, mode = "cycling", mapsKey = "") {
         if (movedSince > ON_ROUTE_REFETCH_M &&
             (now - lastRerouteAtRef.current) >= REROUTE_COOLDOWN_MS &&
             !loading && !recalculating) {
-          // Refetch silencieux (pas de flag offRoute)
+          // Refetch silencieux (pas de flag offRoute) — même chaîne BRouter→OSRM.
           lastFetchPosRef.current = { lat: gpsPos.lat, lng: gpsPos.lng };
-          fetchOSRM(gpsPos.lat, gpsPos.lng, station.lat, station.lng, mode)
+          fetchRoute(gpsPos.lat, gpsPos.lng, station.lat, station.lng, mode)
             .then(r => { if (r) setRoute(r); });
         }
       }

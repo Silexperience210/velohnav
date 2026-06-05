@@ -1,5 +1,30 @@
 # Changelog
 
+## v3.2.3 — 2026-06-05
+
+Routage vélo **réel** via BRouter — corrige le point #3 de l'audit.
+
+### ✨ Routage
+
+#### BRouter — vrais profils vélo / piéton
+- Le serveur OSRM public (`router.project-osrm.org`) **ignore le profil** et
+  renvoie toujours un routage voiture : vélo = piéton = voiture (même tracé,
+  même ETA). Vérifié.
+- Nouveau routeur primaire **BRouter** (`brouter.de`, gratuit, sans clé, CORS *) :
+  - `cycling` → profil `trekking` · `walking` → `hiking-beta` · `driving` → `car-fast`
+  - Tracé GeoJSON réel + turn-by-turn via `voicehints` (`timode=2`), angle de
+    virage → modifier (`slight left`, `sharp right`, `uturn`…).
+- Chaîne de fallback : **BRouter → OSRM (dépannage voiture) → Google Directions**
+  (si clé). Cache IndexedDB préfixé par fournisseur (pas de mélange vélo/voiture).
+- Côté natif Android : `RouteManager.fetchBRouter` + parsing voicehints →
+  `NavigationStep` (placement des flèches AR aux points de virage réels).
+- `brouter.de` ajouté au `network_security_config`.
+- 7 tests purs ajoutés (`useRoute.test.js`) : `angleToModifier` + `brouterToRoute`.
+
+### 📦 Versions
+- `package.json` : 3.2.2 → 3.2.3
+- `android/app/build.gradle` : versionCode 35 → 36, versionName 3.2.2 → 3.2.3
+
 ## v3.2.2 — 2026-06-05
 
 Release correctifs de sécurité (audit). Deux failles trouvées et corrigées.

@@ -1,6 +1,7 @@
 package com.silexperience.velohnav.ar
 
 import android.util.Log
+import com.google.gson.annotations.SerializedName
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import com.silexperience.velohnav.data.DirectionsApiService
@@ -54,16 +55,124 @@ class RouteManager(private val mapsApiKey: String) {
         mode: String = "bicycling"
     ): Result<NavigationRoute> {
         
+        // Primaire : BRouter (vrais profils vélo/piéton). Le serveur OSRM public
+        // ne route qu'en voiture quel que soit le profil → fallback de dépannage.
+        val brouterResult = fetchBRouter(oLat, oLng, dLat, dLng, mode)
+        if (brouterResult.isSuccess) return brouterResult
+        Log.w(TAG, "BRouter failed: ${brouterResult.exceptionOrNull()?.message}")
+
         val osrmResult = fetchOSRM(oLat, oLng, dLat, dLng, mode)
         if (osrmResult.isSuccess) return osrmResult
-        
+
         Log.w(TAG, "OSRM failed: ${osrmResult.exceptionOrNull()?.message}")
 
         if (mapsApiKey.isBlank() || mapsApiKey == "null" || mapsApiKey.length < 10) {
-            return Result.failure(Exception("OSRM indisponible. Configurez une clé Google Maps dans OPT."))
+            return Result.failure(Exception("Itinéraire indisponible (BRouter + OSRM HS). Configurez une clé Google Maps dans OPT."))
         }
 
         return fetchGoogle(oLat, oLng, dLat, dLng, mode)
+    }
+
+    // ── BRouter (vélo réel, gratuit, sans clé) ──────────────────────
+    private suspend fun fetchBRouter(
+        oLat: Double, oLng: Double,
+        dLat: Double, dLng: Double,
+        mode: String
+    ): Result<NavigationRoute> {
+        val profile = when (mode) {
+            "walking" -> "hiking-beta"
+            "driving" -> "car-fast"
+            else -> "trekking"
+        }
+        return try {
+            // %7C = '|' encodé (séparateur de waypoints BRouter). timode=2 → voicehints.
+            val lonlats = "$oLng,$oLat%7C$dLng,$dLat"
+            val url = "https://brouter.de/brouter?lonlats=$lonlats&profile=$profile" +
+                "&alternativeidx=0&format=geojson&timode=2"
+            val request = okhttp3.Request.Builder()
+                .url(url)
+                .header("User-Agent", "VelohNav/1.0")
+                .build()
+            val response = withContext(Dispatchers.IO) { httpClient.newCall(request).execute() }
+            if (!response.isSuccessful) return Result.failure(Exception("BRouter HTTP ${response.code}"))
+            val body = response.body?.string() ?: return Result.failure(Exception("BRouter: réponse vide"))
+            val gson = com.google.gson.Gson()
+            val res = gson.fromJson(body, BrouterResponse::class.java)
+            val feature = res.features.firstOrNull()
+                ?: return Result.failure(Exception("BRouter: aucune feature"))
+            val coords = feature.geometry.coordinates
+            if (coords.isEmpty()) return Result.failure(Exception("BRouter: géométrie vide"))
+            val props = feature.properties
+            val totalDist = props.trackLength?.toIntOrNull() ?: 0
+            val totalTime = props.totalTime?.toIntOrNull() ?: 0
+            val steps = buildBrouterSteps(coords, props.voicehints ?: emptyList(), totalDist, totalTime)
+            if (steps.isEmpty()) return Result.failure(Exception("BRouter: aucune étape"))
+            Result.success(NavigationRoute(steps, totalDist, totalTime))
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    // Construit les étapes de nav depuis la géométrie + les voicehints BRouter.
+    // Chaque voicehint pointe un index de la polyline ([lng,lat,elev]) = point de
+    // virage. On segmente la route entre points de virage successifs.
+    private fun buildBrouterSteps(
+        coords: List<List<Double>>,
+        hints: List<List<Double>>,
+        totalDist: Int,
+        totalTime: Int
+    ): List<NavigationStep> {
+        fun lat(i: Int) = coords[i.coerceIn(0, coords.size - 1)][1]
+        fun lng(i: Int) = coords[i.coerceIn(0, coords.size - 1)][0]
+
+        // Indices des points de virage (depuis les voicehints) + destination finale.
+        val turns = hints.map { h ->
+            val idx = (h.getOrNull(0) ?: 0.0).toInt().coerceIn(0, coords.size - 1)
+            val angle = h.getOrNull(4) ?: 0.0
+            Pair(idx, angle)
+        }.toMutableList()
+        if (turns.isEmpty() || turns.last().first < coords.size - 1) {
+            turns.add(Pair(coords.size - 1, 0.0))
+        }
+
+        val steps = mutableListOf<NavigationStep>()
+        var prevIdx = 0
+        for ((i, turn) in turns.withIndex()) {
+            val (endIdx, angle) = turn
+            var d = 0.0
+            var j = prevIdx
+            while (j < endIdx) {
+                d += GeospatialManager.distanceMeters(lat(j), lng(j), lat(j + 1), lng(j + 1))
+                j++
+            }
+            val frac = if (totalDist > 0) d / totalDist else 0.0
+            val man = angleToManeuver(angle)
+            steps.add(
+                NavigationStep(
+                    index = i,
+                    startLat = lat(prevIdx), startLng = lng(prevIdx),
+                    endLat = lat(endIdx), endLng = lng(endIdx),
+                    distanceMeters = d.toInt(),
+                    durationSeconds = (totalTime * frac).toInt(),
+                    instruction = man, maneuver = man, streetName = ""
+                )
+            )
+            prevIdx = endIdx
+        }
+        return steps
+    }
+
+    // Angle de virage BRouter → modifier (négatif = gauche, positif = droite).
+    private fun angleToManeuver(angle: Double): String {
+        val abs = kotlin.math.abs(angle)
+        if (abs < 18) return "straight"
+        val side = if (angle < 0) "left" else "right"
+        return when {
+            abs >= 160 -> "uturn"
+            abs >= 110 -> "sharp $side"
+            abs < 40 -> "slight $side"
+            else -> side
+        }
     }
 
     private suspend fun fetchOSRM(
@@ -181,4 +290,14 @@ class RouteManager(private val mapsApiKey: String) {
     data class OsrmLeg(val steps: List<OsrmStep>, val distance: Double, val duration: Double)
     data class OsrmStep(val distance: Double, val duration: Double, val name: String, val maneuver: OsrmManeuver)
     data class OsrmManeuver(val location: List<Double>, val type: String, val modifier: String?)
+
+    // ── BRouter GeoJSON ─────────────────────────────────────────────
+    data class BrouterResponse(val features: List<BrouterFeature> = emptyList())
+    data class BrouterFeature(val geometry: BrouterGeometry, val properties: BrouterProps)
+    data class BrouterGeometry(val coordinates: List<List<Double>> = emptyList()) // [lng,lat,elev]
+    data class BrouterProps(
+        @SerializedName("track-length") val trackLength: String? = null,
+        @SerializedName("total-time") val totalTime: String? = null,
+        val voicehints: List<List<Double>>? = null // [pointIndex, command, exit, distance, angle]
+    )
 }

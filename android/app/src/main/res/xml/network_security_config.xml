@@ -14,6 +14,7 @@
     <domain-config cleartextTrafficPermitted="false">
         <domain includeSubdomains="true">cdt.hafas.de</domain>
         <domain includeSubdomains="true">router.project-osrm.org</domain>
+        <domain includeSubdomains="true">brouter.de</domain>
         <domain includeSubdomains="true">maps.googleapis.com</domain>
         <domain includeSubdomains="true">nominatim.openstreetmap.org</domain>
     </domain-config>
