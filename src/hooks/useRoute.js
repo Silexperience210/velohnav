@@ -67,6 +67,8 @@ export async function fetchOSRM(fromLat, fromLng, toLat, toLng, mode = "cycling"
       coords: data.routes[0].geometry.coordinates.map(([lng, lat]) => ({ lat, lng })),
       totalDist: Math.round(data.routes[0].distance),
       totalTime: Math.round(data.routes[0].duration),
+      totalAscent: null, totalDescent: null, // OSRM public : pas d'élévation
+      provider: "osrm",
       computedAt: Date.now(),
     };
     saveRoute(key, result).catch(() => {});
@@ -99,6 +101,8 @@ export async function fetchGoogleRoute(fromLat, fromLng, toLat, toLng, mode = "b
       coords: decodePolyline(data.routes[0].overview_polyline.points),
       totalDist: leg.distance.value,
       totalTime: leg.duration.value,
+      totalAscent: null, totalDescent: null,
+      provider: "google",
       computedAt: Date.now(),
     };
   } catch { return null; }
@@ -128,12 +132,48 @@ const BROUTER_CMD_LABEL = {
 
 // Convertit une réponse GeoJSON BRouter en route ({waypoints, coords, ...}).
 // Pure + testée — pas d'I/O, prend l'objet déjà parsé.
+// ── Dénivelé : accumulateur à hystérésis ───────────────────────────
+// Somme les montées/descentes en ignorant le bruit altimétrique < threshold.
+// (Les données SRTM de BRouter oscillent de ±1-2m — sans hystérésis, un
+// trajet plat afficherait 30m de D+ fantôme.) Pure + testée.
+export function computeAscentDescent(elevs, threshold = 2) {
+  if (!Array.isArray(elevs) || elevs.length < 2) return { ascent: 0, descent: 0 };
+  let ascent = 0, descent = 0, anchor = elevs[0];
+  for (let i = 1; i < elevs.length; i++) {
+    const e = elevs[i];
+    if (!Number.isFinite(e)) continue;
+    const delta = e - anchor;
+    if (delta >= threshold)       { ascent  += delta;  anchor = e; }
+    else if (delta <= -threshold) { descent += -delta; anchor = e; }
+  }
+  return { ascent: Math.round(ascent), descent: Math.round(descent) };
+}
+
+// ── Facteur ETA dénivelé ───────────────────────────────────────────
+// Luxembourg-Ville : 70m entre la Ville Haute et le Grund. Un temps "plat"
+// y est une fiction. Équivalence classique : 1m de D+ ≈ 8-9m de distance
+// plate supplémentaire (Naismith pour la marche ; ordre de grandeur
+// comparable pour un Vel'OH mécanique en montée urbaine).
+// Appliqué UNIQUEMENT aux routes OSRM/Google (temps plats) — BRouter
+// intègre déjà la pente dans son total-time. Pure + testée.
+export function climbEtaFactor(ascentM, distM, mode = "cycling") {
+  if (!Number.isFinite(ascentM) || !Number.isFinite(distM) || distM <= 0 || ascentM <= 0) return 1;
+  const FLAT_EQUIV = mode === "walking" ? 8 : 9; // m de plat par m de D+
+  const CLAMP_MAX  = mode === "walking" ? 1.5 : 1.6;
+  return Math.min(CLAMP_MAX, (distM + ascentM * FLAT_EQUIV) / distM);
+}
+
+// D+ au-delà duquel on recommande un vélo électrique (mode cycling)
+export const EBIKE_ASCENT_THRESHOLD_M = 40;
+
 export function brouterToRoute(geojson) {
   const f = geojson?.features?.[0];
   const rawCoords = f?.geometry?.coordinates;
   if (!Array.isArray(rawCoords) || rawCoords.length === 0) return null;
-  // BRouter renvoie [lng, lat, elevation] — on ignore l'altitude.
+  // BRouter renvoie [lng, lat, elevation] — l'altitude alimente le D+/D-.
   const coords = rawCoords.map(([lng, lat]) => ({ lat, lng }));
+  const elevs  = rawCoords.map(c => c[2]).filter(e => Number.isFinite(e));
+  const { ascent, descent } = computeAscentDescent(elevs);
   const p = f.properties || {};
   const totalDist = parseInt(p["track-length"] ?? "0", 10) || 0;
   const totalTime = parseInt(p["total-time"] ?? "0", 10) || 0;
@@ -162,7 +202,13 @@ export function brouterToRoute(geojson) {
       waypoints.push({ lat: last.lat, lng: last.lng, instruction: "arrive", modifier: "straight", distMeters: 0, streetName: "" });
     }
   }
-  return { waypoints, coords, totalDist, totalTime, computedAt: Date.now() };
+  return {
+    waypoints, coords, totalDist, totalTime,
+    totalAscent: elevs.length >= 2 ? ascent : null,
+    totalDescent: elevs.length >= 2 ? descent : null,
+    provider: "brouter",
+    computedAt: Date.now(),
+  };
 }
 
 export async function fetchBRouter(fromLat, fromLng, toLat, toLng, mode = "cycling", { skipCache = false } = {}) {

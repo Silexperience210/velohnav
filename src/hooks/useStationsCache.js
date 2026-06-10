@@ -7,7 +7,7 @@ const DB_NAME    = "velohnav";
 const STORE      = "stations";
 const META_STORE = "meta";
 const ROUTES_STORE = "routes";
-const DB_VERSION = 3;  // bumped pour ajouter le store "routes"
+const DB_VERSION = 4;  // v4 : store "avail" (historique de disponibilité)
 
 let dbPromise = null;
 
@@ -24,6 +24,7 @@ function openDB() {
       if (!db.objectStoreNames.contains(META_STORE))  db.createObjectStore(META_STORE, { keyPath: "key" });
       if (!db.objectStoreNames.contains("ghosts"))    db.createObjectStore("ghosts", { keyPath: "key" });
       if (!db.objectStoreNames.contains(ROUTES_STORE)) db.createObjectStore(ROUTES_STORE, { keyPath: "key" });
+      if (!db.objectStoreNames.contains("avail"))      db.createObjectStore("avail", { keyPath: "key" });
     };
   });
   return dbPromise;

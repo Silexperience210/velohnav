@@ -87,10 +87,15 @@ export function addToHistory(station) {
 
 // ── Arrêt TC le plus proche ────────────────────────────────────────
 import { TRANSIT_STOPS } from "./constants.js";
-export function nearestStop(lat, lng) {
+// FIX v3.3 : l'ancienne formule appliquait 111 km/° aux DEUX axes. Or à la
+// latitude de Luxembourg (49.6°N), 1° de LONGITUDE ≈ 72 km (111 × cos φ).
+// Résultat : distances est-ouest surestimées de ~54% → le multimodal switch
+// pouvait choisir un mauvais arrêt pivot. Correction du facteur cos(lat).
+export function nearestStop(lat, lng, stops = TRANSIT_STOPS) {
+  const cosLat = Math.cos(lat * Math.PI / 180);
   let best = null, bestDist = Infinity;
-  TRANSIT_STOPS.forEach(s => {
-    const d = Math.sqrt((s.lat-lat)**2 + (s.lng-lng)**2) * 111000;
+  stops.forEach(s => {
+    const d = Math.sqrt((s.lat - lat) ** 2 + ((s.lng - lng) * cosLat) ** 2) * 111000;
     if (d < bestDist) { bestDist = d; best = { ...s, distM: Math.round(d) }; }
   });
   return best;

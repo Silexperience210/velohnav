@@ -14,10 +14,11 @@
 
 import { useState, useEffect, useRef, useCallback } from "react";
 import { haversine } from "../utils.js";
+import { publishGhost, fetchWorldGhost } from "../nostr/ghosts.js";
 
 const DB_NAME    = "velohnav";
 const STORE      = "ghosts";
-const DB_VERSION = 3;  // aligné avec useStationsCache (store routes ajouté)
+const DB_VERSION = 4;  // v4 : store "avail" (historique dispo) — voir useAvailability
 // Distance min entre 2 points enregistrés (anti-spam GPS)
 const MIN_RECORD_DIST = 8;
 // Distance max entre point et station pour être considéré comme "départ" / "arrivée"
@@ -41,6 +42,11 @@ function openDB() {
       // Nouveau store : ghosts (clé = "originId__destId__mode")
       if (!db.objectStoreNames.contains(STORE))
         db.createObjectStore(STORE, { keyPath: "key" });
+      if (!db.objectStoreNames.contains("routes"))
+        db.createObjectStore("routes", { keyPath: "key" });
+      // v4 : historique de disponibilité par (station, jour, quart d'heure)
+      if (!db.objectStoreNames.contains("avail"))
+        db.createObjectStore("avail", { keyPath: "key" });
     };
   });
   return dbPromise;
@@ -124,15 +130,24 @@ export function useGhostTrail({ gpsPos, navStation, originStation, navMode, acti
   const originId = originStation?.id;
   const destId   = navStation?.id;
 
-  // Charger le meilleur run au démarrage de la nav
+  // Charger le meilleur run au démarrage de la nav — LOCAL + MONDIAL (Nostr)
+  // en parallèle. On court contre le plus rapide des deux. Le fetch Nostr a
+  // un timeout court (4s) et échoue silencieusement → jamais bloquant.
   useEffect(() => {
     if (!active || !originId || !destId || !navMode) {
       setGhostData(null); setGhostPos(null); setDelta(0);
       return;
     }
     let cancelled = false;
-    loadBestGhost(originId, destId, navMode).then(g => {
-      if (!cancelled) setGhostData(g);
+    Promise.all([
+      loadBestGhost(originId, destId, navMode),
+      fetchWorldGhost(originId, destId, navMode).catch(() => null),
+    ]).then(([local, world]) => {
+      if (cancelled) return;
+      const localG = local ? { ...local, source: "local" } : null;
+      // Le record mondial ne remplace le local que s'il est strictement plus rapide
+      const best = (world && (!localG || world.totalTime < localG.totalTime)) ? world : localG;
+      setGhostData(best);
     });
     return () => { cancelled = true; };
   }, [active, originId, destId, navMode]);
@@ -146,11 +161,23 @@ export function useGhostTrail({ gpsPos, navStation, originStation, navMode, acti
     if (!active || !gpsPos) {
       // Si on était en train d'enregistrer et qu'on coupe, on sauve le run
       if (recordingActive && recordingRef.current.length >= 5 && originId && destId && navMode) {
-        const last = recordingRef.current[recordingRef.current.length - 1];
+        const points = recordingRef.current;
+        const last = points[points.length - 1];
         // Vérifie qu'on a bien atteint la zone de destination
         const target = navStationRef.current;
         if (target && haversine(last.lat, last.lng, target.lat, target.lng) < ENDPOINT_RADIUS) {
-          saveGhost(originId, destId, navMode, recordingRef.current);
+          const totalTime = last.t - points[0].t;
+          const totalDist = points.reduce((acc, p, i) =>
+            i === 0 ? 0 : acc + haversine(points[i-1].lat, points[i-1].lng, p.lat, p.lng), 0);
+          saveGhost(originId, destId, navMode, points).then(savedAsBest => {
+            // Partage Nostr : seulement si c'est notre nouveau record local.
+            // Fire-and-forget — mine le PoW, publie, ferme. Jamais bloquant.
+            if (savedAsBest) {
+              publishGhost({ originId, destId, mode: navMode, points, totalTime, totalDist })
+                .then(r => { if (r.success) console.log("[Ghost] Record publié sur Nostr", r.eventId?.slice(0, 8)); })
+                .catch(() => {});
+            }
+          });
         }
       }
       recordingRef.current = [];
@@ -216,5 +243,6 @@ export function useGhostTrail({ gpsPos, navStation, originStation, navMode, acti
     hasGhost: !!ghostData,             // true si un meilleur run existe
     bestTime: ghostData?.totalTime,    // ms
     currentDelta,                      // secondes (+ retard, - avance)
+    ghostSource: ghostData?.source ?? null,  // "local" | "world" | null
   };
 }

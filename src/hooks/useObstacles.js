@@ -7,37 +7,35 @@
 // même sans suppression explicite (filtre côté client sur created_at + tag
 // NIP-40 expiration).
 //
-// Signature: Schnorr BIP-340 via @noble/secp256k1 — events validés par tous
-// les relays Nostr standards. Clé éphémère (32-byte privkey) générée à la
-// session, jamais persistée. L'identité du reporter est anonyme et non liée
-// à une vraie identité Nostr.
+// SÉCURITÉ (v3.3) :
+//   - Signature Schnorr BIP-340 (intégrité) — clé éphémère anonyme/session.
+//   - PoW NIP-13 (anti-spam) : chaque event doit prouver POW_BITS_OBSTACLE
+//     bits de travail. Coût négligeable pour un user (<1s, miné en async
+//     sans bloquer l'UI), prohibitif pour un flood de masse.
+//   - created_at futur rejeté (sinon bypass trivial du décay 24h en
+//     publiant un event daté de demain). Géré dans core.verifyEvent.
 //
 // Architecture: pool WebSocket multi-relay singleton, reconnect auto avec
 // backoff, dedup par event_id côté client.
 
 import { useState, useEffect, useRef, useCallback } from "react";
-import { schnorr, hashes } from "@noble/secp256k1";
-import { sha256 } from "@noble/hashes/sha2";
 import { haversine } from "../utils.js";
+import {
+  DEFAULT_RELAYS, generateEphemeralKey, buildEvent, verifyEvent, hasValidPow,
+} from "../nostr/core.js";
 
-// @noble/secp256k1 v3 : schnorr.verify (synchrone) exige un sha256 synchrone
-// configuré globalement, sinon il renvoie false pour TOUTE signature — même
-// valide (signAsync, lui, utilise un hash async interne et n'en a pas besoin).
-// Sans cette ligne, verifyEvent rejette tous les events entrants → la feature
-// obstacles crowd-sourced est silencieusement morte.
-if (!hashes.sha256) hashes.sha256 = sha256;
-
-// Relays Nostr publics — à compléter selon préférence
-const DEFAULT_RELAYS = [
-  "wss://relay.damus.io",
-  "wss://nos.lol",
-  "wss://relay.nostr.band",
-];
 // Kind custom VelohNav — #d-tag commence par "velohnav-obstacle-"
 // (NIP-33 replaceable parameterized event)
 const KIND_OBSTACLE = 30078;
 const DECAY_MS      = 24 * 60 * 60 * 1000;  // 24h
 const VISIBILITY_RADIUS_M = 1500;            // affichage local
+
+// PoW NIP-13 exigé sur les obstacles. 18 bits ≈ 262k hash SHA-256 :
+// <1s sur un smartphone récent, ~3s sur du bas de gamme — une fois par
+// signalement. Un spammeur voulant publier 10 000 faux "Danger" paie
+// ~1-3h de CPU au lieu de 0. Les events sans PoW sont REJETÉS à la
+// réception (les anciens events pré-v3.3 expirent en 24h de toute façon).
+export const POW_BITS_OBSTACLE = 18;
 
 export const OBSTACLE_TYPES = {
   construction: { label: "Chantier",      icon: "🚧", color: "#F5820D" },
@@ -46,77 +44,22 @@ export const OBSTACLE_TYPES = {
   hazard:       { label: "Danger",        icon: "⚠️", color: "#FFD700" },
 };
 
-// ── Génération clé éphémère anonyme ───────────────────────────────
-// Pour signer les events sans exposer une vraie identité Nostr de l'user.
-// Session-only : nouvelle clé à chaque ouverture d'app.
-function generateEphemeralKey() {
-  // Utilise l'API standard @noble: 32 bytes random + dérive la pubkey x-only
-  const sk = new Uint8Array(32);
-  crypto.getRandomValues(sk);
-  // schnorr.getPublicKey retourne 32 bytes (x-only, BIP-340)
-  const pk = schnorr.getPublicKey(sk);
-  return { sk, pk: bytesToHex(pk) };
-}
-
-function bytesToHex(bytes) {
-  return Array.from(bytes).map(b => b.toString(16).padStart(2, "0")).join("");
-}
-
-// ── Construction event Nostr (signé Schnorr BIP-340) ──────────────
-// Format NIP-01 : event_id = sha256(canonical_serialization), sig = Schnorr.
-// Compatible avec tous les relays publics standards.
-async function buildEvent({ secretKey, pubkeyHex, kind, content, tags }) {
-  const created_at = Math.floor(Date.now() / 1000);
-  const serialized = JSON.stringify([0, pubkeyHex, created_at, kind, tags, content]);
-  // event_id = sha256 du serialized
-  const idBytes = new Uint8Array(
-    await crypto.subtle.digest("SHA-256", new TextEncoder().encode(serialized))
-  );
-  const id = bytesToHex(idBytes);
-  // Signature Schnorr BIP-340 — async (utilise crypto.subtle pour HMAC-SHA-256)
-  const sigBytes = await schnorr.signAsync(idBytes, secretKey);
-  return {
-    id,
-    pubkey: pubkeyHex,
-    created_at,
-    kind,
-    tags,
-    content,
-    sig: bytesToHex(sigBytes),
-  };
-}
-
-// ── Vérification Schnorr BIP-340 d'un event Nostr ─────────────────
-export async function verifyEvent(evt) {
-  try {
-    const serialized = JSON.stringify([0, evt.pubkey, evt.created_at, evt.kind, evt.tags, evt.content]);
-    const idBytes = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(serialized)));
-    const idHex = bytesToHex(idBytes);
-    if (idHex !== evt.id) return false;
-    const sigBytes = hexToBytes(evt.sig);
-    const pubBytes = hexToBytes(evt.pubkey);
-    return schnorr.verify(sigBytes, idBytes, pubBytes);
-  } catch { return false; }
-}
-
-function hexToBytes(hex) {
-  const bytes = new Uint8Array(hex.length / 2);
-  for (let i = 0; i < hex.length; i += 2) {
-    bytes[i / 2] = parseInt(hex.substring(i, i + 2), 16);
-  }
-  return bytes;
-}
+// Ré-export pour compat tests existants
+export { verifyEvent };
 
 // ── Parsing d'event obstacle reçu ──────────────────────────────────
 async function parseObstacle(evt) {
   if (evt.kind !== KIND_OBSTACLE) return null;
   try {
+    // 1. Anti-spam : PoW NIP-13 obligatoire (check le moins cher en premier)
+    if (!hasValidPow(evt, POW_BITS_OBSTACLE)) return null;
+    // 2. Intégrité : id + signature Schnorr + created_at pas dans le futur
     const valid = await verifyEvent(evt);
     if (!valid) { console.warn("[Nostr] Event signature invalide", evt.id); return null; }
     const data = JSON.parse(evt.content);
     if (typeof data.lat !== "number" || typeof data.lng !== "number") return null;
     if (!OBSTACLE_TYPES[data.type]) return null;
-    // Décay 24h
+    // 3. Décay 24h
     if (Date.now() / 1000 - evt.created_at > DECAY_MS / 1000) return null;
     return {
       id:        evt.id,
@@ -268,7 +211,8 @@ export function useObstacles(gpsPos, { enabled = true, relays = DEFAULT_RELAYS }
     return haversine(gpsPos.lat, gpsPos.lng, o.lat, o.lng) <= VISIBILITY_RADIUS_M;
   });
 
-  // Publication d'un nouveau signalement
+  // Publication d'un nouveau signalement — mine le PoW NIP-13 (async, avec
+  // yields : l'UI reste fluide), puis signe et broadcast.
   const report = useCallback(async ({ type, lat, lng, note = "" }) => {
     if (!OBSTACLE_TYPES[type] || typeof lat !== "number" || typeof lng !== "number") {
       throw new Error("Type ou coordonnées invalides");
@@ -280,6 +224,7 @@ export function useObstacles(gpsPos, { enabled = true, relays = DEFAULT_RELAYS }
       pubkeyHex: keyRef.current.pk,
       kind: KIND_OBSTACLE,
       content,
+      powBits: POW_BITS_OBSTACLE,
       tags: [
         ["d", dTag],
         ["t", "velohnav-obstacle"],

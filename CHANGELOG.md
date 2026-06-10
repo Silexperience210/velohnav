@@ -1,5 +1,40 @@
 # Changelog
 
+## v3.3.0 — 2026-06-10
+
+### 🐛 Corrections
+- **`nearestStop` : distances est-ouest surestimées de ~54%** — la formule équirectangulaire n'appliquait pas `cos(lat)` au delta de longitude (à 49.6°N, 1° de lng ≈ 72 km, pas 111). Le multimodal switch pouvait choisir un mauvais arrêt pivot.
+- **Obstacles Nostr : bypass du décay 24h** — un event avec `created_at` dans le futur survivait indéfiniment au filtre d'âge. Tout `created_at` > now+5min est désormais rejeté (`nostr/core.verifyEvent`).
+- README : alpha du filtre boussole documenté à 0.25, le code utilise 0.08.
+
+### 🧭 Cap fusionné GPS + magnétomètre (`useFusedHeading`)
+- Fusion circulaire du cap magnétique et de la course GPS, pondérée par la vitesse (0% à l'arrêt → 85% à 16 km/h, EMA 0.35 sur la course, TTL 5s).
+- Élimine la dérive magnétique urbaine (±15-25°) pour les pins, le tracé AR et l'audio spatial.
+
+### ⛰ ETA dénivelé + reco vélo électrique
+- `brouterToRoute` extrait le profil altimétrique (coordonnées 3D BRouter) → `totalAscent`/`totalDescent` via accumulateur à hystérésis ±2m (anti-bruit SRTM).
+- `climbEtaFactor` : 1m de D+ ≈ 9m de plat (vélo) / 8m (marche), clamp 1.6×/1.5× — appliqué aux temps OSRM/Google uniquement (BRouter intègre déjà la pente).
+- Badge HUD `⛰ D+ Xm` + `⚡ élec conseillé` dès 40m de D+.
+- Champ `provider` ajouté à toutes les routes (brouter/osrm/google).
+
+### 🌍 Ghost Trails mondiaux (Nostr)
+- Publication du record local par segment (kind 30078, d-tag `velohnav-ghost-{o}__{d}__{mode}`, PoW 15 bits, clé éphémère).
+- Au démarrage de la nav : fetch parallèle local + mondial, on court contre le plus rapide. Badge `🌍 REC MONDIAL`.
+- Anti-cheat `isPlausibleRun` : vitesses moy/max par mode, timestamps croissants depuis t=0, bbox Luxembourg, cohérence totalTime, distance min 100m, durée min 30s. Appliqué en réception ET avant publication.
+
+### 🔮 Prédiction de disponibilité (`useAvailability`)
+- Historique par (station, jour, quart d'heure) en IndexedDB (store `avail`, DB v4), alimenté par le refresh 60s (throttle 5 min), moyenne mobile n≤20.
+- Predictive Routing v2 : alerte anticipée "risque de saturation/vide à l'arrivée (~Xmin)" basée sur l'ETA de la route — garde-fous : ≥8 échantillons, stock actuel ≤2, dispo prédite <0.8.
+
+### 🛡 Anti-spam Nostr (NIP-13)
+- Nouveau socle `src/nostr/core.js` (hex, build/verify NIP-01, mining PoW async avec yields UI, validation cible déclarée anti-recyclage).
+- Obstacles : PoW 18 bits exigé en réception, miné à la publication sans bloquer l'UI.
+
+### ✅ Tests
+- 46 nouveaux tests (101 au total) : PoW, forge `created_at` futur, anti-cheat ghosts, math circulaire de fusion, hystérésis dénivelé, clamps ETA, fix cos(lat), buckets temporels.
+
+---
+
 ## v3.2.3 — 2026-06-05
 
 Routage vélo **réel** via BRouter — corrige le point #3 de l'audit.

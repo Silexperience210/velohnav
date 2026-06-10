@@ -4,6 +4,7 @@ import { C, COMPASS_LABELS, FOV, FISCHER_STORES } from "../constants.js";
 import { haversine, getBearing, fDist, fWalk, bCol, bTag, pins } from "../utils.js";
 
 import { useCompass } from "../hooks/useCompass.js";
+import { useFusedHeading } from "../hooks/useFusedHeading.js";
 import { useRoute } from "../hooks/useRoute.js";
 import { usePredictiveRouting } from "../hooks/usePredictiveRouting.js";
 import { useGhostTrail } from "../hooks/useGhostTrail.js";
@@ -42,7 +43,11 @@ function ARScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey=""
   const vidRef=useRef(null);
   const [cam,   setCam]  =useState("idle");
   const [pulse, setPulse]=useState(false);
-  const {heading,perm,start:startCompass}=useCompass();
+  const {heading:magHeading,perm,start:startCompass}=useCompass();
+  // Fusion magnétomètre + course GPS — tue la dérive magnétique en ville.
+  // Drop-in : tout le code aval (pins, projection, RouteOverlay) consomme
+  // `heading` sans rien savoir de la fusion.
+  const heading = useFusedHeading(magHeading, gpsPos);
   const [fischerOn, setFischerOn] = useState(false);
 
   // ── Navigation AR ───────────────────────────────────────────────
@@ -91,7 +96,7 @@ function ARScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey=""
   }, [navMode, gpsPos?.lat, gpsPos?.lng, originStation]);
 
   // ── Ghost Trail — fantôme du meilleur temps ──────────────────────
-  const { ghostPos, hasGhost, bestTime, currentDelta } = useGhostTrail({
+  const { ghostPos, hasGhost, bestTime, currentDelta, ghostSource } = useGhostTrail({
     gpsPos, navStation, originStation, navMode,
     active: navMode !== null,
   });
@@ -125,6 +130,7 @@ function ARScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey=""
       stations, navStation, gpsPos, navMode,
       intent: navIntent,
       active: navMode !== null,
+      etaSeconds: route?.totalTime ?? null,  // mode prédictif : dispo à l'arrivée
     });
 
   // Switch sur la station alternative — relance la nav vers la nouvelle dest
@@ -684,6 +690,7 @@ function ARScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey=""
           currentDelta={currentDelta}
           hasGhost={hasGhost}
           bestTime={bestTime}
+          ghostSource={ghostSource}
         />
       )}
 

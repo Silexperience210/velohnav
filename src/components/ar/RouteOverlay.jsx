@@ -7,6 +7,7 @@ import { C } from "../../constants.js";
 import { haversine, fDist, getBearing } from "../../utils.js";
 import { projectPoint, detectWrongWay } from "./projection.js";
 import { windImpact } from "../../hooks/useWeather.js";
+import { climbEtaFactor, EBIKE_ASCENT_THRESHOLD_M } from "../../hooks/useRoute.js";
 
 function RouteOverlay({ route, gpsPos, heading, mode, onClose, weather=null, spatialAudio=false,
                         offRoute=false, recalculating=false, manualRecalc=null, isNight=false }) {
@@ -253,10 +254,29 @@ function RouteOverlay({ route, gpsPos, heading, mode, onClose, weather=null, spa
     return windImpact(bear, weather.windDir ?? 0, weather.wind ?? 0);
   }, [weather, mode, gpsPos?.lat, gpsPos?.lng, nextWp?.lat, nextWp?.lng]);
 
+  // ── Slope-aware ETA — D+ du tracé (élévation BRouter) ──────────
+  // BRouter intègre déjà la pente dans son total-time → factor=1 (badge
+  // informatif seulement). OSRM/Google donnent un temps "plat" → on
+  // applique climbEtaFactor. La reco ⚡ s'affiche dès EBIKE_ASCENT_THRESHOLD_M
+  // de D+ en mode vélo — sur un Vel'OH méca, la Montée de Clausen se mérite.
+  const climb = useMemo(() => {
+    const ascent = route?.totalAscent;
+    if (ascent == null || !route) return { ascent: null, factor: 1, recommendElectric: false };
+    const factor = route.provider === "brouter"
+      ? 1
+      : climbEtaFactor(ascent, route.totalDist, mode);
+    return {
+      ascent,
+      descent: route.totalDescent ?? 0,
+      factor,
+      recommendElectric: mode !== "walking" && ascent >= EBIKE_ASCENT_THRESHOLD_M,
+    };
+  }, [route?.totalAscent, route?.totalDescent, route?.totalDist, route?.provider, mode]);
+
   // Early return APRÈS tous les hooks
   if (!route) return null;
 
-  const correctedTime = Math.round(route.totalTime * wind.factor / 60);
+  const correctedTime = Math.round(route.totalTime * wind.factor * climb.factor / 60);
   const baseTime      = Math.round(route.totalTime / 60);
 
   // Étiquette de direction textuelle
@@ -336,6 +356,23 @@ function RouteOverlay({ route, gpsPos, heading, mode, onClose, weather=null, spa
             {baseTime !== correctedTime && (
               <span style={{color:C.muted}}>· était {baseTime}min</span>
             )}
+          </div>
+        )}
+
+        {/* Badge dénivelé — D+ significatif sur le tracé (élévation BRouter) */}
+        {climb.ascent != null && climb.ascent >= 20 && mode !== "walking" && (
+          <div style={{
+            background: climb.recommendElectric ? "rgba(245,130,13,0.15)" : "rgba(8,12,15,0.75)",
+            border: `1px solid ${climb.recommendElectric ? C.accent : C.border}`,
+            borderRadius: 5, padding: "3px 10px",
+            color: climb.recommendElectric ? C.accent : C.muted,
+            fontSize: 8, fontFamily: C.fnt, letterSpacing: 1,
+            display: "flex", alignItems: "center", gap: 6,
+          }}>
+            <span>⛰</span>
+            <span style={{fontWeight:700}}>D+ {climb.ascent}m</span>
+            {climb.descent >= 20 && <span>· D- {climb.descent}m</span>}
+            {climb.recommendElectric && <span style={{fontWeight:700}}>· ⚡ élec conseillé</span>}
           </div>
         )}
       </div>

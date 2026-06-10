@@ -5,7 +5,8 @@
 import { C, FOV } from "../../constants.js";
 import { haversine, getBearing } from "../../utils.js";
 
-function GhostPin({ ghostPos, gpsPos, heading, currentDelta, hasGhost, bestTime }) {
+function GhostPin({ ghostPos, gpsPos, heading, currentDelta, hasGhost, bestTime, ghostSource = null }) {
+  // ghostSource: "world" = on court contre le record MONDIAL du segment (Nostr)
   if (!hasGhost || !ghostPos || !gpsPos || heading === null) return null;
   if (ghostPos.finished) return null;
 
@@ -99,7 +100,7 @@ function GhostPin({ ghostPos, gpsPos, heading, currentDelta, hasGhost, bestTime 
         <span style={{fontSize:11}}>👻</span>
         <div style={{display:"flex",flexDirection:"column",gap:1}}>
           <div style={{color:C.muted,fontSize:6,fontFamily:C.fnt,letterSpacing:1}}>
-            {isAhead ? "RECORD EN VUE" : isBehind ? "RETARD" : "AU COUDE À COUDE"}
+            {ghostSource === "world" ? "🌍 REC MONDIAL · " : ""}{isAhead ? "RECORD EN VUE" : isBehind ? "RETARD" : "AU COUDE À COUDE"}
           </div>
           <div style={{color:deltaCol,fontSize:9,fontFamily:C.fnt,fontWeight:700}}>
             {deltaSign}{currentDelta}s {!showPin && "· loin"}

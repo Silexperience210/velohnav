@@ -7,6 +7,7 @@ import { haversine, getBearing, fDist, bTag, bCol, enrich, parseStation,
 import { useWeather } from "./hooks/useWeather.js";
 import { useTransit } from "./hooks/useTransit.js";
 import { saveStations, loadStations } from "./hooks/useStationsCache.js";
+import { recordAvailability } from "./hooks/useAvailability.js";
 const ARScreen    = lazy(() => import("./components/ARScreen.jsx"));
 import MapScreen   from "./components/MapScreen.jsx";
 import AIScreen    from "./components/AIScreen.jsx";
@@ -173,6 +174,8 @@ export default function App() {
     } else {
       // Fetch réussi → persister en cache pour offline
       saveStations(newStations).catch(e => console.warn("[Cache] save:", e));
+      // + alimenter l'historique de dispo (prédiction d'arrivée) — throttlé 5min
+      recordAvailability(newStations).catch(()=>{});
     }
     // FIX #14 : Comparer avec les stations précédentes → notifier si vide/faible
     newStations.forEach(s=>{

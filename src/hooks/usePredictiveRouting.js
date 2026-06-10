@@ -16,6 +16,7 @@
 
 import { useState, useEffect, useRef } from "react";
 import { haversine } from "../utils.js";
+import { predictAvailability } from "./useAvailability.js";
 
 // Rayon max de recherche d'alternative (m)
 const ALT_RADIUS_M = 700;
@@ -53,6 +54,34 @@ function scoreAlternative(s, intent, gpsPos, originalDest) {
   return stockBonus - distFromUser * 0.3 - distFromOrig * 0.5;
 }
 
+// Seuils du mode PRÉDICTIF (v3.3) : on alerte AVANT la saturation si
+// l'historique de dispo indique que la station sera probablement vide/pleine
+// à l'heure d'arrivée. Garde-fous stricts pour éviter les fausses alertes :
+const PRED_MIN_SAMPLES   = 8;     // historique mini avant de prédire
+const PRED_STOCK_THRESH  = 0.8;   // dispo moyenne prédite < 0.8 = risque
+const PRED_NOW_MAX_STOCK = 2;     // ne prédit que si la station est DÉJÀ basse
+const PRED_MIN_ETA_S     = 240;   // inutile de prédire à <4 min de l'arrivée
+
+/** Sélectionne la meilleure station alternative (partagé réactif/prédictif). */
+function findBestAlternative({ stations, navStation, gpsPos, intent, dismissedIds }) {
+  const distToOriginal = haversine(gpsPos.lat, gpsPos.lng, navStation.lat, navStation.lng);
+  const candidates = stations
+    .filter(s =>
+      s.id !== navStation.id &&
+      !dismissedIds.has(s.id) &&
+      isUsable(s, intent) &&
+      haversine(gpsPos.lat, gpsPos.lng, s.lat, s.lng) <= Math.max(distToOriginal * MAX_DETOUR_FACTOR, ALT_RADIUS_M)
+    )
+    .map(s => ({
+      ...s,
+      _score: scoreAlternative(s, intent, gpsPos, navStation),
+      _distFromUser: haversine(gpsPos.lat, gpsPos.lng, s.lat, s.lng),
+      _detourMeters: Math.round(haversine(gpsPos.lat, gpsPos.lng, s.lat, s.lng) - distToOriginal),
+    }))
+    .sort((a, b) => b._score - a._score);
+  return candidates[0] ?? null;
+}
+
 export function usePredictiveRouting({
   stations,
   navStation,
@@ -60,6 +89,7 @@ export function usePredictiveRouting({
   navMode,
   intent = "dropoff",  // par défaut : on va se garer
   active = false,
+  etaSeconds = null,   // temps restant estimé (route.totalTime) — mode prédictif
 }) {
   const [suggestion, setSuggestion] = useState(null);
   // Timestamps pour cooldown
@@ -77,36 +107,52 @@ export function usePredictiveRouting({
     const current = stations.find(s => s.id === navStation.id);
     if (!current) return;
 
-    // Si la station originale est encore utilisable, rien à faire
+    // ── Branche 1 : station encore utilisable → check PRÉDICTIF ───────
     if (isUsable(current, intent)) {
       // Si on avait une suggestion mais la station originale est revenue dispo
       if (suggestion && current.id === navStation.id) setSuggestion(null);
+
+      // Mode prédictif : la station est OK maintenant, mais le sera-t-elle
+      // encore quand on ARRIVE ? Historique de dispo par (jour, quart d'heure).
+      const nowStock = intent === "dropoff" ? (current.docks ?? 0) : (current.bikes ?? 0);
+      if (etaSeconds && etaSeconds >= PRED_MIN_ETA_S &&
+          nowStock <= PRED_NOW_MAX_STOCK &&
+          Date.now() - lastSuggestRef.current >= RESUGGEST_COOLDOWN_MS) {
+        let cancelled = false;
+        predictAvailability(current.id, new Date(Date.now() + etaSeconds * 1000)).then(p => {
+          if (cancelled || !p || p.samples < PRED_MIN_SAMPLES) return;
+          const predicted = intent === "dropoff" ? p.docks : p.bikes;
+          if (predicted >= PRED_STOCK_THRESH) return;
+          const best = findBestAlternative({
+            stations, navStation, gpsPos, intent,
+            dismissedIds: dismissedIdsRef.current,
+          });
+          if (!best) return;
+          lastSuggestRef.current = Date.now();
+          setSuggestion({
+            station: best,
+            reason: intent === "dropoff"
+              ? `${navStation.name} : risque de saturation à l'arrivée (~${Math.round(etaSeconds/60)}min)`
+              : `${navStation.name} : risque d'être vide à l'arrivée (~${Math.round(etaSeconds/60)}min)`,
+            detourMeters: best._detourMeters,
+            stockAvailable: intent === "dropoff" ? best.docks : best.bikes,
+            intent,
+            predictive: true,
+          });
+        });
+        return () => { cancelled = true; };
+      }
       return;
     }
 
+    // ── Branche 2 : station saturée MAINTENANT (mode réactif) ─────────
     // Cooldown : ne pas spam des suggestions
     if (Date.now() - lastSuggestRef.current < RESUGGEST_COOLDOWN_MS) return;
 
-    // Cherche les meilleures alternatives dans le rayon
-    const distToOriginal = haversine(gpsPos.lat, gpsPos.lng, navStation.lat, navStation.lng);
-    const candidates = stations
-      .filter(s =>
-        s.id !== navStation.id &&
-        !dismissedIdsRef.current.has(s.id) &&
-        isUsable(s, intent) &&
-        haversine(gpsPos.lat, gpsPos.lng, s.lat, s.lng) <= Math.max(distToOriginal * MAX_DETOUR_FACTOR, ALT_RADIUS_M)
-      )
-      .map(s => ({
-        ...s,
-        _score: scoreAlternative(s, intent, gpsPos, navStation),
-        _distFromUser: haversine(gpsPos.lat, gpsPos.lng, s.lat, s.lng),
-        _detourMeters: Math.round(
-          haversine(gpsPos.lat, gpsPos.lng, s.lat, s.lng) - distToOriginal
-        ),
-      }))
-      .sort((a, b) => b._score - a._score);
-
-    const best = candidates[0];
+    const best = findBestAlternative({
+      stations, navStation, gpsPos, intent,
+      dismissedIds: dismissedIdsRef.current,
+    });
     if (!best) return;
 
     lastSuggestRef.current = Date.now();
@@ -123,7 +169,7 @@ export function usePredictiveRouting({
   // (pas chaque tick GPS — sinon on recalcule à 1Hz pour rien)
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
-    active, navStation?.id, intent,
+    active, navStation?.id, intent, etaSeconds == null ? null : Math.round(etaSeconds / 60),
     // Trigger sur changement de stock de la station courante
     stations?.find(s => s.id === navStation?.id)?.bikes,
     stations?.find(s => s.id === navStation?.id)?.docks,

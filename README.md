@@ -29,7 +29,7 @@ VelohNav est une app de navigation AR pour le réseau Vel'OH! Luxembourg combina
 ### ⬡ AR — Réalité augmentée
 
 **Caméra + tracé**
-- **Boussole réelle** — `DeviceOrientationEvent` mode `absolute` (boussole magnétique) + low-pass filter alpha=0.25 anti-tremblement
+- **Boussole réelle** — `DeviceOrientationEvent` mode `absolute` (boussole magnétique) + low-pass filter EMA alpha=0.08 anti-tremblement + fusion course GPS (v3.3)
 - **Pins AR projetés** — calcul bearing + FOV 68° depuis GPS, projection en coordonnées écran
 - **Tracé route multi-couches** — halo glow + ombre + bord blanc + ligne couleur + tirets animés (effet "qui avance"), animation 30 fps via `requestAnimationFrame`
 - **Support DPI rétine** — canvas net sur écrans haute densité
@@ -71,12 +71,37 @@ VelohNav est une app de navigation AR pour le réseau Vel'OH! Luxembourg combina
 - Indicateur permanent en haut à gauche + pin AR avec halo orange dashed
 - Animation float + pulse, interpolation 5 fps via recherche binaire
 
+**Cap fusionné GPS + magnétomètre** 🧭 *(v3.3)*
+- Le magnétomètre dérive de ±15-25° en ville (trams, structures métalliques)
+- En mouvement, la course GPS (bearing entre positions) est insensible au magnétisme
+- Fusion circulaire pondérée par la vitesse : 0% à l'arrêt → 85% course GPS à 16 km/h
+- Drop-in : pins, tracé AR et audio spatial héritent du cap corrigé
+
+**ETA dénivelé + reco vélo électrique** ⛰ *(v3.3)*
+- Extraction du profil altimétrique BRouter (coordonnées 3D, accumulateur à hystérésis ±2m)
+- Badge HUD `⛰ D+ 62m · D- 18m` pendant la nav vélo
+- `⚡ élec conseillé` dès 40m de D+ — la Montée de Clausen sur un Vel'OH méca, ça se mérite
+- Facteur d'ETA appliqué aux routes OSRM/Google (temps plats) — BRouter intègre déjà la pente
+
+**Ghost Trails mondiaux via Nostr** 🌍👻 *(v3.3)*
+- Chaque record local est publié sur Nostr (kind 30078, d-tag par segment, anonyme)
+- À chaque nav : fetch du record MONDIAL du segment → on court contre le plus rapide (badge `🌍 REC MONDIAL`)
+- Anti-cheat par plausibilité : vitesse moyenne plafonnée (32 km/h vélo / 10 km/h marche), anti-téléportation par segment, bbox Luxembourg, timestamps strictement croissants, cohérence totalTime
+- PoW NIP-13 (15 bits) requis sur chaque event
+
+**Prédiction de disponibilité** 🔮 *(v3.3)*
+- Historique de dispo agrégé par (station, jour, quart d'heure) en IndexedDB — alimenté par le refresh 60s
+- Moyenne mobile à fenêtre exponentielle (~20 échantillons/bucket), zéro réseau, zéro ML
+- Predictive Routing v2 : alerte AVANT la saturation — "risque d'être vide à l'arrivée (~12min)" si l'historique du créneau le prédit (≥8 échantillons requis)
+
 **Crowd-sourced obstacles via Nostr** 🚧
 - 4 types signalables : Chantier, Vélo cassé, Sol glissant, Danger
 - Long-press 700ms sur la zone centrale AR → menu radial
 - Publié sur Nostr (kind 30078 NIP-33 paramétré, expiration 24h via NIP-40)
 - Reçu en live via subscription WebSocket aux relays publics (Damus, nos.lol, nostr.band)
 - **Signature Schnorr BIP-340** via `@noble/secp256k1` — events validés par tous les relays standards
+- **Anti-spam PoW NIP-13** *(v3.3)* — 18 bits de travail exigés par signalement (<1s pour un user, prohibitif pour un flood) ; events sans PoW rejetés
+- **Anti-bypass décay** *(v3.3)* — `created_at` futur rejeté (sinon un event daté de demain survivait au décay 24h)
 - Clé éphémère anonyme (32-byte privkey) générée à la session, jamais persistée
 - Pin AR avec halo coloré pulsant + nom + distance + ancienneté
 - Map `seen` au niveau du pool singleton — survit aux unmount/remount
