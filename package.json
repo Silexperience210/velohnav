@@ -2,7 +2,7 @@
   "name": "velohnav",
   "version": "3.3.0",
   "private": true,
-  "description": "AR bike-sharing app for Luxembourg Vel'OH! — JCDecaux API + Claude AI",
+  "description": "AR bike-sharing app for Luxembourg Vel'OH! — JCDecaux API + on-device AI (Qwen 2.5)",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
