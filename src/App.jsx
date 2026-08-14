@@ -9,8 +9,8 @@ import { useTransit } from "./hooks/useTransit.js";
 import { saveStations, loadStations } from "./hooks/useStationsCache.js";
 import { recordAvailability } from "./hooks/useAvailability.js";
 const ARScreen    = lazy(() => import("./components/ARScreen.jsx"));
+const AIScreen    = lazy(() => import("./components/AIScreen.jsx"));
 import MapScreen   from "./components/MapScreen.jsx";
-import AIScreen    from "./components/AIScreen.jsx";
 import SettingsScreen from "./components/SettingsScreen.jsx";
 
 // ── Status Bar ─────────────────────────────────────────────────────
