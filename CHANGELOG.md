@@ -1,5 +1,16 @@
 # Changelog
 
+## v3.4.0 — 2026-08-14
+
+### 🤖 IA embarquée on-device (remplace l'API Claude)
+- **Migration Claude → Qwen 2.5 1.5B** via `@huggingface/transformers` (transformers.js v3, WebGPU + fallback WASM).
+- **Zéro clé API, zéro serveur, zéro requête réseau après chargement** — position, itinéraires et questions ne quittent plus l'appareil.
+- **Réponses hors-ligne** — l'assistant fonctionne sans connexion (utile à vélo).
+- Nouveau module `src/ai/localModel.js` : chargement lazy + cache mémoire, template chat Qwen, génération greedy déterministe (fiable pour la balise `[NAV:…]`).
+- Champ « Clé Claude » retiré des réglages → indicateur « IA embarquée » (aucune clé requise).
+- Header de l'onglet AI : progression du chargement du modèle (%), état `loading/ready/error`.
+- ~256 tokens max (au lieu de 800) — suffisant pour des réponses concises 4-5 lignes.
+
 ## v3.3.0 — 2026-06-10
 
 ### 🐛 Corrections

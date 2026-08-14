@@ -85,7 +85,6 @@ export default function App() {
   const [tab,setTab] = useState("map"); // map par défaut — AR demande la caméra au render
   const [sel,setSel] = useState(null);
   const [apiKey,setApiKey]     = useState(()=>localStorage.getItem("velohnav_jcdKey")||"");
-  const [claudeKey,setClaudeKey] = useState(()=>localStorage.getItem("velohnav_claudeKey")||"");
   const [lnAddr,setLnAddr]     = useState(()=>localStorage.getItem("velohnav_lnAddr")||"");
   const [lnOn,setLnOn]         = useState(()=>localStorage.getItem("velohnav_lnOn")==="true");
   const [ads,setAds]           = useState(()=>localStorage.getItem("velohnav_ads")==="true");
@@ -126,7 +125,6 @@ export default function App() {
 
   // Persist settings
   useEffect(()=>{ localStorage.setItem("velohnav_jcdKey",   apiKey);    },[apiKey]);
-  useEffect(()=>{ localStorage.setItem("velohnav_claudeKey",claudeKey); },[claudeKey]);
   useEffect(()=>{ localStorage.setItem("velohnav_lnAddr",   lnAddr);    },[lnAddr]);
   useEffect(()=>{ localStorage.setItem("velohnav_lnOn",     lnOn);      },[lnOn]);
   useEffect(()=>{ localStorage.setItem("velohnav_ads",      ads);       },[ads]);
@@ -294,7 +292,7 @@ export default function App() {
           trip={trip} onStartTrip={startTrip}
           mapsKey={mapsKey} weather={weather}
           onTabChange={setTab}/>}
-        {tab==="ai"       &&<AIScreen  stations={stations} claudeKey={claudeKey}
+        {tab==="ai"       &&<AIScreen  stations={stations}
           aiHistory={aiHistory} setAiHistory={setAiHistory}
           aiDisplay={aiDisplay} setAiDisplay={setAiDisplay}
           gpsPos={gpsPos} mapsKey={mapsKey}
@@ -302,7 +300,6 @@ export default function App() {
           onLaunchAR={async nav=>{ return await launchNativeArNav(nav.lat,nav.lng,nav.name,nav.mode,mapsKey); }}/>}
         {tab==="settings" &&<SettingsScreen
           apiKey={apiKey}    setApiKey={setApiKey}
-          claudeKey={claudeKey} setClaudeKey={setClaudeKey}
           lnAddr={lnAddr}    setLnAddr={setLnAddr}
           lnOn={lnOn}        setLnOn={setLnOn}
           ads={ads}          setAds={setAds}

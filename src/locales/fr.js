@@ -70,12 +70,11 @@ export default {
 
   // ── AI ─────────────────────────────────────────────────────────
   "ai.title":              "VELOH·AI",
-  "ai.subtitle":           "Claude · {n} stations · {mode}",
+  "ai.subtitle":           "IA locale · {n} stations · {mode}",
   "ai.live":               "données live",
   "ai.simulated":          "données simulées",
   "ai.placeholder":        "Pose ta question sur Veloh…",
-  "ai.missing_key":        "⚠ Clé API Claude manquante — entre-la dans OPT pour activer l'assistant.",
-  "ai.invalid_key":        "Clé Claude invalide — vérifie-la dans OPT.",
+  "ai.model_error":        "⚠ Modèle IA local indisponible — réessaie plus tard.",
   "ai.network_error":      "Erreur réseau : {msg}.",
   "ai.send":               "▶",
   "ai.q1":                 "Station la plus proche ?",
@@ -97,7 +96,6 @@ export default {
   "settings.jcd_live":     "✓ LIVE — données JCDecaux temps réel",
   "settings.jcd_demo":     "⚠ DÉMO — GPS réels, dispos simulées",
   "settings.jcd_invalid":  "⚠ Clé invalide",
-  "settings.claude_key":   "🤖 CLÉ API CLAUDE",
   "settings.maps_key":     "🗺 CLÉ GOOGLE MAPS (optionnel)",
   "settings.ln_rewards":   "⚡ SATS REWARDS",
   "settings.apply":        "APPLIQUER",

@@ -5,6 +5,7 @@ import { haversine, getBearing, fDist, fWalk, bCol, bTag, pins,
          getHistory, launchNativeArNav } from "../utils.js";
 import { fetchWeather, getWeatherAdvice } from "../hooks/useWeather.js";
 import { useTransit, formatDeparturesForAI } from "../hooks/useTransit.js";
+import { loadModel, generate } from "../ai/localModel.js";
 
 // ── Score conditions vélo 0-10 ─────────────────────────────────────
 function bikeScore(weather) {
@@ -32,8 +33,8 @@ function scoreLabel(s) {
   return "Éviter 🚊";
 }
 
-// ── Détection balise NAV dans la réponse Claude ───────────────────
-// Claude répond [NAV:lat,lng,nom,mode] pour lancer l'AR navigation
+// ── Détection balise NAV dans la réponse IA ───────────────────────
+// L'assistant répond [NAV:lat,lng,nom,mode] pour lancer l'AR navigation
 const NAV_RE = /\[NAV:([\d.]+),([\d.]+),([^,\]]+)(?:,(bicycling|walking))?\]/i;
 
 function parseNavCommand(text) {
@@ -48,7 +49,7 @@ function stripNavTag(text) {
 }
 
 // ── Composant principal ────────────────────────────────────────────
-function AIScreen({ stations, claudeKey, aiHistory, setAiHistory,
+function AIScreen({ stations, aiHistory, setAiHistory,
                     aiDisplay, setAiDisplay, gpsPos=null,
                     mapsKey="", hafasKey="", onLaunchAR=null }) {
 
@@ -58,9 +59,20 @@ function AIScreen({ stations, claudeKey, aiHistory, setAiHistory,
   const { stops: busStops, departures: busDeps } = useTransit(gpsPos, hafasKey);
   const [forecast, setForecast] = useState(null); // prévisions 3h
   const [navCmd,   setNavCmd]   = useState(null); // commande AR en attente
+  const [modelState, setModelState] = useState("loading"); // loading | ready | error
+  const [modelProgress, setModelProgress] = useState(0);
   const endRef = useRef();
 
   useEffect(()=>endRef.current?.scrollIntoView({behavior:"smooth"}),[aiDisplay]);
+
+  // ── Préchargement du modèle IA local (une seule fois, en arrière-plan) ──
+  useEffect(()=>{
+    let dead = false;
+    loadModel((pct)=>{ if(!dead) setModelProgress(pct); })
+      .then(()=>{ if(!dead) setModelState("ready"); })
+      .catch(()=>{ if(!dead) setModelState("error"); });
+    return ()=>{ dead = true; };
+  },[]);
 
   // ── Fetch météo + prévisions 3h ──────────────────────────────────
   useEffect(()=>{
@@ -221,43 +233,24 @@ Ne l'utilise pas pour de simples informations ou conseils.`;
   const sendText = useCallback(async(text)=>{
     const q = (text||input).trim();
     if (!q || busy) return;
-    if (!claudeKey) {
-      setAiDisplay(d=>[...d,{role:"user",text:q},{role:"ai",text:t("ai.missing_key")}]);
-      setInput(""); return;
-    }
     setInput(""); setBusy(true); setNavCmd(null);
     setAiDisplay(d=>[...d,{role:"user",text:q}]);
     const hist = [...aiHistory,{role:"user",content:q}].slice(-20);
     try {
-      const r = await fetch("https://api.anthropic.com/v1/messages",{
-        method:"POST",
-        headers:{
-          "Content-Type":"application/json",
-          "x-api-key": claudeKey,
-          "anthropic-version": "2023-06-01",
-          "anthropic-dangerous-direct-browser-access": "true",
-        },
-        body:JSON.stringify({ model:"claude-haiku-4-5-20251001", max_tokens:800,
-          system:systemPrompt, messages:hist }),
-      });
-      const data = await r.json();
-      if (!r.ok) {
-        const errMsg = r.status===401 ? t("ai.invalid_key")
-          : data?.error?.message ?? `Erreur API (${r.status})`;
-        setAiDisplay(d=>[...d,{role:"ai",text:`⚠ ${errMsg}`}]);
-      } else {
-        const raw   = data.content?.[0]?.text ?? "Erreur de réponse.";
-        const nav   = parseNavCommand(raw);
-        const reply = stripNavTag(raw);
-        setAiHistory([...hist,{role:"assistant",content:raw}]);
-        setAiDisplay(d=>[...d,{role:"ai",text:reply, nav}]);
-        if (nav) setNavCmd(nav); // préparer le bouton AR
-      }
+      const raw   = await generate(systemPrompt, hist); // IA locale, zéro réseau
+      const nav   = parseNavCommand(raw);
+      const reply = stripNavTag(raw);
+      setAiHistory([...hist,{role:"assistant",content:raw}]);
+      setAiDisplay(d=>[...d,{role:"ai",text:reply, nav}]);
+      if (nav) setNavCmd(nav); // préparer le bouton AR
     } catch(e) {
-      setAiDisplay(d=>[...d,{role:"ai",text:`Erreur réseau : ${e.message ?? "connexion impossible"}.`}]);
+      const msg = modelState==="error"
+        ? t("ai.model_error")
+        : `Erreur IA locale : ${e.message ?? "génération impossible"}.`;
+      setAiDisplay(d=>[...d,{role:"ai",text:`⚠ ${msg}`}]);
     }
     setBusy(false);
-  },[input,busy,aiHistory,claudeKey,systemPrompt,setAiHistory,setAiDisplay]);
+  },[input,busy,aiHistory,systemPrompt,modelState,setAiHistory,setAiDisplay]);
 
   const [launching, setLaunching] = useState(false);
 
@@ -308,7 +301,9 @@ Ne l'utilise pas pour de simples informations ou conseils.`;
           <div>
             <div style={{ color:C.accent, fontSize:10, fontFamily:C.fnt, fontWeight:700, letterSpacing:2 }}>{t("ai.title")}</div>
             <div style={{ color:C.muted, fontSize:8, fontFamily:C.fnt }}>
-              Claude · {stations.length} stations · {stations.some(s=>!s._mock)?t("ai.live"):t("station.simulated")}
+              {modelState==="loading" ? `IA locale · chargement ${modelProgress}%…`
+                : modelState==="error" ? "IA locale · modèle indisponible"
+                : `IA locale · ${stations.length} stations · ${stations.some(s=>!s._mock)?t("ai.live"):t("station.simulated")}`}
             </div>
           </div>
           {/* Badge météo + score */}

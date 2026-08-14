@@ -5,11 +5,9 @@ import { haversine, getBearing, fDist, fWalk, bCol, bTag, pins } from "../utils.
 
 import { useI18n } from "../i18n.js";
 
-function SettingsScreen({ apiKey, setApiKey, claudeKey, setClaudeKey, onRefresh, apiLive, isMock, gpsPos, lnAddr, setLnAddr, lnOn, setLnOn, ads, setAds, mapsKey, setMapsKey, hafasKey="", setHafasKey, spatialAudio=false, setSpatialAudio=()=>{} }) {
+function SettingsScreen({ apiKey, setApiKey, onRefresh, apiLive, isMock, gpsPos, lnAddr, setLnAddr, lnOn, setLnOn, ads, setAds, mapsKey, setMapsKey, hafasKey="", setHafasKey, spatialAudio=false, setSpatialAudio=()=>{} }) {
   const [draft,setDraft]=useState(apiKey);
   const [saved,setSaved]=useState(false);
-  const [claudeDraft,setClaudeDraft]=useState(claudeKey);
-  const [claudeSaved,setClaudeSaved]=useState(false);
   const [mapsDraft,setMapsDraft]=useState(mapsKey||"");
   const [mapsSaved,setMapsSaved]=useState(false);
   const [lnSaved,setLnSaved]=useState(false);
@@ -17,11 +15,9 @@ function SettingsScreen({ apiKey, setApiKey, claudeKey, setClaudeKey, onRefresh,
   const { lang, setLanguage } = useI18n();
 
   useEffect(()=>{ setDraft(apiKey); },[apiKey]);
-  useEffect(()=>{ setClaudeDraft(claudeKey); },[claudeKey]);
   useEffect(()=>{ setMapsDraft(mapsKey||""); },[mapsKey]);
 
   const saveKey=()=>{ setApiKey(draft.trim()); setSaved(true); setTimeout(()=>{ setSaved(false); onRefresh(); },1200); };
-  const saveClaudeKey=()=>{ setClaudeKey(claudeDraft.trim()); setClaudeSaved(true); setTimeout(()=>setClaudeSaved(false),1500); };
   const saveMapsKey=()=>{ setMapsKey?.(mapsDraft.trim()); setMapsSaved(true); setTimeout(()=>setMapsSaved(false),1500); };
   // FIX : validation format Lightning Address (user@domain) avant sauvegarde
   const [lnError, setLnError] = useState("");
@@ -87,27 +83,13 @@ function SettingsScreen({ apiKey, setApiKey, claudeKey, setClaudeKey, onRefresh,
       </div>
 
       <div style={{ padding:"14px 14px 0" }}>
-        <div style={{ color:C.muted,fontSize:8,fontFamily:C.fnt,letterSpacing:2,marginBottom:10 }}>{t("settings.claude_key")}</div>
-        <div style={{ background:"rgba(255,255,255,0.02)",border:`1px solid ${C.border}`,borderRadius:8,padding:"14px" }}>
-          <div style={{ background:claudeKey?"rgba(46,204,143,0.08)":"rgba(245,130,13,0.08)",
-            border:`1px solid ${claudeKey?C.good+"40":C.accent+"40"}`,borderRadius:4,padding:"7px 10px",marginBottom:10 }}>
-            <div style={{ color:claudeKey?C.good:C.accent,fontSize:9,fontFamily:C.fnt }}>
-              {claudeKey?"✓ Clé Claude configurée — assistant IA actif":"⚠ Clé Claude requise pour l'onglet AI"}
-            </div>
-            {!claudeKey&&<div style={{ color:C.muted,fontSize:8,fontFamily:C.fnt,marginTop:2 }}>console.anthropic.com → API Keys</div>}
+        <div style={{ color:C.muted,fontSize:8,fontFamily:C.fnt,letterSpacing:2,marginBottom:10 }}>🤖 IA EMBARQUÉE</div>
+        <div style={{ background:"rgba(46,204,143,0.06)",border:`1px solid ${C.good+"33"}`,borderRadius:8,padding:"14px" }}>
+          <div style={{ color:C.good,fontSize:9,fontFamily:C.fnt,lineHeight:1.8 }}>
+            ✓ Assistant IA 100% local — zéro clé API, zéro serveur.
           </div>
-          <div style={{ display:"flex",gap:8 }}>
-            <input value={claudeDraft} onChange={e=>setClaudeDraft(e.target.value)} placeholder="sk-ant-..." type="password"
-              style={{ flex:1,background:"rgba(0,0,0,0.4)",border:`1px solid ${C.border}`,
-                borderRadius:4,padding:"8px 10px",color:C.text,fontSize:11,fontFamily:C.fnt,outline:"none" }}/>
-            <div onPointerDown={saveClaudeKey} style={{ background:claudeSaved?"rgba(46,204,143,0.15)":C.accentBg,
-              border:`1px solid ${claudeSaved?C.good:C.accent}`,color:claudeSaved?C.good:C.accent,
-              borderRadius:4,padding:"8px 12px",fontSize:9,fontFamily:C.fnt,cursor:"pointer",fontWeight:700,whiteSpace:"nowrap" }}>
-              {claudeSaved?"✓ OK":t("settings.apply")}
-            </div>
-          </div>
-          <div style={{ color:C.muted,fontSize:8,fontFamily:C.fnt,marginTop:8,lineHeight:1.8 }}>
-            Clé stockée localement uniquement · jamais transmise à un tiers
+          <div style={{ color:C.muted,fontSize:8,fontFamily:C.fnt,marginTop:6,lineHeight:1.8 }}>
+            Modèle Qwen 2.5 (1.5B) embarqué sur l'appareil. Réponses hors-ligne, tes données ne quittent jamais le téléphone.
           </div>
         </div>
       </div>
