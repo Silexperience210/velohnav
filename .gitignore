@@ -23,3 +23,6 @@ android/app/src/main/assets/google-services.json
 # Répertoires dupliqués / parasites
 velohnav-main/
 *.jks
+
+# Modèle IA embarqué (~1 Go) — téléchargé via scripts/fetch-model.sh, jamais commité
+public/models/

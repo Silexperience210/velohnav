@@ -1,11 +1,16 @@
 // IA embarquée 100% locale (zéro clé API, zéro requête réseau après le
 // téléchargement initial du modèle, données 100% sur l'appareil).
 // Basé sur @huggingface/transformers (transformers.js v3).
-import { pipeline } from "@huggingface/transformers";
+import { pipeline, env } from "@huggingface/transformers";
 
 // Modèle instruct ONNX quantifié int4 (~1 Go). Bon suivi d'instructions, bon français.
 // (Alternative plus puissante : "onnx-community/Qwen2.5-3B-Instruct".)
 const MODEL_ID = "onnx-community/Qwen2.5-1.5B-Instruct";
+
+// Si le modèle est packagé localement (public/models/ via scripts/fetch-model.sh),
+// il est chargé depuis l'appareil (zéro téléchargement). Sinon, fallback hub HF.
+const LOCAL_DIR = "Qwen2.5-1.5B-Instruct";
+const LOCAL_PATH = "/models/";
 
 let generator = null;
 let loadPromise = null;
@@ -20,18 +25,35 @@ export function isModelReady() {
  * @param {(pct: number) => void} [onProgress] progression du téléchargement (0-100)
  * @returns {Promise<object>}
  */
+async function hasLocalModel() {
+  try {
+    const r = await fetch(`${LOCAL_PATH}${LOCAL_DIR}/config.json`, { method: "HEAD" });
+    return r.ok;
+  } catch {
+    return false;
+  }
+}
+
 export function loadModel(onProgress) {
   if (generator) return Promise.resolve(generator);
   if (loadPromise) return loadPromise;
-  loadPromise = pipeline("text-generation", MODEL_ID, {
-    dtype: "q4",
-    device: "webgpu", // WebGPU si dispo ; fallback WASM automatique
-    progress_callback: (p) => {
-      if (p?.status === "progress" && onProgress) {
-        onProgress(Math.round(p.progress ?? 0));
-      }
-    },
-  })
+  loadPromise = (async () => {
+    let ref = MODEL_ID;
+    if (await hasLocalModel()) {
+      env.allowLocalModels = true;
+      env.localModelPath = LOCAL_PATH;
+      ref = LOCAL_DIR;
+    }
+    return pipeline("text-generation", ref, {
+      dtype: "q4",
+      device: "webgpu", // WebGPU si dispo ; fallback WASM automatique
+      progress_callback: (p) => {
+        if (p?.status === "progress" && onProgress) {
+          onProgress(Math.round(p.progress ?? 0));
+        }
+      },
+    });
+  })()
     .then((g) => {
       generator = g;
       return g;
