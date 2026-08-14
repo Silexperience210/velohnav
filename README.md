@@ -16,7 +16,7 @@
 
 VelohNav est une app de navigation AR pour le réseau Vel'OH! Luxembourg combinant :
 - **AR temps réel** avec ARCore Geospatial VPS (précision ~1m) ou tracé canvas en fallback
-- **IA** Claude pour répondre en contexte (météo, dispo, distance, transport en commun)
+- **IA embarquée** (Qwen 2.5 1.5B on-device) pour répondre en contexte (météo, dispo, distance, transport en commun)
 - **Crypto-natif** : signalements décentralisés Nostr + récompenses Bitcoin Lightning
 - **Multimodal** : vélo, marche, bus RGTR — avec bascule auto si météo dégrade
 - **Audio HRTF 3D** pour guidage casque mains-libres
@@ -147,7 +147,7 @@ VelohNav est une app de navigation AR pour le réseau Vel'OH! Luxembourg combina
 
 ### ◎ AI — Assistant IA
 
-- **Modèle** : `claude-haiku-4-5-20251001` — 800 tokens max
+- **Modèle** : Qwen 2.5 1.5B on-device (transformers.js) — ~256 tokens max, zéro clé API
 - **Contexte injecté** : stations triées par distance, vélos dispo, conditions météo, mode de recommandation, départs bus RGTR temps réel
 - **Lancement nav AR depuis l'IA** — l'assistant peut déclencher directement la navigation vers une station via réponse structurée
 - **Historique** de conversation dans la session
@@ -157,7 +157,7 @@ VelohNav est une app de navigation AR pour le réseau Vel'OH! Luxembourg combina
 | Réglage | Description |
 |---------|-------------|
 | Clé JCDecaux | API Vel'OH! temps réel |
-| Clé Claude | Assistant IA (console.anthropic.com) |
+| IA embarquée | Qwen 2.5 1.5B local — aucune clé requise |
 | Clé Google Maps | Optionnel — fallback si OSRM indisponible |
 | Clé HAFAS ATP | Optionnel — bus RGTR temps réel (`opendata-api@verkeiersverbond.lu`) |
 | Lightning Address | `user@provider.com` pour Sats Rewards |
@@ -203,7 +203,7 @@ VelohNav est une app de navigation AR pour le réseau Vel'OH! Luxembourg combina
 | Build | AGP 8.9.1 · Java 21 · compileSdk 36 · minSdk 24 |
 | CI | GitHub Actions — debug APK automatique, release auto sur tag `v*` |
 
-> **IA on-device** : Gemini Nano (AICore) n'est **pas** implémenté. L'assistant utilise l'API Claude via HTTP.
+> **IA on-device** : Qwen 2.5 1.5B embarqué via transformers.js (WebGPU, fallback WASM). Zéro clé API, zéro serveur, réponses hors-ligne.
 
 ---
 
@@ -292,7 +292,7 @@ velohnav/
 │   ├── components/
 │   │   ├── ARScreen.jsx         # Vue AR — caméra, pins, navigation, ghost, obstacles
 │   │   ├── MapScreen.jsx        # Carte vectorielle SVG Luxembourg
-│   │   ├── AIScreen.jsx         # Assistant Claude
+│   │   ├── AIScreen.jsx         # Assistant IA (local)
 │   │   ├── SettingsScreen.jsx   # Paramètres / clés API + toggle audio 3D
 │   │   ├── WeatherBanner.jsx    # Bandeau météo + recommandation TC
 │   │   └── ar/
@@ -380,7 +380,7 @@ velohnav/
 - **i18n** : 66/91 clés branchées — les 25 restantes (strings dynamiques avec interpolation) sont en français fixe
 - **resolveAnchorOnRooftopAsync** (ARCore 1.40+) : API async non migrée — utilise encore `resolveAnchorOnTerrain` avec `@Suppress("DEPRECATION")` ; migration prévue
 - **LNURL CORS** : non testé sur tous les providers Lightning — dépend des headers CORS du serveur de la wallet
-- **Clés en localStorage** : clé Claude et JCDecaux stockées en clair dans le navigateur
+- **Clé JCDecaux en localStorage** : stockée en clair dans le navigateur (l'IA locale ne nécessite aucune clé)
 - **TTS Google Translate** : 200 caractères max par requête (largement OK pour annonces de nav). En cas de panne du endpoint, fallback automatique sur SpeechSynthesis natif.
 - **Audio HRTF en browser desktop** : CapacitorHttp est natif Android/iOS. En PWA pure, fetch direct vers Google Translate sera bloqué par CORS — fallback SpeechSynthesis automatique.
 
