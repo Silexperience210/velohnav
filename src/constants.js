@@ -44,40 +44,11 @@ export const WMO_ICON = {
   85:"🌨", 86:"❄️", 95:"⛈", 96:"⛈", 99:"⛈",
 };
 
-export const TRANSIT_STOPS = [
-  // ── Ligne T1 Luxtram — 24 arrêts complets (Findel → Gasperich/Stadion) ──
-  // Horaires : 04h20→00h06 (vers Stadion) | 04h00→23h17 (vers Findel) — tous les jours
-  // Fréquence : 3-4 min (LuxExpo↔Lycée Bouneweg) | 8 min (vers Findel/Stadion) | 15 min heures creuses
-  // Gratuit depuis mars 2020 — 16 km — 10 hubs d'interconnexion
-
-  // Kirchberg & Findel (nord-est)
-  { id:"T01", name:"Findel / Aéroport",      lat:49.6308, lng:6.2073, lines:["T1"],                    veloh:false, hub:true  },
-  { id:"T02", name:"Héienhaff P+R",          lat:49.6280, lng:6.1980, lines:["T1"],                    veloh:false, hub:false },
-  { id:"T03", name:"Luxexpo",                lat:49.6267, lng:6.1651, lines:["T1","bus"],               veloh:true,  hub:true  },
-  { id:"T04", name:"Alphonse Weicker",       lat:49.6225, lng:6.1570, lines:["T1"],                    veloh:false, hub:false },
-  { id:"T05", name:"Nationalbibliothéik",    lat:49.6200, lng:6.1518, lines:["T1"],                    veloh:false, hub:false },
-  { id:"T06", name:"Universitéit",           lat:49.6180, lng:6.1472, lines:["T1"],                    veloh:false, hub:false },
-  { id:"T07", name:"Coque",                  lat:49.6161, lng:6.1432, lines:["T1"],                    veloh:false, hub:false },
-  { id:"T08", name:"Parlement Européen",     lat:49.6142, lng:6.1408, lines:["T1"],                    veloh:true,  hub:false },
-  { id:"T09", name:"Philharmonie / MUDAM",   lat:49.6127, lng:6.1378, lines:["T1"],                    veloh:true,  hub:false },
-  // Pont Rouge → Centre-Ville
-  { id:"T10", name:"Rout Bréck / Pafendall", lat:49.6112, lng:6.1340, lines:["T1","funiculaire","CFL"],veloh:true,  hub:true  },
-  { id:"T11", name:"Théâter",                lat:49.6127, lng:6.1280, lines:["T1"],                    veloh:true,  hub:false },
-  { id:"T12", name:"Faïencerie",             lat:49.6138, lng:6.1262, lines:["T1"],                    veloh:false, hub:false },
-  { id:"T13", name:"Place de l'Étoile",      lat:49.6118, lng:6.1235, lines:["T1","bus"],              veloh:true,  hub:true  },
-  { id:"T14", name:"Hamilius",               lat:49.6118, lng:6.1299, lines:["T1","1","2","4","16"],   veloh:true,  hub:true  },
-  // Gare → Bonnevoie
-  { id:"T15", name:"Paräisserplatz",         lat:49.6073, lng:6.1285, lines:["T1"],                    veloh:true,  hub:false },
-  { id:"T16", name:"Gare Centrale",          lat:49.5998, lng:6.1340, lines:["T1","bus","CFL"],        veloh:true,  hub:true  },
-  { id:"T17", name:"Lycée Bouneweg",         lat:49.5965, lng:6.1330, lines:["T1"],                    veloh:false, hub:false },
-  // Cloche d'Or → Gasperich
-  { id:"T18", name:"Hollerich",              lat:49.5935, lng:6.1295, lines:["T1"],                    veloh:false, hub:false },
-  { id:"T19", name:"Howald",                 lat:49.5900, lng:6.1265, lines:["T1","CFL"],              veloh:false, hub:true  },
-  { id:"T20", name:"Cloche d'Or",            lat:49.5840, lng:6.1230, lines:["T1","bus"],              veloh:false, hub:true  },
-  { id:"T21", name:"Lycée Vauban",           lat:49.5812, lng:6.1195, lines:["T1"],                    veloh:false, hub:false },
-  { id:"T22", name:"Gasperich Q.",           lat:49.5785, lng:6.1178, lines:["T1"],                    veloh:false, hub:false },
-  { id:"T23", name:"Gasperich / Stadion",    lat:49.5748, lng:6.1152, lines:["T1","bus"],              veloh:false, hub:true  },
-];
+// ── Arrêts du tram T1 — issus du GTFS officiel ATP (src/data/tramT1.json,
+// scripts/extract-tram.mjs). Remplace une liste saisie à la main qui
+// contenait des arrêts inexistants et des positions décalées jusqu'à ~1 km.
+// T1 gratuit (comme tout le transport public luxembourgeois depuis mars 2020).
+export { TRAM_STOPS as TRANSIT_STOPS } from "./utils/tram.js";
 
 // ── Fischer Boulangerie — 63 points de vente (Lu + Fr) ────────────
 // Source : fischer1913.com/fr-lu/boulangeries — géocodés via Nominatim

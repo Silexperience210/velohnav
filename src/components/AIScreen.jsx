@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { t, tn, useI18n } from "../i18n.js";
-import { TRANSIT_STOPS } from "../constants.js";
+import { TRAM, nextDepartures, shortStopName } from "../utils/tram.js";
 import { fDist, bTag, getHistory, launchNativeArNav } from "../utils.js";
 import { fetchWeather, getWeatherAdvice } from "../hooks/useWeather.js";
 import { formatDeparturesForAI } from "../hooks/useTransit.js";
@@ -172,13 +172,16 @@ function AIScreen({ stations, aiHistory, setAiHistory,
       ? `\nStations récemment visitées : ${hist.map(h=>h.name).join(", ")}.`
       : "";
 
+    // Arrêts T1 proches + prochains départs théoriques (horaire GTFS embarqué)
     const nearTram = gpsPos
-      ? TRANSIT_STOPS.filter(s=>approxDist(s, gpsPos) < 600).map(s=>{
+      ? TRAM.stops.filter(s=>approxDist(s, gpsPos) < 600).map(s=>{
           const d = Math.round(approxDist(s, gpsPos));
-          return `${s.name} (${d}m${s.hub?" — hub":""}${s.veloh?" 🚲":""})`;
+          const { dirs } = nextDepartures(s.idx, new Date(), { limit: 2 });
+          const deps = [...dirs[0], ...dirs[1]].map(x=>`${shortStopName(x.headsign)} ${x.time}`).join(", ");
+          return `${s.name} (${d}m${deps ? ` — ${deps}` : ""})`;
         })
       : [];
-    const tramNear = nearTram.length ? `\nArrêts tram T1 proches : ${nearTram.join(", ")}.` : "";
+    const tramNear = nearTram.length ? `\nArrêts tram T1 proches (départs selon l'horaire) : ${nearTram.join(" ; ")}.` : "";
 
     const meteoTxt = weather
       ? `\nMÉTÉO ACTUELLE : ${wmo(weather.code).label} | ${weather.temp}°C | Pluie: ${weather.rain}mm/h | Vent: ${weather.wind}km/h ${cardinal(weather.windDir)} | Score vélo: ${score}/10`
@@ -211,9 +214,8 @@ STATIONS VEL'OH (par distance) :
 ${stations.map(s=>`• ${s.name} | ${s.bikes}🚲 (⚡${s.elec}élec 🔧${s.meca}méca) | ${s.docks} docks | ${fDist(s.dist)} | ${bTag(s)}`).join("\n")}${histTxt}${tramNear}
 
 TRAM T1 — Findel/Aéroport ↔ Gasperich/Stadion (24 arrêts, 16km, GRATUIT) :
-Horaires : 04h20→00h06 tous les jours
-Fréquence : 3-4 min (LuxExpo↔Bouneweg) | 8 min (extrémités) | 15 min heures creuses
-Hubs : Luxexpo, Rout Bréck/Pafendall (funiculaire+CFL), Place de l'Étoile, Hamilius, Gare Centrale (CFL), Howald (CFL), Cloche d'Or, Gasperich/Stadion
+Arrêts : ${TRAM.stops.map(s=>shortStopName(s.name)).join(" · ")}
+Correspondances train : Rout Bréck-Pafendall (funiculaire), Gare Centrale, Howald
 ${busTxt ? `\n🚌 BUS RGTR — départs temps réel aux arrêts proches :${busTxt}\n(Les transports publics au Luxembourg sont GRATUITS depuis 2020 pour tous.)` : ""}
 
 NAVIGATION AR : Si l'utilisateur demande à être guidé vers une destination (station Vel'OH, arrêt tram, lieu),
@@ -222,7 +224,7 @@ tu DOIS terminer ta réponse par une balise de navigation :
 Exemples :
   → guider vers station Hamilius en vélo : [NAV:49.6118,6.1299,Hamilius Vel'OH,bicycling]
   → guider vers Gare Centrale à pied : [NAV:49.5998,6.1340,Gare Centrale,walking]
-  → guider vers Luxexpo en vélo : [NAV:49.6267,6.1651,Luxexpo,bicycling]
+  → guider vers Luxexpo en vélo : [NAV:49.6354,6.1759,Luxexpo,bicycling]
 N'utilise cette balise QUE si l'utilisateur veut explicitement être guidé/naviguer/aller quelque part.
 Ne l'utilise pas pour de simples informations ou conseils.`;
   // eslint-disable-next-line react-hooks/exhaustive-deps

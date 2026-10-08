@@ -2,11 +2,12 @@
 // Aucun accès aux hooks de données : la phase 1 (MapLibre) branche ses
 // données ici. Contrats détaillés dans docs/UI-V4-INTEGRATION.md.
 import { Icon } from "./icons.jsx";
-import { Badge, Button, IconButton, Meter, SegmentedControl, Stat, Chip } from "./primitives.jsx";
+import { Badge, Button, IconButton, Meter, SegmentedControl, Stat, Chip, StatusDot } from "./primitives.jsx";
 import { BottomSheet } from "./Sheet.jsx";
 import { FILTERS, STATUS_COLOR, STATUS_TONE, fmtAgo, fmtDist, stationView, statusLabel, walkMinutes } from "./format.js";
 import { color } from "./tokens.js";
 import { t } from "../i18n.js";
+import { shortStopName as shortStop, TRAM_TERMINI } from "../utils/tram.js";
 
 const FILTER_ICON = { all: "layers", bikes: "bike", docks: "dock", elec: "bolt" };
 
@@ -68,8 +69,8 @@ export function NetworkSummary({ totals, lastUpdate }) {
   );
 }
 
-/** MapLegend — légende compacte des marqueurs. */
-export function MapLegend({ style }) {
+/** MapLegend — légende compacte des marqueurs. tram : afficher l'entrée T1. */
+export function MapLegend({ style, tram = false }) {
   const items = [
     ["ok", STATUS_COLOR.ok], ["low", STATUS_COLOR.low], ["empty", STATUS_COLOR.empty], ["closed", STATUS_COLOR.closed],
   ];
@@ -84,7 +85,103 @@ export function MapLegend({ style }) {
       <span className="vn-legend__item">
         <span className="vn-legend__dot" style={{ background: color.user, boxShadow: `0 0 0 3px ${color.user}40` }}/>{t("ui.map.legend.you")}
       </span>
+      {tram && (
+        <span className="vn-legend__item">
+          <span className="vn-legend__dot" style={{ background: color.transit, boxShadow: `0 0 0 2px ${color.bg}, 0 0 0 3px ${color.transit}` }}/>
+          {t("ui.tram.legend")}
+        </span>
+      )}
     </div>
+  );
+}
+
+/**
+ * TramStopSheet — fiche d'un arrêt du T1 : prochains départs par direction.
+ * @param stop       { name, lat, lng }
+ * @param deps       { estimated, live, dirs: { 0: [...], 1: [...] } } — useTramDepartures()
+ *                   départ : { time, min, headsign, delay?, cancelled?, live? }
+ * @param dist       number|null — distance à pied (m)
+ * @param validUntil "YYYYMMDD" — fin de validité des horaires embarqués
+ * @param onGo       fn|null — itinéraire à pied vers l'arrêt
+ * @param children   contenu additionnel (résumé d'itinéraire)
+ */
+export function TramStopSheet({ stop, deps, dist = null, validUntil, onClose, onGo = null, inline = false, children }) {
+  if (!stop || !deps) return null;
+  const walk = walkMinutes(dist);
+  const until = validUntil ? `${validUntil.slice(6, 8)}/${validUntil.slice(4, 6)}/${validUntil.slice(0, 4)}` : "";
+  const dirs = [0, 1].filter(d => deps.dirs[d].length);
+  return (
+    <BottomSheet open onClose={onClose} label={stop.name} inline={inline}>
+      <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+            <Badge tone="transit" icon="tram">T1</Badge>
+            <Badge tone="good">{t("ui.tram.free")}</Badge>
+            {dist != null && (
+              <span className="vn-num" style={{ fontSize: 12, color: "var(--vn-text2)" }}>
+                {fmtDist(dist)}{walk ? ` · ${t("ui.st.walk", { min: walk })}` : ""}
+              </span>
+            )}
+          </div>
+          <h2 style={{ fontSize: 18, fontWeight: 700, lineHeight: 1.25, marginTop: 6, color: "var(--vn-text)",
+            overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{stop.short ?? stop.name}</h2>
+        </div>
+        <IconButton icon="x" label={t("ui.close")} onClick={onClose} style={{ marginTop: -6, marginRight: -8 }}/>
+      </div>
+
+      {dirs.length === 0 ? (
+        <div style={{ marginTop: 12, fontSize: 13, color: "var(--vn-text2)" }}>{t("ui.tram.no_service")}</div>
+      ) : (
+        <div className="vn-tramdeps" style={{ marginTop: 12 }}>
+          {dirs.map(d => <TramDirection key={d} dest={shortStop(TRAM_TERMINI[d])} list={deps.dirs[d]}/>)}
+        </div>
+      )}
+
+      <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 10, fontSize: 11, color: "var(--vn-text3)" }}>
+        {deps.live
+          ? <><StatusDot live color={color.good}/>{t("ui.tram.live")}</>
+          : <><Icon name="clock" size={11} stroke={2}/>{deps.estimated ? t("ui.tram.estimated", { date: until }) : t("ui.tram.scheduled", { date: until })}</>}
+      </div>
+
+      {onGo && (
+        <div style={{ marginTop: 12 }}>
+          <Button variant="secondary" icon="walk" block onClick={onGo}>{t("ui.tram.go")}</Button>
+        </div>
+      )}
+      {children}
+    </BottomSheet>
+  );
+}
+
+// Colonne d'une direction, titrée par le terminus de ligne ; une course qui
+// s'arrête avant (Luxexpo, Lycée Bouneweg) affiche son propre terminus.
+function TramDirection({ dest, list }) {
+  const label = d => d.cancelled ? t("ui.tram.cancelled")
+    : d.min === 0 ? t("ui.tram.now") : t("ui.tram.in_min", { min: d.min });
+  const partial = d => { const h = shortStop(d.headsign); return h !== dest ? h : null; };
+  const aria = d => [d.time, label(d), d.delay > 0 ? t("ui.tram.delay", { min: d.delay }) : "",
+    partial(d) ? t("ui.tram.short_turn", { dest: partial(d) }) : ""].filter(Boolean).join(", ");
+  return (
+    <section className="vn-tramdir" aria-label={t("ui.tram.towards", { dest })}>
+      <div className="vn-tramdir__head">
+        <Icon name="navigation" size={11} stroke={2} style={{ transform: "rotate(90deg)" }}/>
+        <span>{dest}</span>
+      </div>
+      <ol className="vn-tramdir__list">
+        {list.map((d, i) => (
+          <li key={`${d.time}_${i}`} aria-label={aria(d)} data-cancelled={d.cancelled || undefined}
+            className={i === 0 ? "vn-tramdep vn-tramdep--first" : "vn-tramdep"}>
+            <span className="vn-num vn-tramdep__min" aria-hidden="true">
+              {d.cancelled ? t("ui.tram.cancelled") : d.min === 0 ? t("ui.tram.now") : <>{d.min}<small> min</small></>}
+            </span>
+            <span className="vn-num vn-tramdep__time" aria-hidden="true">
+              {d.time}{d.delay > 0 && <b style={{ color: color.warn }}> +{d.delay}</b>}
+            </span>
+            {partial(d) && <span className="vn-tramdep__via" aria-hidden="true">{t("ui.tram.short_turn", { dest: partial(d) })}</span>}
+          </li>
+        ))}
+      </ol>
+    </section>
   );
 }
 

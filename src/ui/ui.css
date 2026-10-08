@@ -519,6 +519,21 @@ button { background: none; border: 0; cursor: pointer; }
 .vn-stgrid > .vn-stat { padding-left: 10px; border-left: 1px solid var(--vn-border); }
 .vn-stgrid > .vn-stat:first-child { padding-left: 0; border-left: 0; }
 .vn-seg--compact { flex: 1; min-width: 0; }
+/* Fiche arrêt tram : deux directions côte à côte, attente en grand (monospace) */
+.vn-tramdeps { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px; }
+.vn-tramdir { padding: 10px 12px; border-radius: var(--vn-r-md); background: var(--vn-s2); border: 1px solid var(--vn-border); min-width: 0; }
+.vn-tramdir__head { display: flex; align-items: center; gap: 5px; font-size: 12px; font-weight: 600; color: var(--vn-transit);
+  overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.vn-tramdir__head > span { overflow: hidden; text-overflow: ellipsis; }
+.vn-tramdir__list { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.vn-tramdep { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; column-gap: 8px; color: var(--vn-text2); font-size: 13px; }
+.vn-tramdep__via { flex-basis: 100%; margin-top: -2px; font-size: 11px; color: var(--vn-text3); }
+.vn-tramdep__min { font-weight: 700; color: var(--vn-text); }
+.vn-tramdep__min small { font-size: 11px; font-weight: 500; color: var(--vn-text3); }
+.vn-tramdep--first .vn-tramdep__min { font-size: 22px; letter-spacing: -0.02em; }
+.vn-tramdep__time { font-size: 12px; color: var(--vn-text3); }
+.vn-tramdep[data-cancelled] .vn-tramdep__time { text-decoration: line-through; }
+.vn-tramdep[data-cancelled] .vn-tramdep__min { color: var(--vn-bad); }
 
 /* ── HUD AR (sur flux caméra) ──────────────────────────────────────── */
 .vn-glass {

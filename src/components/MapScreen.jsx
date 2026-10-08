@@ -5,8 +5,11 @@ import { getWeatherAdvice } from "../hooks/useWeather.js";
 import { useCompass } from "../hooks/useCompass.js";
 import { useFusedHeading } from "../hooks/useFusedHeading.js";
 import { useRoute } from "../hooks/useRoute.js";
+import { useTramDepartures } from "../hooks/useTramDepartures.js";
+import { TRAM, TRAM_VALID_UNTIL, shortStopName } from "../utils/tram.js";
+import { haversine } from "../utils/geo.js";
 import WeatherBanner from "./WeatherBanner.jsx";
-import { MapSearchBar, MapFilterBar, NetworkSummary, MapLegend, StationSheet } from "../ui/map.jsx";
+import { MapSearchBar, MapFilterBar, NetworkSummary, MapLegend, StationSheet, TramStopSheet } from "../ui/map.jsx";
 import { Badge, EmptyState, Spinner } from "../ui/primitives.jsx";
 import { Icon } from "../ui/icons.jsx";
 import { filterStations, filterCounts, networkTotals, fmtDist, fmtDuration } from "../ui/format.js";
@@ -36,10 +39,27 @@ function MapScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey, 
     if (typeof DeviceOrientationEvent?.requestPermission !== "function") ensureCompass();
   }, [ensureCompass]);
 
-  // Aperçu d'itinéraire « Y aller » : même hook que l'AR (BRouter → OSRM → Google)
-  const [routeTarget, setRouteTarget] = useState(null); // station | null
+  // Tram T1 : couche affichable/masquable (mémorisée), un arrêt sélectionnable.
+  // Une seule fiche à la fois : choisir un arrêt ferme la station, et l'inverse.
+  const [showTram, setShowTram] = useState(() => {
+    try { return localStorage.getItem("velohnav_showTram") !== "0"; } catch { return true; }
+  });
+  const toggleTram = useCallback(() => setShowTram(v => {
+    try { localStorage.setItem("velohnav_showTram", v ? "0" : "1"); } catch {}
+    return !v;
+  }), []);
+  const [tramSel, setTramSel] = useState(null); // indice d'arrêt | null
+  const tramStop = tramSel != null ? TRAM.stops[tramSel] : null;
+  const tramDeps = useTramDepartures(tramSel);
+  const selectTramStop = useCallback(idx => { setSel(null); setTramSel(idx); }, [setSel]);
+  useEffect(() => { if (sel != null) setTramSel(null); }, [sel]);
+  useEffect(() => { if (!showTram) setTramSel(null); }, [showTram]);
+
+  // Aperçu d'itinéraire « Y aller » : même hook que l'AR (BRouter → OSRM → Google).
+  // Vers un arrêt de tram, on marche.
+  const [routeTarget, setRouteTarget] = useState(null); // station | arrêt T1 | null
   const { route, loading: routeLoading, error: routeError } =
-    useRoute(gpsPos, routeTarget, mode, mapsKey);
+    useRoute(gpsPos, routeTarget, routeTarget?.tram ? "walking" : mode, mapsKey);
 
   // Lancer navigation AR : sélectionner la station + switcher vers l'onglet AR
   // ARScreen lit velohnav_pendingNavMode au montage pour auto-démarrer la nav
@@ -59,17 +79,18 @@ function MapScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey, 
 
   // Tap sur la carte : id string (GeoJSON) → id station d'origine
   const onSelect = useCallback(sid => {
-    if (sid == null) { setSel(null); return; }
+    if (sid == null) { setSel(null); setTramSel(null); return; }
     const s = stations.find(x => String(x.id) === sid);
     setSel(s ? s.id : null);
   }, [stations, setSel]);
 
   const selStation = stations.find(s => s.id === sel) ?? null;
 
-  // Changer de station / fermer la fiche annule l'aperçu d'itinéraire
+  // Changer de station ou d'arrêt / fermer la fiche annule l'aperçu d'itinéraire
+  const focusId = sel ?? tramStop?.id ?? null;
   useEffect(() => {
-    if (routeTarget && routeTarget.id !== sel) setRouteTarget(null);
-  }, [sel, routeTarget]);
+    if (routeTarget && routeTarget.id !== focusId) setRouteTarget(null);
+  }, [focusId, routeTarget]);
 
   if (!stations.length) return (
     <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 8, color: "var(--vn-text2)", fontSize: 13 }}>
@@ -77,8 +98,23 @@ function MapScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey, 
     </div>
   );
 
-  const routeShown = routeTarget && route && routeTarget.id === sel;
-  const routeActive = !!(selStation && routeTarget?.id === selStation.id);
+  const routeShown = routeTarget && route && routeTarget.id === focusId;
+  const routeActive = !!(focusId != null && routeTarget?.id === focusId);
+
+  // Itinéraire : état du calcul + résumé (fiche station ou arrêt)
+  const routeSummary = routeActive && (
+    <div className="vn-glass" style={{ marginTop: 10, display: "flex", alignItems: "center", gap: 10, padding: "8px 12px", fontSize: 12 }}>
+      <Icon name="route" size={16} style={{ color: "var(--vn-accent)", flexShrink: 0 }}/>
+      {routeLoading && !route ? <><Spinner size={14}/><span style={{ color: "var(--vn-text2)" }}>{t("ui.map.route_loading")}</span></>
+       : routeError && !route ? <Badge tone="bad" icon="alert">{routeError}</Badge>
+       : route ? <>
+          <b className="vn-num">{fmtDist(route.totalDist)}</b>
+          <b className="vn-num">{fmtDuration(route.totalTime / 60)}</b>
+          {route.totalAscent != null && <span className="vn-num" style={{ color: "var(--vn-text2)" }}>{t("ui.map.ascent", { m: route.totalAscent })}</span>}
+          <span style={{ marginLeft: "auto", color: "var(--vn-text3)", fontSize: 11 }}>{route.provider}</span>
+        </> : null}
+    </div>
+  );
 
   return (
     <div className="vn-mapscreen" style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0, position: "relative" }}>
@@ -101,7 +137,8 @@ function MapScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey, 
           <MapView stations={displayed} selId={sel} onSelect={onSelect}
             gpsPos={gpsPos} heading={heading}
             routeCoords={routeShown ? route.coords : null}
-            routeKey={routeShown ? `${routeTarget.id}_${route.computedAt}` : null}/>
+            routeKey={routeShown ? `${routeTarget.id}_${route.computedAt}` : null}
+            showTram={showTram} tramSel={tramSel} onSelectTramStop={selectTramStop} onToggleTram={toggleTram}/>
         </Suspense>
         {displayed.length === 0 && (
           <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", pointerEvents: "none" }}>
@@ -120,29 +157,23 @@ function MapScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey, 
           onAR={(s, m) => launchArNav(s, m)}
           onStartTrip={!trip && onStartTrip ? onStartTrip : null}
           externalHref={null}>
-          {/* Itinéraire : état du calcul + résumé */}
-          {routeActive && (
-            <div className="vn-glass" style={{ marginTop: 10, display: "flex", alignItems: "center", gap: 10, padding: "8px 12px", fontSize: 12 }}>
-              <Icon name="route" size={16} style={{ color: "var(--vn-accent)", flexShrink: 0 }}/>
-              {routeLoading && !route ? <><Spinner size={14}/><span style={{ color: "var(--vn-text2)" }}>{t("ui.map.route_loading")}</span></>
-               : routeError && !route ? <Badge tone="bad" icon="alert">{routeError}</Badge>
-               : route ? <>
-                  <b className="vn-num">{fmtDist(route.totalDist)}</b>
-                  <b className="vn-num">{fmtDuration(route.totalTime / 60)}</b>
-                  {route.totalAscent != null && <span className="vn-num" style={{ color: "var(--vn-text2)" }}>{t("ui.map.ascent", { m: route.totalAscent })}</span>}
-                  <span style={{ marginLeft: "auto", color: "var(--vn-text3)", fontSize: 11 }}>{route.provider}</span>
-                </> : null}
-            </div>
-          )}
+          {routeSummary}
           {!gpsPos && <div className="vn-field__hint" style={{ marginTop: 8 }}>{t("ui.map.gps_required")}</div>}
           {weather && (
             <WeatherBanner weather={weather} advice={getWeatherAdvice(weather)}
               nearStop={nearestStop(selStation.lat, selStation.lng)} station={selStation} style={{ marginTop: 10 }}/>
           )}
         </StationSheet>
+      ) : tramStop && tramDeps ? (
+        <TramStopSheet inline stop={{ ...tramStop, short: shortStopName(tramStop.name) }} deps={tramDeps}
+          dist={gpsPos ? haversine(gpsPos.lat, gpsPos.lng, tramStop.lat, tramStop.lng) : null} validUntil={TRAM_VALID_UNTIL}
+          onClose={() => setTramSel(null)}
+          onGo={gpsPos ? () => setRouteTarget(routeActive ? null : { id: tramStop.id, name: tramStop.name, lat: tramStop.lat, lng: tramStop.lng, tram: true }) : null}>
+          {routeSummary}
+        </TramStopSheet>
       ) : (
         <div style={{ padding: "6px 12px 8px", flexShrink: 0, display: "flex", alignItems: "center", gap: 8 }}>
-          <MapLegend style={{ flex: 1 }}/>
+          <MapLegend style={{ flex: 1 }} tram={showTram}/>
           {weather && (() => {
             const advice = getWeatherAdvice(weather);
             const tone = advice.mode === "bike" ? "good" : advice.mode === "transit" ? "transit" : "warn";
