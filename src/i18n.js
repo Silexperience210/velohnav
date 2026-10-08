@@ -70,9 +70,10 @@ export function t(key, vars = {}) {
   const locale = LOCALES[getLang()] || fr;
   let str = locale[key] ?? fr[key] ?? key; // fallback FR puis clé brute
 
-  // Interpolation : remplace {var} par la valeur
+  // Interpolation : remplace {var} par la valeur (toutes les occurrences).
+  // Découpe/recollage plutôt que replaceAll : certaines WebView Android ne l'ont pas.
   Object.entries(vars).forEach(([k, v]) => {
-    str = str.replaceAll(`{${k}}`, String(v));
+    str = str.split(`{${k}}`).join(String(v));
   });
 
   return str;
