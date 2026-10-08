@@ -305,7 +305,10 @@ class ArNavigationViewModel(application: Application) : AndroidViewModel(applica
             )
         }
 
-        if (st == NavStatus.NAVIGATING || _state.value.status == NavStatus.NAVIGATING) {
+        // En GPS_FALLBACK, c'est updateProgressGps (écouteur de position) qui fait
+        // avancer les étapes : garder les deux faisait progresser deux fois.
+        if ((st == NavStatus.NAVIGATING || _state.value.status == NavStatus.NAVIGATING) &&
+            _state.value.trackingMode == TrackingMode.VPS) {
             updateProgress(arView, earth, r)
         }
     }
@@ -375,6 +378,10 @@ class ArNavigationViewModel(application: Application) : AndroidViewModel(applica
     }
 
     // ── Progression ─────────────────────────────────────────────────
+    /** Précision (m) au-delà de laquelle une pose VPS n'est pas assez sûre pour
+     *  valider le franchissement d'une étape (le seuil de franchissement est 15 m). */
+    private val MAX_STEP_ACCURACY_M = 15.0
+
     private fun updateProgress(arView: ARSceneView, earth: Earth, r: NavigationRoute) {
         if (currentStepIdx >= r.steps.size) {
             _state.value = _state.value.copy(status = NavStatus.ARRIVED); return
@@ -382,6 +389,9 @@ class ArNavigationViewModel(application: Application) : AndroidViewModel(applica
         if (earth.trackingState != TrackingState.TRACKING) return
 
         val pose = earth.cameraGeospatialPose
+        // Une pose très imprécise ne doit pas faire avancer une étape : on attend un
+        // meilleur fix plutôt que de valider un franchissement au hasard.
+        if (pose.horizontalAccuracy > MAX_STEP_ACCURACY_M) return
         val step = r.steps[currentStepIdx]
         val dist = GeospatialManager.distanceMeters(pose.latitude, pose.longitude, step.endLat, step.endLng)
 

@@ -7,6 +7,7 @@ import kotlinx.coroutines.withContext
 import com.silexperience.velohnav.data.DirectionsApiService
 import okhttp3.OkHttpClient
 import okhttp3.logging.HttpLoggingInterceptor
+import com.silexperience.velohnav.BuildConfig
 import retrofit2.Retrofit
 import retrofit2.converter.gson.GsonConverterFactory
 import java.util.concurrent.TimeUnit
@@ -41,7 +42,12 @@ class RouteManager(private val mapsApiKey: String) {
 
         val httpClient by lazy {
             OkHttpClient.Builder()
-                .addInterceptor(HttpLoggingInterceptor().apply { level = HttpLoggingInterceptor.Level.BASIC })
+                // Journalisation des requêtes (donc des coordonnées) réservée au débogage.
+                .apply {
+                    if (BuildConfig.DEBUG) {
+                        addInterceptor(HttpLoggingInterceptor().apply { level = HttpLoggingInterceptor.Level.BASIC })
+                    }
+                }
                 .connectTimeout(15, TimeUnit.SECONDS)
                 .readTimeout(20, TimeUnit.SECONDS)
                 .retryOnConnectionFailure(true)

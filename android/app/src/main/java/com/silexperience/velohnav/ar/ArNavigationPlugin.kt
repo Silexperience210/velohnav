@@ -43,18 +43,17 @@ class ArNavigationPlugin : Plugin() {
             putExtra("maps_key",    finalKey)
         }
 
-        // Résoudre la Promise Capacitor immédiatement (sur le thread Capacitor)
-        call.resolve()
-        android.util.Log.d("ArNavPlugin", "  call.resolve() OK")
-
-        // Lancer l'Activity sur le main thread (UI thread obligatoire)
+        // Lancer l'Activity sur le main thread (UI thread obligatoire).
+        // La promesse n'est résolue QU'APRÈS un lancement réussi : sinon un échec
+        // natif restait invisible côté JS (le catch ne pouvait jamais s'exécuter).
         activity.runOnUiThread {
             try {
-                android.widget.Toast.makeText(activity, "AR Nav → $destName", android.widget.Toast.LENGTH_SHORT).show()
                 activity.startActivity(intent)
                 android.util.Log.d("ArNavPlugin", "  startActivity OK")
+                call.resolve()
             } catch (e: Exception) {
                 android.util.Log.e("ArNavPlugin", "  startActivity FAILED: ${e.message}", e)
+                call.reject("Navigation AR indisponible : ${e.message}")
             }
         }
     }
