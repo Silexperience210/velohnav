@@ -24,6 +24,7 @@
 
 import { useEffect, useRef, useCallback } from "react";
 import { haversine, getBearing } from "../utils.js";
+import { waypointKey } from "../components/ar/navProgress.js";
 
 const ANNOUNCE_DISTANCES = [200, 100, 50, 20];  // m — déclenche annonces
 const REPEAT_COOLDOWN_MS = 12_000;              // 12s mini entre 2 annonces du même waypoint
@@ -158,7 +159,10 @@ export function useSpatialAudio({ enabled, gpsPos, heading, route }) {
   const ctxRef        = useRef(null);            // AudioContext
   const pannerRef     = useRef(null);            // PannerNode HRTF
   const currentSrcRef = useRef(null);            // AudioBufferSource en cours
-  const announcedRef  = useRef(new Map());       // waypointIdx → { distAnnonced, ts }
+  // Clé = position du point de manœuvre, PAS son index : l'itinéraire est
+  // remplacé tous les 60 m et à chaque recalcul ; un index périmé faisait
+  // sauter la première manœuvre du nouveau tracé (« déjà annoncée à 20 m »).
+  const announcedRef  = useRef(new Map());       // waypointKey → { atDist, ts }
   const initFailedRef = useRef(false);
 
   // ── Init lazy de l'AudioContext (nécessite un user gesture sur iOS) ──
@@ -280,7 +284,7 @@ export function useSpatialAudio({ enabled, gpsPos, heading, route }) {
       const d = haversine(gpsPos.lat, gpsPos.lng, wp.lat, wp.lng);
       if (d < 25) { stepIdx++; continue; }
       // Vérifie qu'on n'a pas déjà annoncé l'arrivée à <20m de ce waypoint
-      const last = announced.get(stepIdx);
+      const last = announced.get(waypointKey(wp));
       if (last?.atDist <= 20) { stepIdx++; continue; }
       break;
     }
@@ -293,7 +297,8 @@ export function useSpatialAudio({ enabled, gpsPos, heading, route }) {
     const rel  = ((bear - heading + 540) % 360) - 180;  // -180..+180
 
     // Trouve le seuil de distance le plus proche atteint
-    const announceState = announced.get(stepIdx) || { atDist: Infinity, ts: 0 };
+    const key = waypointKey(wp);
+    const announceState = announced.get(key) || { atDist: Infinity, ts: 0 };
     let triggered = null;
     for (const threshold of ANNOUNCE_DISTANCES) {
       if (dist <= threshold && announceState.atDist > threshold) {
@@ -309,7 +314,7 @@ export function useSpatialAudio({ enabled, gpsPos, heading, route }) {
     const text = buildAnnouncement(wp.modifier, dist, wp.streetName || "");
     announce(text, rel);
 
-    announced.set(stepIdx, { atDist: triggered, ts: Date.now() });
+    announced.set(key, { atDist: triggered, ts: Date.now() });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [enabled, gpsPos?.lat, gpsPos?.lng, heading, route]);
 

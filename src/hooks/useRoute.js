@@ -266,6 +266,10 @@ export function useRoute(gpsPos, station, mode = "cycling", mapsKey = "") {
   const lastRerouteAtRef = useRef(0);      // timestamp du dernier re-route (cooldown)
   const offRouteSinceRef = useRef(null);   // timestamp où la déviation a commencé
   const routeRef         = useRef(null);   // route courante (pour les calculs offRoute)
+  // Génération de navigation : incrémentée à chaque changement de station/mode
+  // ou arrêt. Un rafraîchissement lancé pour l'ancienne destination ne doit pas
+  // écraser l'itinéraire de la nouvelle (il n'avait ni abort ni garde).
+  const navGenRef        = useRef(0);
   useEffect(() => { routeRef.current = route; }, [route]);
 
   const loadRoute = useCallback(async (pos, dest, m, key, { force = false } = {}) => {
@@ -305,6 +309,7 @@ export function useRoute(gpsPos, station, mode = "cycling", mapsKey = "") {
   // une nav lancée avant le GPS restait sans itinéraire, en silence.
   const hasFix = gpsPos != null;
   useEffect(() => {
+    navGenRef.current++;
     if (!gpsPos || !station) {
       setRoute(null);
       setLoading(false);
@@ -362,8 +367,9 @@ export function useRoute(gpsPos, station, mode = "cycling", mapsKey = "") {
             !loading && !recalculating) {
           // Refetch silencieux (pas de flag offRoute) — même chaîne BRouter→OSRM.
           lastFetchPosRef.current = { lat: gpsPos.lat, lng: gpsPos.lng };
-          fetchRoute(gpsPos.lat, gpsPos.lng, station.lat, station.lng, mode)
-            .then(r => { if (r) setRoute(r); });
+          const gen = navGenRef.current;
+          fetchRoute(gpsPos.lat, gpsPos.lng, station.lat, station.lng, mode, { mapsKey })
+            .then(r => { if (r && gen === navGenRef.current) setRoute(r); });
         }
       }
     }

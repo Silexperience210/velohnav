@@ -6,13 +6,17 @@ import { t } from "../../i18n.js";
 import { C } from "../../constants.js";
 import { haversine, fDist, getBearing } from "../../utils.js";
 import { projectPoint, detectWrongWay } from "./projection.js";
+import { progressFor } from "./navProgress.js";
 import { windImpact } from "../../hooks/useWeather.js";
 import { climbEtaFactor, EBIKE_ASCENT_THRESHOLD_M } from "../../hooks/useRoute.js";
 
 function RouteOverlay({ route, gpsPos, heading, mode, onClose, weather=null, spatialAudio=false,
                         offRoute=false, recalculating=false, manualRecalc=null, isNight=false, fov }) {
   const cvRef = useRef();
-  const [step, setStep] = useState(0); // index du prochain waypoint
+  // Index du prochain waypoint, LIÉ à l'itinéraire auquel il se rapporte : un
+  // itinéraire remplacé (recalcul, rafraîchissement) repart de 0 dès ce rendu.
+  const [prog, setProg] = useState({ route: null, step: 0 });
+  const step = prog.route === route ? prog.step : 0;
 
   // Tick d'animation à ~30 fps — alimente les tirets animés et le pulse
   // waypoint. Inclus dans les deps du useEffect canvas pour forcer redraw.
@@ -46,14 +50,12 @@ function RouteOverlay({ route, gpsPos, heading, mode, onClose, weather=null, spa
     smoothedHdgRef.current = (smoothedHdgRef.current + diff * 0.25 + 360) % 360;
   }, [heading]);
 
-  // Avancer automatiquement vers le prochain waypoint quand on en est à <25m
+  // Avancer automatiquement quand le prochain waypoint est à < 25 m
   useEffect(()=>{
     if (!route || !gpsPos) return;
-    const wp = route.waypoints[step];
-    if (!wp) return;
-    const d = haversine(gpsPos.lat, gpsPos.lng, wp.lat, wp.lng);
-    if (d < 25 && step < route.waypoints.length - 1) setStep(s=>s+1);
-  },[gpsPos, route, step]);
+    const next = progressFor(prog, route, gpsPos);
+    if (next.route !== prog.route || next.step !== prog.step) setProg(next);
+  },[gpsPos, route, prog]);
 
   // FIX BUG-1 : détection "destination derrière" — si l'utilisateur regarde dans
   // le mauvais sens, on N'AFFICHE PAS le tracé canvas (qui partirait sur les
