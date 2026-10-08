@@ -56,7 +56,11 @@ function AIScreen({ stations, aiHistory, setAiHistory,
   const endRef = useRef();
   const inputRef = useRef();
 
-  useEffect(()=>endRef.current?.scrollIntoView({behavior:"smooth", block:"end"}),[aiDisplay, busy]);
+  // Corps à accolades OBLIGATOIRE : en flèche concise, l'effet retourne la valeur de
+  // scrollIntoView. Sur la WebView Android celle-ci est une promesse — React la stocke
+  // comme fonction de nettoyage, l'appelle au démontage, et lève
+  // « TypeError: t is not a function » (constaté en production, composant identifié).
+  useEffect(()=>{ endRef.current?.scrollIntoView({behavior:"smooth", block:"end"}); },[aiDisplay, busy]);
 
   // ── Fetch météo (si non fournie par App) + prévisions 3h ─────────
   useEffect(()=>{
