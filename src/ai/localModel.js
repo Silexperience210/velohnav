@@ -75,16 +75,33 @@ export function loadModel(onProgress) {
       env.localModelPath = LOCAL_PATH;
       ref = LOCAL_DIR;
     }
-    chosen = chooseVariant(await hasWebGPUAdapter());
-    return pipeline("text-generation", ref, {
-      dtype: chosen.dtype,
-      device: chosen.device,
-      progress_callback: (p) => {
-        if (p?.status === "progress" && onProgress) {
-          onProgress(Math.round(p.progress ?? 0));
-        }
-      },
-    });
+    // Tentatives, de la plus légère à la plus sûre. Sur mobile, WebGPU peut échouer à
+    // l'INITIALISATION (mémoire GPU, support de q4f16) alors que le téléchargement a
+    // abouti — la progression affichait 100 % et l'utilisateur restait sans modèle.
+    // On se rabat donc automatiquement sur WASM + q4, qui fonctionne partout. On garde
+    // chaque échec : sans message, l'utilisateur ne peut que constater « indisponible ».
+    const essais = [];
+    if (await hasWebGPUAdapter()) essais.push(chooseVariant(true));
+    essais.push(chooseVariant(false));
+    let derniereErreur = null;
+    for (const v of essais) {
+      try {
+        chosen = v;
+        return await pipeline("text-generation", ref, {
+          dtype: v.dtype,
+          device: v.device,
+          progress_callback: (p) => {
+            if (p?.status === "progress" && onProgress) {
+              onProgress(Math.round(p.progress ?? 0));
+            }
+          },
+        });
+      } catch (e) {
+        derniereErreur = e;
+        console.warn(`[IA] variante ${v.dtype}/${v.device} refusée :`, e?.message || e);
+      }
+    }
+    throw derniereErreur || new Error("chargement du modèle impossible");
   })()
     .then((g) => {
       generator = g;

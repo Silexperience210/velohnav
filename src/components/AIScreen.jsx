@@ -48,6 +48,7 @@ function AIScreen({ stations, aiHistory, setAiHistory,
   const [forecast, setForecast] = useState(null);        // prévisions 3 h
   const [modelState, setModelState] = useState("off");   // off | loading | ready | error
   const [modelProgress, setModelProgress] = useState(0);
+  const [modelError, setModelError] = useState("");   // message réel, affiché en cas d'échec
   const [loadSeq, setLoadSeq] = useState(0);             // incrémenté par « Réessayer »
   // La conversation libre est DÉSACTIVÉE par défaut : le modèle pèse près d'1 Go,
   // il n'est téléchargé que sur demande explicite. Sans lui, l'écran reste utile :
@@ -118,7 +119,12 @@ function AIScreen({ stations, aiHistory, setAiHistory,
     setModelState("loading");
     loadModel((pct)=>{ if(!dead) setModelProgress(pct); })
       .then(()=>{ if(!dead) setModelState("ready"); })
-      .catch(()=>{ if(!dead) setModelState("error"); });
+      .catch((e)=>{
+        if(!dead){
+          setModelState("error");
+          setModelError(e?.message || String(e));   // sinon l'utilisateur ne peut que constater l'échec
+        }
+      });
     return ()=>{ dead = true; };   // les setState sont bloqués ; le téléchargement déjà
                                    // lancé n'est pas interrompu (loadModel ne sait pas
                                    // s'annuler) — l'état revient à « arrêté » ci-dessous.
@@ -431,7 +437,7 @@ Ne l'utilise pas pour de simples informations ou conseils.`;
           <div style={{ fontSize:10.5, color:"var(--vn-text3)", lineHeight:1.45 }}>
             {!chatOn ? t("ui.ai.chat.note", { mb: chatModelMB() })
               : modelState==="loading" ? t("ui.ai.model.loading", { pct:modelProgress })
-              : modelState==="error"   ? t("ui.ai.model.error")
+              : modelState==="error"   ? `${t("ui.ai.model.error")}${modelError ? " — " + modelError.slice(0, 160) : ""}`
               : t("ui.ai.model.ready")}
           </div>
         </div>
