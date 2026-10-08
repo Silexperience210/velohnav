@@ -34,6 +34,13 @@ export default {
   "map.go_walking":        "WALK",
   "map.go_cycling":        "CYCLE",
   "map.start_trip":        "TRIP",
+  "map.go":               "GO",
+  "map.route":            "ROUTE",
+  "map.route_hide":       "HIDE",
+  "map.route_loading":    "Computing…",
+  "map.gps_required":     "GPS NEEDED",
+  "station.no_rent":      "rental suspended",
+  "station.no_return":    "no return",
 
   // ── STATION ────────────────────────────────────────────────────
   "station.closed":        "CLOSED",

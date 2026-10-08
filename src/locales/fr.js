@@ -35,6 +35,13 @@ export default {
   "map.go_walking":        "À PIED",
   "map.go_cycling":        "EN VÉLO",
   "map.start_trip":        "TRAJET",
+  "map.go":               "Y ALLER",
+  "map.route":            "ITINÉRAIRE",
+  "map.route_hide":       "MASQUER",
+  "map.route_loading":    "Calcul…",
+  "map.gps_required":     "GPS REQUIS",
+  "station.no_rent":      "location suspendue",
+  "station.no_return":    "retour impossible",
 
   // ── STATION ────────────────────────────────────────────────────
   "station.closed":        "FERMÉ",

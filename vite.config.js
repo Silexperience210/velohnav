@@ -14,7 +14,8 @@ export default defineConfig({
       base: './',
       injectRegister: 'auto',
       workbox: {
-        globPatterns: ['**/*.{js,css,html,svg,png,woff2}'],
+        // mjs : worker MapLibre — sans lui la carte ne s'initialise pas hors ligne
+        globPatterns: ['**/*.{js,mjs,css,html,svg,png,woff2}'],
         runtimeCaching: [
           {
             urlPattern: /^https:\/\/api\.jcdecaux\.com\/.*/i,
