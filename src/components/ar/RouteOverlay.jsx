@@ -252,7 +252,7 @@ function RouteOverlay({ route, gpsPos, heading, mode, onClose, weather=null, spa
     }
     const bear = getBearing(gpsPos.lat, gpsPos.lng, nextWp.lat, nextWp.lng);
     return windImpact(bear, weather.windDir ?? 0, weather.wind ?? 0);
-  }, [weather, mode, gpsPos?.lat, gpsPos?.lng, nextWp?.lat, nextWp?.lng]);
+  }, [weather, mode, isNight, gpsPos?.lat, gpsPos?.lng, nextWp?.lat, nextWp?.lng]);
 
   // ── Slope-aware ETA — D+ du tracé (élévation BRouter) ──────────
   // BRouter intègre déjà la pente dans son total-time → factor=1 (badge

@@ -23,7 +23,6 @@ import CityBG from "./ar/CityBG.jsx";
 import ARPin from "./ar/ARPin.jsx";
 import GhostPin from "./ar/GhostPin.jsx";
 import { ObstaclePins, ObstacleReportMenu } from "./ar/ObstaclesAR.jsx";
-import { projectPoint } from "./ar/projection.js";
 
 // ── Projection AR : la géométrie vit dans arProjection.js (pure et testée) ──
 const LABEL_W       = compassLabelWidth();
@@ -121,13 +120,22 @@ function ARScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey=""
   const gpsPosRef = useRef(gpsPos);
   useEffect(() => { camRef.current = cam; }, [cam]);
   useEffect(() => { gpsPosRef.current = gpsPos; }, [gpsPos]);
-  const handleLongPressStart = useCallback(() => {
+  const lpStartRef = useRef(null);
+  const handleLongPressStart = useCallback((e) => {
     if (camRef.current !== "active" || !gpsPosRef.current) return;
+    lpStartRef.current = e ? { x: e.clientX, y: e.clientY } : null;
     lpTimerRef.current = setTimeout(() => setReportMenuOpen(true), 700);
   }, []);
   const handleLongPressEnd = useCallback(() => {
     if (lpTimerRef.current) { clearTimeout(lpTimerRef.current); lpTimerRef.current = null; }
+    lpStartRef.current = null;
   }, []);
+  // Un doigt qui glisse ne doit pas ouvrir le menu : on annule au-delà de 12 px.
+  const handleLongPressMove = useCallback((e) => {
+    const s = lpStartRef.current;
+    if (!s || !e) return;
+    if (Math.hypot(e.clientX - s.x, e.clientY - s.y) > 12) handleLongPressEnd();
+  }, [handleLongPressEnd]);
 
   // ── Predictive Routing — surveille la station de destination en live ────
   // Si elle devient saturée pendant qu'on roule, propose une alternative.
@@ -397,7 +405,8 @@ function ARScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey=""
     return((bear-heading+540)%360)-180;
   },[navStation,gpsPos,heading]);
 
-  const hdg=heading!==null?Math.round(heading):null;
+  // % 360 : 359,7° s'affichait « 360° » au lieu de « 0° »
+  const hdg=heading!==null?Math.round(heading)%360:null;
   const cardLabel=hdg!==null?COMPASS_LABELS[Math.round(hdg/45)%8]:"?";
 
   // ── Status boussole pour l'UI ──────────────────────────────────
@@ -661,7 +670,8 @@ function ARScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey=""
                   color: arriving ? C.good : C.muted,
                   fontSize: 9, fontFamily: C.fnt, marginTop: 3,
                 }}>
-                  {fDist(navStation.dist)} · {navStation.bikes} 🚲
+                  {fDist(navStation.dist)} · {navIntent === "dropoff" ? navStation.docks : navStation.bikes}{" "}
+                  {navIntent === "dropoff" ? "🅿" : "🚲"}
                 </div>
               </div>
               {/* Tige descendante vers le sol */}
@@ -710,6 +720,7 @@ function ARScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey=""
       {cam === "active" && !reportMenuOpen && (
         <div
           onPointerDown={handleLongPressStart}
+          onPointerMove={handleLongPressMove}
           onPointerUp={handleLongPressEnd}
           onPointerCancel={handleLongPressEnd}
           onPointerLeave={handleLongPressEnd}

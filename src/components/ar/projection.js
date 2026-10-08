@@ -2,6 +2,7 @@
 // Convertit un point GPS en coordonnées canvas via bearing + distance.
 // Utilisé par RouteOverlay pour projeter le tracé de route en AR.
 import { haversine, getBearing } from "../../utils.js";
+import { HORIZON_PCT, BAS_PCT } from "./arProjection.js";
 
 // Constantes — ajustées pour visibilité sans dérive excessive.
 const PROJ_MAX_DIST    = 500;  // m — au-delà : invisible (bruit GPS dominant)
@@ -47,10 +48,12 @@ export function projectPoint(fromLat, fromLng, heading, toLat, toLng, W, H, clam
   const clamped = Math.max(-PROJ_FOV_H, Math.min(PROJ_FOV_H, relBear));
   const x = W / 2 + (clamped / PROJ_FOV_H) * (W / 2);
 
-  // Proche = bas de l'écran (y grand), lointain = horizon (~30% du haut).
+  // Proche = bas de l'écran, lointain = horizon. Les deux bornes viennent
+  // d'arProjection.js : une seule définition de l'horizon pour tout l'écran
+  // (une deuxième valeur ici donnait deux projections contradictoires).
   // Courbe non linéaire (sqrt) : effet perspective plus naturel.
-  const t = Math.sqrt(dist / PROJ_MAX_DIST); // 0..1
-  const y = H * (0.92 - t * 0.62);           // 92% → 30% du haut
+  const t = Math.sqrt(Math.min(1, dist / PROJ_MAX_DIST)); // 0..1
+  const y = H * (BAS_PCT + t * (HORIZON_PCT - BAS_PCT)) / 100;
 
   return { x, y, inFov, behind, relBear, dist };
 }

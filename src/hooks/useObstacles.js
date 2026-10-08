@@ -118,6 +118,9 @@ class NostrPool {
       ws.onerror = () => {};
       ws.onclose = () => {
         this.sockets.delete(url);
+        // Pas de reconnexion tant que l'app est en arrière-plan : on ne consomme
+        // ni batterie ni données pour des obstacles que personne ne regarde.
+        if (typeof document !== "undefined" && document.hidden) return;
         // Reconnect avec backoff
         setTimeout(() => this._connectOne(url), 5000 + Math.random() * 5000);
       };
