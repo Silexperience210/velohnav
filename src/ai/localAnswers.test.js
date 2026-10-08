@@ -175,6 +175,131 @@ describe("confusions corrigées (constatées dans le navigateur)", () => {
   });
 });
 
+describe("accord des compteurs", () => {
+  // On injecte un pluriel espion : on vérifie que le module demande bien la bonne
+  // forme au bon endroit, sans dépendre du moteur de traduction.
+  const espion = () => {
+    const appels = [];
+    const tn = (key, n) => { appels.push([key, n]); return `${n}·${key}`; };
+    return { tn, appels };
+  };
+
+  it("station : chaque compteur est accordé séparément", () => {
+    const { tn, appels } = espion();
+    const r = answerLocally("station la plus proche ?", { ...base, tn });
+    expect(r.text).toContain("ui.ai.unit.bike");
+    expect(r.text).toContain("ui.ai.unit.elec");
+    expect(r.text).toContain("ui.ai.unit.dock");
+    expect(appels).toContainEqual(["ui.ai.unit.bike", 9]);
+    expect(appels).toContainEqual(["ui.ai.unit.dock", 12]);
+  });
+
+  it("une seule unité est annoncée au singulier", () => {
+    const { tn, appels } = espion();
+    const une = { id: "9", name: "Solo", lat: 49.61, lng: 6.13, dist: 90, bikes: 1, elec: 1, docks: 1, status: "OPEN" };
+    answerLocally("station la plus proche ?", { ...base, nearest: une, tn });
+    expect(appels.find(a => a[0] === "ui.ai.unit.bike")[1]).toBe(1);
+    expect(appels.find(a => a[0] === "ui.ai.unit.dock")[1]).toBe(1);
+  });
+
+  it("bornes : le compteur de la station de retour est accordé", () => {
+    const { tn, appels } = espion();
+    answerLocally("où rendre mon vélo ?", { ...base, tn });
+    expect(appels).toContainEqual(["ui.ai.unit.dock", 12]);
+  });
+
+  it("électriques et conseil : compteurs accordés eux aussi", () => {
+    const a = espion(); answerLocally("des vélos électriques ?", { ...base, tn: a.tn });
+    expect(a.appels).toContainEqual(["ui.ai.unit.elec", 9]);
+    const b = espion(); answerLocally("où aller maintenant ?", { ...base, tn: b.tn });
+    expect(b.appels).toContainEqual(["ui.ai.unit.bike", 9]);
+  });
+
+  it("sans pluriel injecté, le module ne lève pas et se rabat sur un compteur brut", () => {
+    expect(() => answerLocally("station la plus proche ?", base)).not.toThrow();
+    expect(answerLocally("station la plus proche ?", base).text).toContain("9");
+  });
+});
+
+describe("relecture Kimi — défauts confirmés et corrigés", () => {
+  it("« je ramène le vélo » ne doit pas être pris pour un guidage (amene ⊂ ramene)", () => {
+    const r = answerLocally("je ramène le vélo à la station", base);
+    expect(r.nav).toBeUndefined();
+    expect(r.text).not.toContain("nav_unknown");
+  });
+
+  it("« se promener » ne doit pas déclencher la règle de guidage (mener ⊂ promener)", () => {
+    const r = answerLocally("je vais me promener", base);
+    expect(r.nav).toBeUndefined();
+  });
+
+  it("« la prochaine station » répond une station, pas des départs", () => {
+    const r = answerLocally("quelle est la prochaine station ?", base);
+    expect(r.text).toContain("ui.ai.ans.nearest");
+    expect(r.text).not.toContain("ans.bus");
+  });
+
+  it("« souvent » ne déclenche plus la météo (vent ⊂ souvent)", () => {
+    const r = answerLocally("je passe souvent ici", base);
+    expect(r.text).not.toContain("ans.wx");
+  });
+
+  it("« je veux prendre un vélo » obtient le verdict", () => {
+    expect(answerLocally("je veux prendre un vélo", base).text).toContain("verdict_ok");
+  });
+
+  it("« je vais à la gare » lance un guidage, à pied vers un arrêt", () => {
+    const r = answerLocally("je vais à la gare centrale", base);
+    expect(r.nav).toBeDefined();
+    expect(r.nav.mode).toBe("walking");       // un arrêt se rejoint à pied
+  });
+
+  it("vers une station Vel'OH, le guidage reste à vélo", () => {
+    expect(answerLocally("emmène-moi à Hamilius", base).nav.mode).toBe("bicycling");
+  });
+
+  it("pour rendre un vélo, la réponse vise une station avec des bornes libres", () => {
+    const pleine = { id: "3", name: "Pleine", lat: 49.61, lng: 6.13, dist: 50, bikes: 12, elec: 12, docks: 0, status: "OPEN" };
+    const r = answerLocally("où rendre mon vélo ?", { ...base, nearest: pleine, nearestReturn: base.nearest });
+    expect(r.text).toContain("Theater Plaza");   // celle qui a des bornes
+    expect(r.text).not.toContain("Pleine");
+  });
+
+  it("météo sans prévisions : pas de point orphelin", () => {
+    const r = answerLocally("quel temps fait-il ?", { ...base, forecast: null });
+    expect(r.text).not.toMatch(/\.\s*$/);
+    expect(r.text).not.toContain("()");
+  });
+
+  it("le repli est signalé comme non reconnu, pour que l'écran sache quand appeler le modèle", () => {
+    expect(answerLocally("raconte-moi une blague", base).unknown).toBe(true);
+    expect(answerLocally("station la plus proche ?", base).unknown).toBeUndefined();
+  });
+});
+
+describe("anglais — la première puce rapide ne doit pas tomber sur le repli", () => {
+  const cas = {
+    "Can I take a bike?": "verdict_ok",
+    "Where is the nearest station?": "ans.nearest",
+    "Next bus?": "ans.bus",
+    "Where can I return my bike?": "ans.docks",
+    "Do you have electric bikes?": "ans.elec",
+    "What is the weather?": "ans.wx",
+  };
+  for (const [q, attendu] of Object.entries(cas)) {
+    it(`« ${q} » → ${attendu}`, () => {
+      const r = answerLocally(q, base);
+      expect(r.text).toContain(attendu);
+      expect(r.text).not.toContain("ans.help");
+    });
+  }
+  it("« Take me to Hamilius » lance un guidage", () => {
+    const r = answerLocally("Take me to Hamilius", base);
+    expect(r.nav).toBeDefined();
+    expect(r.nav.name).toBe("Hamilius");
+  });
+});
+
 describe("question non reconnue", () => {
   it("explique ce qui est disponible sans modèle", () => {
     const r = answerLocally("raconte-moi une blague", base);
