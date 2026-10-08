@@ -77,13 +77,19 @@ async function parseObstacle(evt) {
 // Stratégie minimaliste : 1 WS par relay, message broadcasté vers tous.
 // La Map `seen` est au niveau du pool (singleton) pour persister entre
 // unmount/remount du hook (ex: user désactive puis réactive la caméra).
-class NostrPool {
+export class NostrPool {
   constructor(relays = DEFAULT_RELAYS) {
     this.relays = relays;
     this.sockets = new Map();         // url → WebSocket
     this.subscribers = new Set();     // listeners pour events reçus
     this.seen = new Map();            // event_id → obstacle (dedup persisté)
     this.subId = "velohnav-obs-" + Math.random().toString(36).slice(2, 10);
+    // Retour au premier plan : rouvrir les relais fermés pendant l'arrière-plan.
+    // Sans cela (7079b97 coupait la reconnexion en arrière-plan sans prévoir de
+    // reprise), un socket tué pendant que l'écran était éteint ne revenait
+    // jamais : plus aucun obstacle pour le reste de la session.
+    this._onVisibility = () => { if (!document.hidden) this.connect(); };
+    if (typeof document !== "undefined") document.addEventListener("visibilitychange", this._onVisibility);
   }
 
   connect() {
@@ -121,8 +127,11 @@ class NostrPool {
         // Pas de reconnexion tant que l'app est en arrière-plan : on ne consomme
         // ni batterie ni données pour des obstacles que personne ne regarde.
         if (typeof document !== "undefined" && document.hidden) return;
-        // Reconnect avec backoff
-        setTimeout(() => this._connectOne(url), 5000 + Math.random() * 5000);
+        // Reconnect avec backoff (re-vérifie : l'app a pu passer en arrière-plan entre-temps)
+        setTimeout(() => {
+          if (typeof document !== "undefined" && document.hidden) return;
+          this._connectOne(url);
+        }, 5000 + Math.random() * 5000);
       };
       this.sockets.set(url, ws);
     } catch {}
@@ -164,6 +173,7 @@ class NostrPool {
   }
 
   close() {
+    if (typeof document !== "undefined") document.removeEventListener("visibilitychange", this._onVisibility);
     this.sockets.forEach(ws => {
       try { ws.send(JSON.stringify(["CLOSE", this.subId])); ws.close(); } catch {}
     });
