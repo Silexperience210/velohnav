@@ -12,6 +12,9 @@ import { Map as MlMap, Marker, ScaleControl, AttributionControl, setWorkerUrl } 
 import workerUrl from "maplibre-gl/dist/maplibre-gl-worker.mjs?url";
 import "maplibre-gl/dist/maplibre-gl.css";
 import { C, REF } from "../../constants.js";
+import { t } from "../../i18n.js";
+import { IconButton, Spinner } from "../../ui/primitives.jsx";
+import { RecenterButton } from "../../ui/map.jsx";
 import {
   OFM_STYLE_URL, STYLE_CACHE_KEY, FALLBACK_STYLE,
   themeDarkStyle, stationsToGeoJSON, routeToGeoJSON, boundsOf,
@@ -277,43 +280,38 @@ export default function MapView({ stations, selId, onSelect, gpsPos, heading, ro
 
   if (failed) return (
     <div style={{ position:"absolute", inset:0, display:"flex", alignItems:"center", justifyContent:"center",
-      color:C.muted, fontSize:9, fontFamily:C.fnt, textAlign:"center", padding:20 }}>
-      Carte indisponible sur cet appareil (WebGL requis).
+      color:"var(--vn-text2)", fontSize:13, textAlign:"center", padding:20 }}>
+      {t("ui.map.webgl")}
     </div>
   );
-
-  const btn = { width:32, height:32, background:"rgba(8,12,15,0.92)", border:`1px solid ${C.border}`,
-    borderRadius:6, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center",
-    color:C.text, fontSize:15, fontFamily:C.fnt, boxShadow:"0 2px 8px rgba(0,0,0,0.5)", userSelect:"none" };
 
   return (
     <>
       <style>{`
-        .vn-map .maplibregl-ctrl-attrib { background: rgba(8,12,15,0.82); color: #7a8494;
-          font: 8px ${C.fnt}; padding: 1px 5px; border-radius: 3px 0 0 0; }
-        .vn-map .maplibregl-ctrl-attrib a { color: #9aa3b2; }
-        .vn-map .maplibregl-ctrl-scale { background: rgba(8,12,15,0.7); color: ${C.text};
-          border-color: ${C.muted}; font: 8px ${C.fnt}; }
+        .vn-map .maplibregl-ctrl-attrib { background: rgba(7,9,11,0.82); color: var(--vn-text3);
+          font: 10px var(--vn-font); padding: 1px 6px; border-radius: 4px 0 0 0; }
+        .vn-map .maplibregl-ctrl-attrib a { color: var(--vn-text2); }
+        .vn-map .maplibregl-ctrl-scale { background: rgba(7,9,11,0.7); color: var(--vn-text);
+          border-color: var(--vn-text3); font: 10px var(--vn-font); }
       `}</style>
       <div ref={containerRef} className="vn-map" style={{ position:"absolute", inset:0 }}/>
       {!ready && (
-        <div style={{ position:"absolute", inset:0, display:"flex", alignItems:"center", justifyContent:"center",
-          pointerEvents:"none", color:C.accent, fontSize:9, fontFamily:C.fnt, letterSpacing:2 }}>
-          CHARGEMENT CARTE…
+        <div style={{ position:"absolute", inset:0, display:"flex", alignItems:"center", justifyContent:"center", gap:8,
+          pointerEvents:"none", color:"var(--vn-text2)", fontSize:12 }}>
+          <Spinner/> {t("ui.map.loading")}
         </div>
       )}
-      <div style={{ position:"absolute", right:10, top:10, zIndex:5, display:"flex", flexDirection:"column", gap:4 }}>
-        <div style={btn} onClick={() => zoomBy(1)} aria-label="Zoom avant">＋</div>
-        <div style={btn} onClick={() => zoomBy(-1)} aria-label="Zoom arrière">－</div>
+      <div style={{ position:"absolute", right:10, top:10, zIndex:5, display:"flex", flexDirection:"column", gap:6 }}>
+        <IconButton icon="plus" label={t("ui.map.zoom_in")} onClick={() => zoomBy(1)} className="vn-iconbtn--filled"/>
+        <IconButton icon="minus" label={t("ui.map.zoom_out")} onClick={() => zoomBy(-1)} className="vn-iconbtn--filled"/>
         {Math.abs(bearing) > 1 && (
-          <div style={{ ...btn, color:C.accent }} onClick={resetNorth} aria-label="Nord en haut">
-            <span style={{ display:"inline-block", transform:`rotate(${-bearing}deg)`, fontSize:11, fontWeight:700 }}>N</span>
-          </div>
-        )}
-        {gpsPos && (
-          <div style={{ ...btn, border:`1px solid ${C.blue}66`, color:C.blue }} onClick={recenter} aria-label="Recentrer">◎</div>
+          <button type="button" className="vn-iconbtn vn-iconbtn--filled" onClick={resetNorth} aria-label={t("ui.map.north")}
+            style={{ color:"var(--vn-accent)", fontWeight:700, fontSize:13 }}>
+            <span style={{ display:"inline-block", transform:`rotate(${-bearing}deg)` }}>N</span>
+          </button>
         )}
       </div>
+      <RecenterButton onClick={recenter} disabled={!gpsPos} style={{ position:"absolute", right:10, bottom:34, zIndex:5 }}/>
     </>
   );
 }

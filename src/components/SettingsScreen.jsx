@@ -1,199 +1,197 @@
-import { useState, useEffect, useRef, useCallback, useMemo } from "react";
-import { t } from "../i18n.js";
-import { C, COMPASS_LABELS, FOV } from "../constants.js";
-import { haversine, getBearing, fDist, fWalk, bCol, bTag, pins } from "../utils.js";
-
-import { useI18n } from "../i18n.js";
+import { useState, useEffect, useRef } from "react";
+import { t, useI18n } from "../i18n.js";
+import { version } from "../../package.json";
+import { isSentryConfigured, getSentryEnabled, setSentryEnabled } from "../sentry.js";
+import { Icon } from "../ui/icons.jsx";
+import { Badge, Button, Card, Field, Input, Row, Section, SegmentedControl, Switch } from "../ui/primitives.jsx";
+import { fmtAgo, positioning } from "../ui/format.js";
 import { TRANSITOUS_SOURCES_URL } from "../utils/transitous.js";
 
-function SettingsScreen({ apiKey, setApiKey, onRefresh, apiLive, isMock, dataSource="demo", gpsPos, lnAddr, setLnAddr, lnOn, setLnOn, ads, setAds, mapsKey, setMapsKey, spatialAudio=false, setSpatialAudio=()=>{} }) {
-  const [draft,setDraft]=useState(apiKey);
-  const [saved,setSaved]=useState(false);
-  const [mapsDraft,setMapsDraft]=useState(mapsKey||"");
-  const [mapsSaved,setMapsSaved]=useState(false);
-  const [lnSaved,setLnSaved]=useState(false);
-  // i18n
-  const { lang, setLanguage } = useI18n();
+const LN_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-  useEffect(()=>{ setDraft(apiKey); },[apiKey]);
-  useEffect(()=>{ setMapsDraft(mapsKey||""); },[mapsKey]);
+// État de feedback éphémère d'un bouton : idle → success|error → idle
+function useFlash(ms = 1600) {
+  const [state, setState] = useState("idle");
+  const timer = useRef();
+  useEffect(() => () => clearTimeout(timer.current), []);
+  const flash = s => { setState(s); clearTimeout(timer.current); timer.current = setTimeout(() => setState("idle"), ms); };
+  return [state, flash];
+}
 
-  const saveKey=()=>{ setApiKey(draft.trim()); setSaved(true); setTimeout(()=>{ setSaved(false); onRefresh(); },1200); };
-  const saveMapsKey=()=>{ setMapsKey?.(mapsDraft.trim()); setMapsSaved(true); setTimeout(()=>setMapsSaved(false),1500); };
-  // FIX : validation format Lightning Address (user@domain) avant sauvegarde
-  const [lnError, setLnError] = useState("");
-  const saveLn=()=>{
-    const addr = lnAddr.trim();
-    const valid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(addr);
-    if (addr && !valid) { setLnError("Format invalide — ex: toi@getalby.com"); return; }
-    setLnError(""); setLnSaved(true); setTimeout(()=>setLnSaved(false),1500);
-  };
-
-  const Toggle=({label,sub,val,set})=>(
-    <div style={{ display:"flex",justifyContent:"space-between",alignItems:"center",
-      padding:"11px 0",borderBottom:`1px solid ${C.border}` }}>
-      <div style={{ flex:1,marginRight:12 }}>
-        <div style={{ color:C.text,fontSize:11,fontFamily:C.fnt }}>{label}</div>
-        {sub&&<div style={{ color:C.muted,fontSize:8,fontFamily:C.fnt,marginTop:2,lineHeight:1.5 }}>{sub}</div>}
-      </div>
-      <div onPointerDown={()=>set(v=>!v)} style={{ width:38,height:20,borderRadius:10,cursor:"pointer",position:"relative",flexShrink:0,
-        background:val?C.accentBg:"rgba(255,255,255,0.04)",border:`1px solid ${val?C.accent:C.border}`,
-        boxShadow:val?`0 0 8px ${C.accent}30`:"none",transition:"all 0.2s" }}>
-        <div style={{ position:"absolute",top:3,width:14,height:14,borderRadius:"50%",
-          background:val?C.accent:C.muted,left:val?21:3,transition:"left 0.2s,background 0.2s" }}/>
-      </div>
-    </div>
-  );
-
+// Clé API optionnelle : brouillon local, appliquée au clic (feedback direct).
+function KeyField({ label, hint, value, onApply, placeholder }) {
+  const [draft, setDraft] = useState(value || "");
+  const [state, flash] = useFlash();
+  useEffect(() => { setDraft(value || ""); }, [value]);
+  const dirty = draft.trim() !== (value || "");
   return (
-    <div style={{ flex:1,overflowY:"auto",background:C.bg,minHeight:0 }}>
-      <div style={{ margin:"14px 14px 0",background:"rgba(255,255,255,0.02)",
-        border:`1px solid ${gpsPos?C.good+"40":C.border}`,borderRadius:7,padding:"11px 13px" }}>
-        <div style={{ color:C.text,fontSize:11,fontFamily:C.fnt }}>{t("settings.gps")}</div>
-        <div style={{ color:gpsPos?C.good:C.muted,fontSize:8,fontFamily:C.fnt,marginTop:2 }}>
-          {gpsPos?`✓ ${gpsPos.lat.toFixed(5)}, ${gpsPos.lng.toFixed(5)} ±${gpsPos.acc}m`:t("settings.gps_waiting")}
+    <Field label={<span style={{ display: "flex", alignItems: "center", gap: 6 }}>
+      {label}<Badge tone={value ? "good" : "neutral"}>{value ? t("ui.set.key_on") : t("ui.set.key_off")}</Badge></span>}
+      hint={hint}>
+      {a11y => (
+        <div style={{ display: "flex", gap: 8 }}>
+          <Input {...a11y} mono type="password" autoComplete="off" spellCheck={false}
+            value={draft} placeholder={placeholder} onChange={e => setDraft(e.target.value)}
+            onKeyDown={e => { if (e.key === "Enter" && dirty) { onApply(draft.trim()); flash("success"); } }}/>
+          <Button variant={dirty ? "primary" : "secondary"} state={state} disabled={!dirty && state === "idle"}
+            onClick={() => { onApply(draft.trim()); flash("success"); }}>
+            {state === "success" ? t("ui.set.saved") : t("ui.set.apply")}
+          </Button>
         </div>
-      </div>
-
-      <div style={{ padding:"14px 14px 0" }}>
-        <div style={{ color:C.muted,fontSize:8,fontFamily:C.fnt,letterSpacing:2,marginBottom:10 }}>{t("settings.data_src")}</div>
-        <div style={{ background:"rgba(255,255,255,0.02)",border:`1px solid ${C.border}`,borderRadius:8,padding:"14px" }}>
-          <div style={{ background:apiLive?"rgba(46,204,143,0.08)":"rgba(245,130,13,0.08)",
-            border:`1px solid ${apiLive?C.good+"40":C.accent+"40"}`,borderRadius:4,padding:"7px 10px" }}>
-            <div style={{ color:apiLive?C.good:C.accent,fontSize:9,fontFamily:C.fnt }}>
-              {t(`settings.src_${dataSource}`)}
-            </div>
-            <div style={{ color:C.muted,fontSize:8,fontFamily:C.fnt,marginTop:2 }}>
-              api.cyclocity.fr · GBFS v3 · station_information + station_status
-            </div>
-          </div>
-          {/* Clé JCDecaux : repli optionnel, replié par défaut */}
-          <details open={!!apiKey} style={{ marginTop:10 }}>
-            <summary style={{ color:C.muted,fontSize:8,fontFamily:C.fnt,letterSpacing:2,cursor:"pointer" }}>
-              {t("settings.advanced")}{apiKey?" · JCDecaux ✓":""}
-            </summary>
-            <div style={{ color:C.muted,fontSize:8,fontFamily:C.fnt,margin:"8px 0 6px",lineHeight:1.6 }}>
-              {t("settings.jcd_key")}
-            </div>
-            <div style={{ display:"flex",gap:8 }}>
-              <input value={draft} onChange={e=>setDraft(e.target.value)} placeholder="Clé API JCDecaux…" type="password"
-                style={{ flex:1,background:"rgba(0,0,0,0.4)",border:`1px solid ${C.border}`,
-                  borderRadius:4,padding:"8px 10px",color:C.text,fontSize:11,fontFamily:C.fnt,outline:"none" }}/>
-              <div onPointerDown={saveKey} style={{ background:saved?"rgba(46,204,143,0.15)":C.accentBg,
-                border:`1px solid ${saved?C.good:C.accent}`,color:saved?C.good:C.accent,
-                borderRadius:4,padding:"8px 12px",fontSize:9,fontFamily:C.fnt,cursor:"pointer",fontWeight:700,whiteSpace:"nowrap" }}>
-                {saved?t("settings.ok"):t("settings.apply")}
-              </div>
-            </div>
-            <div style={{ color:C.muted,fontSize:8,fontFamily:C.fnt,marginTop:6 }}>developer.jcdecaux.com (gratuit)</div>
-          </details>
-        </div>
-      </div>
-
-      <div style={{ padding:"14px 14px 0" }}>
-        <div style={{ color:C.muted,fontSize:8,fontFamily:C.fnt,letterSpacing:2,marginBottom:10 }}>🤖 IA EMBARQUÉE</div>
-        <div style={{ background:"rgba(46,204,143,0.06)",border:`1px solid ${C.good+"33"}`,borderRadius:8,padding:"14px" }}>
-          <div style={{ color:C.good,fontSize:9,fontFamily:C.fnt,lineHeight:1.8 }}>
-            ✓ Assistant IA 100% local — zéro clé API, zéro serveur.
-          </div>
-          <div style={{ color:C.muted,fontSize:8,fontFamily:C.fnt,marginTop:6,lineHeight:1.8 }}>
-            Modèle Qwen 2.5 (1.5B) embarqué sur l'appareil. Réponses hors-ligne, tes données ne quittent jamais le téléphone.
-          </div>
-        </div>
-      </div>
-
-      <div style={{ padding:"14px 14px 0" }}>
-        <div style={{ color:C.muted,fontSize:8,fontFamily:C.fnt,letterSpacing:2,marginBottom:10 }}>{t("settings.ln_rewards")}</div>
-        <div style={{ background:"rgba(255,255,255,0.02)",border:`1px solid ${C.border}`,borderRadius:8,padding:"0 14px" }}>
-          <Toggle label="Activer" sub="Sats après chaque trajet via LNURL-pay self-custodial" val={lnOn} set={setLnOn}/>
-          {lnOn&&<div style={{ paddingBottom:14 }}>
-            <div style={{ color:C.muted,fontSize:8,fontFamily:C.fnt,letterSpacing:2,margin:"10px 0 6px" }}>LIGHTNING ADDRESS</div>
-            <div style={{ display:"flex",gap:8 }}>
-              <input value={lnAddr} onChange={e=>{setLnAddr(e.target.value);setLnError("");}} placeholder="toi@getalby.com"
-                style={{ flex:1,background:"rgba(0,0,0,0.4)",
-                  border:`1px solid ${lnError?C.bad:C.border}`,
-                  borderRadius:4,padding:"8px 10px",color:"#FCD34D",fontSize:11,fontFamily:C.fnt,outline:"none" }}/>
-              <div onPointerDown={saveLn} style={{
-                background:lnSaved?"rgba(46,204,143,0.15)":C.accentBg,border:`1px solid ${lnSaved?C.good:C.accent}`,
-                color:lnSaved?C.good:C.accent,borderRadius:4,padding:"8px 12px",
-                fontSize:9,fontFamily:C.fnt,cursor:"pointer",fontWeight:700,whiteSpace:"nowrap" }}>
-                {lnSaved?"✓ OK":t("settings.save")}
-              </div>
-            </div>
-            {lnError&&<div style={{ color:C.bad,fontSize:8,fontFamily:C.fnt,marginTop:4 }}>⚠ {lnError}</div>}
-            <div style={{ color:C.muted,fontSize:8,fontFamily:C.fnt,marginTop:7,lineHeight:1.8 }}>
-              Alby · WoS · Phoenix · Blink · Zeus{"\n"}LNURL-pay · self-custodial · zéro serveur
-            </div>
-          </div>}
-        </div>
-      </div>
-
-      <div style={{ padding:"14px 14px 0" }}>
-        <div style={{ color:C.muted,fontSize:8,fontFamily:C.fnt,letterSpacing:2,marginBottom:10 }}>🚌 TRANSPORT</div>
-        <div style={{ background:"rgba(255,255,255,0.02)",border:`1px solid ${C.border}`,borderRadius:8,padding:"14px",display:"flex",flexDirection:"column",gap:10 }}>
-          <div>
-            <div style={{ color:C.muted,fontSize:7,fontFamily:C.fnt,letterSpacing:1,marginBottom:6 }}>Google Maps (navigation AR fallback)</div>
-            <div style={{ display:"flex",gap:8 }}>
-              <input value={mapsDraft} onChange={e=>setMapsDraft(e.target.value)} placeholder="AIza..." type="password"
-                style={{ flex:1,background:"rgba(0,0,0,0.4)",border:`1px solid ${C.border}`,
-                  borderRadius:4,padding:"8px 10px",color:C.text,fontSize:11,fontFamily:C.fnt,outline:"none" }}/>
-              <div onPointerDown={saveMapsKey} style={{ background:mapsSaved?"rgba(46,204,143,0.15)":C.accentBg,
-                border:`1px solid ${mapsSaved?C.good:C.accent}`,color:mapsSaved?C.good:C.accent,
-                borderRadius:4,padding:"8px 12px",fontSize:9,fontFamily:C.fnt,cursor:"pointer",fontWeight:700,whiteSpace:"nowrap" }}>
-                {mapsSaved?"✓ OK":"APPLIQUER"}
-              </div>
-            </div>
-          </div>
-          <div>
-            <div style={{ color:C.muted,fontSize:7,fontFamily:C.fnt,letterSpacing:1,marginBottom:6 }}>
-              Bus + tram — Transitous (MOTIS) · sans clé
-            </div>
-            <div style={{ color:C.good,fontSize:9,fontFamily:C.fnt,lineHeight:1.6 }}>
-              ✓ Données officielles ATP Luxembourg, départs et itinéraires intermodaux
-            </div>
-            <div style={{ color:C.muted,fontSize:8,fontFamily:C.fnt,marginTop:4,lineHeight:1.6 }}>
-              Service communautaire —{" "}
-              <a href={TRANSITOUS_SOURCES_URL} target="_blank" rel="noopener noreferrer"
-                style={{ color:C.accent }}>sources des données</a>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <div style={{ padding:"14px" }}>
-        <div style={{ color:C.muted,fontSize:8,fontFamily:C.fnt,letterSpacing:2,marginBottom:10 }}>APPLICATION</div>
-        <div style={{ background:"rgba(255,255,255,0.02)",border:`1px solid ${C.border}`,borderRadius:8,padding:"0 14px" }}>
-          <Toggle label="Publicités AR" sub="Overlays sponsors dans la vue caméra" val={ads} set={setAds}/>
-          <Toggle label="🎧 Audio spatial 3D"
-            sub="Guidage vocal HRTF — la voix vient de la direction du virage. Casque/écouteurs requis."
-            val={spatialAudio} set={setSpatialAudio}/>
-          {/* Sélecteur de langue */}
-          <div style={{ display:"flex",justifyContent:"space-between",alignItems:"center",
-            padding:"11px 0",borderBottom:`1px solid ${C.border}` }}>
-            <div>
-              <div style={{ color:C.text,fontSize:11,fontFamily:C.fnt }}>🌐 Langue / Language</div>
-              <div style={{ color:C.muted,fontSize:8,fontFamily:C.fnt,marginTop:2 }}>Détection automatique au premier lancement</div>
-            </div>
-            <div style={{ display:"flex",gap:6 }}>
-              {[["fr","FR 🇫🇷"],["en","EN 🇬🇧"]].map(([code,label])=>(
-                <div key={code} onPointerDown={()=>setLanguage(code)}
-                  style={{ padding:"5px 10px",borderRadius:6,cursor:"pointer",
-                    background: lang===code ? C.accentBg : "rgba(255,255,255,0.04)",
-                    border:`1px solid ${lang===code ? C.accent : C.border}`,
-                    color: lang===code ? C.accent : C.muted,
-                    fontSize:9, fontFamily:C.fnt, fontWeight:lang===code?700:400 }}>
-                  {label}
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
-      </div>
-      <div style={{ height:20 }}/>
-    </div>
+      )}
+    </Field>
   );
 }
 
-// ── NAV ───────────────────────────────────────────────────────────
+function SettingsScreen({ apiKey, setApiKey, onRefresh, refreshing = false, apiLive, isMock, gpsPos,
+                          lnAddr, setLnAddr, lnOn, setLnOn, ads, setAds, mapsKey, setMapsKey,
+                          dataSource = "demo", spatialAudio = false, setSpatialAudio = () => {},
+                          lastUpdate = null, stationCount = 0, online = true }) {
+  const { lang, setLanguage } = useI18n();
+  const [advanced, setAdvanced] = useState(false);
+  const [sentryOn, setSentryOn] = useState(getSentryEnabled);
+  const sentryReady = isSentryConfigured();
+
+  // Lightning : brouillon validé avant enregistrement (une adresse invalide n'est jamais persistée)
+  const [lnDraft, setLnDraft] = useState(lnAddr || "");
+  const [lnError, setLnError] = useState("");
+  const [lnState, flashLn] = useFlash();
+  useEffect(() => { setLnDraft(lnAddr || ""); }, [lnAddr]);
+  const saveLn = () => {
+    const addr = lnDraft.trim();
+    if (addr && !LN_RE.test(addr)) { setLnError(t("ui.set.ln_invalid")); flashLn("error"); return; }
+    setLnError(""); setLnAddr(addr); flashLn("success");
+  };
+
+  const pos = positioning(gpsPos ? "gps" : "none", gpsPos?.acc ?? null);
+  const src = !online ? "offline" : apiLive ? "live" : isMock ? "demo" : "cache";
+  const srcTone = { live: "good", demo: "warn", cache: "accent", offline: "warn" }[src];
+
+  return (
+    <div className="vn-scroll" style={{ flex: 1, minHeight: 0, paddingBottom: 24 }}>
+
+      {/* ── État ─────────────────────────────────────────────── */}
+      <Section title={t("ui.set.status")} id="set-status">
+        <Card pad={false}>
+          <Row icon="gps" iconColor={gpsPos ? "var(--vn-good)" : undefined} title={t("ui.set.gps")}
+            sub={gpsPos
+              ? <span className="vn-num vn-mono" style={{ fontSize: 12 }}>{gpsPos.lat.toFixed(5)}, {gpsPos.lng.toFixed(5)}</span>
+              : t("ui.set.gps_wait")}
+            right={<Badge tone={pos.tone}>{gpsPos ? `±${gpsPos.acc} m` : "—"}</Badge>}/>
+          <Row icon="layers" title={t("ui.set.data")}
+            sub={<>
+              <Badge tone={srcTone} style={{ marginRight: 6 }}>{t(`ui.data.${src}`)}</Badge>
+              <span className="vn-num">{stationCount} stations · {t("ui.updated", { ago: fmtAgo(lastUpdate) })}</span>
+              <span style={{ display: "block", marginTop: 2, color: "var(--vn-text3)" }}>{t(`ui.set.src.${dataSource}`)}</span>
+            </>}
+            right={<Button size="sm" icon="refresh" loading={refreshing} onClick={onRefresh}>{t("ui.set.refresh")}</Button>}/>
+          <Row icon="bus" iconColor="var(--vn-transit)" title={t("ui.set.transit")} sub={t("ui.set.transit_sub")}
+            right={<a className="vn-btn vn-btn--secondary vn-btn--sm" href={TRANSITOUS_SOURCES_URL} target="_blank" rel="noopener noreferrer">{t("ui.set.transit_sources")}</a>}/>
+        </Card>
+      </Section>
+
+      {/* ── Récompenses Lightning ───────────────────────────── */}
+      <Section title={t("ui.set.rewards")} id="set-ln">
+        <Card pad={false}>
+          <Row icon="bolt" iconColor="var(--vn-sats)" title={t("ui.set.ln_on")} sub={t("ui.set.ln_on_sub")}
+            right={<Switch checked={lnOn} onChange={setLnOn} label={t("ui.set.ln_on")}/>}/>
+          {lnOn && (
+            <div style={{ padding: "4px 14px 14px", borderTop: "1px solid var(--vn-border)" }}>
+              <Field label={t("ui.set.ln_addr")} hint={t("ui.set.ln_hint")} error={lnError}>
+                {a11y => (
+                  <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+                    <Input {...a11y} mono type="email" inputMode="email" autoComplete="off" spellCheck={false}
+                      placeholder="vous@getalby.com" value={lnDraft}
+                      onChange={e => { setLnDraft(e.target.value); setLnError(""); }}
+                      onKeyDown={e => e.key === "Enter" && saveLn()}
+                      style={{ color: "var(--vn-sats)" }}/>
+                    <Button variant={lnDraft.trim() !== (lnAddr || "") ? "primary" : "secondary"} state={lnState} onClick={saveLn}>
+                      {lnState === "success" ? t("ui.set.saved") : t("ui.set.save")}
+                    </Button>
+                  </div>
+                )}
+              </Field>
+            </div>
+          )}
+        </Card>
+      </Section>
+
+      {/* ── Navigation ──────────────────────────────────────── */}
+      <Section title={t("ui.set.nav")} id="set-nav">
+        <Card pad={false}>
+          <Row icon="headphones" title={t("ui.set.audio")} sub={t("ui.set.audio_sub")}
+            right={<Switch checked={spatialAudio} onChange={setSpatialAudio} label={t("ui.set.audio")}/>}/>
+          <Row icon="megaphone" title={t("ui.set.ads")} sub={t("ui.set.ads_sub")}
+            right={<Switch checked={ads} onChange={setAds} label={t("ui.set.ads")}/>}/>
+        </Card>
+      </Section>
+
+      {/* ── Langue ──────────────────────────────────────────── */}
+      <Section title={t("ui.set.lang")} id="set-lang">
+        <Card>
+          <SegmentedControl label={t("ui.set.lang")} value={lang} onChange={setLanguage}
+            options={[{ value: "fr", label: "Français" }, { value: "en", label: "English" }]}/>
+          <div className="vn-field__hint" style={{ marginTop: 8 }}>{t("ui.set.lang_sub")}</div>
+        </Card>
+      </Section>
+
+      {/* ── Confidentialité ─────────────────────────────────── */}
+      <Section title={t("ui.set.privacy")} id="set-privacy">
+        <Card pad={false}>
+          <Row icon="shield" title={t("ui.set.sentry")}
+            sub={sentryReady ? t("ui.set.sentry_sub") : t("ui.set.sentry_na")}
+            right={<Switch checked={sentryReady && sentryOn} disabled={!sentryReady} label={t("ui.set.sentry")}
+              onChange={v => { setSentryOn(v); setSentryEnabled(v); }}/>}/>
+          <Row icon="cpu" iconColor="var(--vn-good)" title={t("ui.set.ai_local")} sub={t("ui.set.ai_local_sub")}/>
+        </Card>
+      </Section>
+
+      {/* ── Avancé / optionnel ──────────────────────────────── */}
+      <Section title={t("ui.set.advanced")} id="set-adv">
+        <Card pad={false}>
+          <button type="button" className="vn-row vn-row--btn" aria-expanded={advanced} aria-controls="set-adv-body"
+            onClick={() => setAdvanced(a => !a)}>
+            <span className="vn-row__icon"><Icon name="key" size={16}/></span>
+            <span className="vn-row__body">
+              <span className="vn-row__title" style={{ display: "block" }}>{t("ui.set.advanced")}</span>
+              <span className="vn-row__sub" style={{ display: "block" }}>{t("ui.set.advanced_sub")}</span>
+            </span>
+            <span style={{ color: "var(--vn-text3)", transition: "transform 180ms", transform: advanced ? "rotate(180deg)" : "none" }}>
+              <Icon name="chevronDown" size={18}/>
+            </span>
+          </button>
+          {advanced && (
+            <div id="set-adv-body" style={{ padding: "4px 14px 16px", display: "flex", flexDirection: "column", gap: 16,
+              borderTop: "1px solid var(--vn-border)", paddingTop: 14 }}>
+              <KeyField label={t("ui.set.jcd")} hint={t("ui.set.jcd_hint")} value={apiKey} placeholder="••••••••"
+                onApply={v => { setApiKey(v); setTimeout(() => onRefresh?.(), 300); }}/>
+              <KeyField label={t("ui.set.maps")} hint={t("ui.set.maps_hint")} value={mapsKey} placeholder="AIza…"
+                onApply={v => setMapsKey?.(v)}/>
+            </div>
+          )}
+        </Card>
+      </Section>
+
+      {/* ── À propos ────────────────────────────────────────── */}
+      <Section title={t("ui.set.about")} id="set-about">
+        <Card pad={false}>
+          <Row icon="code" title={t("ui.set.version")}
+            right={<span className="vn-mono vn-num" style={{ fontSize: 13, color: "var(--vn-text2)" }}>v{version}</span>}/>
+          <div style={{ padding: "12px 14px 14px", borderTop: "1px solid var(--vn-border)" }}>
+            <div className="vn-eyebrow" style={{ marginBottom: 8 }}>{t("ui.set.licenses")}</div>
+            <ul style={{ listStyle: "none", display: "flex", flexDirection: "column", gap: 6 }}>
+              {["osm", "ofm", "maplibre", "transitous", "meteo", "qwen", "veloh"].map(k => (
+                <li key={k} style={{ display: "flex", gap: 8, fontSize: 12, color: "var(--vn-text2)", lineHeight: 1.45 }}>
+                  <span style={{ color: "var(--vn-text3)", marginTop: 1 }}><Icon name="chevronRight" size={12} stroke={2}/></span>
+                  {t(`ui.lic.${k}`)}
+                </li>
+              ))}
+            </ul>
+          </div>
+        </Card>
+      </Section>
+    </div>
+  );
+}
 
 export default SettingsScreen;

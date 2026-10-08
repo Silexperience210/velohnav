@@ -9,9 +9,26 @@ const ENV = import.meta.env.MODE;
 let _sentry = null;       // référence Sentry une fois chargé
 let _loading = null;      // promise pour éviter double-init
 
+// Opt-out utilisateur (Réglages → Confidentialité). Défaut : actif si DSN
+// présent (comportement v3 inchangé). Pris en compte au prochain lancement ;
+// la désactivation coupe aussi le client déjà chargé.
+const OPT_KEY = "velohnav_sentry";
+export function isSentryConfigured() { return !!DSN; }
+export function getSentryEnabled() {
+  try { return localStorage.getItem(OPT_KEY) !== "off"; } catch { return true; }
+}
+export function setSentryEnabled(on) {
+  try { localStorage.setItem(OPT_KEY, on ? "on" : "off"); } catch {}
+  if (!on) { try { _sentry?.close?.(); } catch {} _sentry = null; }
+}
+
 export async function initSentry() {
   if (!DSN) {
     console.log("[Sentry] Désactivé (VITE_SENTRY_DSN non défini)");
+    return false;
+  }
+  if (!getSentryEnabled()) {
+    console.log("[Sentry] Désactivé par l'utilisateur");
     return false;
   }
   if (_sentry) return true;
