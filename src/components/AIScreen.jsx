@@ -28,6 +28,13 @@ function stripNavTag(text) {
   return text.replace(NAV_RE, "").trim();
 }
 
+// Échec du modèle → phrase explicite (cause + quoi faire), suivie du détail technique.
+function describeModelError(e) {
+  if (!e?.code) return e?.message || String(e);
+  const msg = t(`ui.ai.model.fail.${e.code}`, { s: e.seconds, mb: e.mb });
+  return e.detail && !/^timeout /.test(e.detail) ? `${msg} (${e.detail})` : msg;
+}
+
 // Taille réelle du modèle conversationnel, annoncée AVANT tout téléchargement :
 // rien ne part sans que l'utilisateur l'ait décidé.
 // Taille annoncée : celle de la variante que l'appareil sait réellement faire tourner
@@ -49,6 +56,7 @@ function AIScreen({ stations, aiHistory, setAiHistory,
   const [modelState, setModelState] = useState("off");   // off | loading | ready | error
   const [modelProgress, setModelProgress] = useState(0);
   const [modelError, setModelError] = useState("");   // message réel, affiché en cas d'échec
+  const [modelPhase, setModelPhase] = useState(null);  // { phase: download|init, device }
   const [loadSeq, setLoadSeq] = useState(0);             // incrémenté par « Réessayer »
   // La conversation libre est DÉSACTIVÉE par défaut : le modèle pèse près d'1 Go,
   // il n'est téléchargé que sur demande explicite. Sans lui, l'écran reste utile :
@@ -117,12 +125,14 @@ function AIScreen({ stations, aiHistory, setAiHistory,
     if (!chatOn) return;                 // rien n'est téléchargé sans décision de l'utilisateur
     let dead = false;
     setModelState("loading");
-    loadModel((pct)=>{ if(!dead) setModelProgress(pct); })
+    setModelPhase(null);
+    loadModel((pct)=>{ if(!dead) setModelProgress(pct); },
+              (p)=>{ if(!dead) setModelPhase(p); })
       .then(()=>{ if(!dead) setModelState("ready"); })
       .catch((e)=>{
         if(!dead){
           setModelState("error");
-          setModelError(e?.message || String(e));   // sinon l'utilisateur ne peut que constater l'échec
+          setModelError(describeModelError(e));   // sinon l'utilisateur ne peut que constater l'échec
         }
       });
     return ()=>{ dead = true; };   // les setState sont bloqués ; le téléchargement déjà
@@ -250,7 +260,12 @@ Ne l'utilise pas pour de simples informations ou conseils.`;
       setAiHistory([...hist,{role:"assistant",content:raw}]);
       setAiDisplay(d=>[...d,{role:"ai",text:reply, nav}]);
     } catch(e) {
-      const msg = modelState==="error"
+      if (e?.code === "generate_timeout") {   // worker arrêté : le dire, plutôt qu'un « prêt » mensonger
+        setModelState("error");
+        setModelError(describeModelError(e));
+      }
+      const msg = e?.code ? describeModelError(e)
+        : modelState==="error"
         ? t("ai.model_error").replace(/^⚠\s*/, "")
         : t("ui.ai.err.gen", { msg: e?.message ?? t("ui.ai.err.unknown") });
       setAiDisplay(d=>[...d,{role:"ai",text:msg, error:true}]);
@@ -436,8 +451,10 @@ Ne l'utilise pas pour de simples informations ou conseils.`;
           <div style={{ fontSize:12, fontWeight:600 }}>{t("ui.ai.chat.title")}</div>
           <div style={{ fontSize:10.5, color:"var(--vn-text3)", lineHeight:1.45 }}>
             {!chatOn ? t("ui.ai.chat.note", { mb: chatModelMB() })
+              : modelState==="loading" && modelPhase?.phase==="init"
+                ? t("ui.ai.model.init", { engine: t(`ui.ai.model.engine.${modelPhase.device}`) })
               : modelState==="loading" ? t("ui.ai.model.loading", { pct:modelProgress })
-              : modelState==="error"   ? `${t("ui.ai.model.error")}${modelError ? " — " + modelError.slice(0, 160) : ""}`
+              : modelState==="error"   ? `${t("ui.ai.model.error")}${modelError ? " — " + modelError.slice(0, 220) : ""}`
               : t("ui.ai.model.ready")}
           </div>
         </div>
@@ -446,7 +463,7 @@ Ne l'utilise pas pour de simples informations ou conseils.`;
         )}
         {chatOn && modelState==="loading" && (
           <div style={{ width:64 }}>
-            <ProgressBar value={modelProgress} indeterminate={modelProgress===0} label={t("ui.ai.model.loading", { pct:modelProgress })}/>
+            <ProgressBar value={modelProgress} indeterminate={modelProgress===0 || modelPhase?.phase==="init"} label={t("ui.ai.model.loading", { pct:modelProgress })}/>
           </div>
         )}
       </div>

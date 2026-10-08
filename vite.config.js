@@ -60,6 +60,11 @@ export default defineConfig({
     target: 'es2020',
     sourcemap: true,
   },
+  // Le worker du modèle (src/ai/modelWorker.js) importe transformers.js, qui se
+  // découpe en plusieurs morceaux : le format iife par défaut ne le permet pas.
+  worker: {
+    format: 'es',
+  },
   test: {
     environment: 'node',
     globals: true,

@@ -1,116 +1,172 @@
 // IA embarquée 100% locale (zéro clé API, zéro requête réseau après le
 // téléchargement initial du modèle, données 100% sur l'appareil).
-// Basé sur @huggingface/transformers (transformers.js v3).
-import { pipeline, env } from "@huggingface/transformers";
+// Basé sur @huggingface/transformers (transformers.js v3), exécuté dans un worker
+// dédié (modelWorker.js) que cette façade surveille.
+//
+// Défaut corrigé : sur téléphone, « Chargement du modèle · 100 % » restait affiché
+// indéfiniment. 100 % = fin du téléchargement seulement ; l'initialisation qui suit
+// (cache, moteur onnxruntime, session WebGPU) n'avait aucun délai et pouvait ne jamais
+// rendre la main. Ici : chaque phase est bornée par un chien de garde, le worker est tué
+// s'il se bloque, et l'échec est rapporté avec sa raison. Les décisions (variante,
+// délais, repli) sont des fonctions pures dans modelPolicy.js.
+import {
+  VARIANTS, chooseVariant, assessWebGPU, planLoad, LIMITS, watchdog,
+  initialProgress, progressReducer, decideAfterFailure, withTimeout,
+} from "./modelPolicy.js";
 
-// Modèle instruct ONNX quantifié int4 (~1 Go). Bon suivi d'instructions, bon français.
-// (Alternative plus puissante : "onnx-community/Qwen2.5-3B-Instruct".)
-const MODEL_ID = "onnx-community/Qwen2.5-1.5B-Instruct";
-/**
- * Choix de la quantification, décidé sur l'appareil.
- *
- * Mesuré sur le dépôt : q4 = 1,7 Go, q4f16 = 1,17 Go. q4f16 n'est utilisable que sur
- * WebGPU ; sans adaptateur graphique, seule la variante q4 fonctionne (WASM). Un
- * téléphone récent a du WebGPU et télécharge donc 530 Mo de moins ; un appareil sans
- * GPU garde la variante qui marche. Vérifié à la mesure : sans adaptateur, demander
- * q4f16 fait échouer le chargement.
- *
- * Fonction pure, pour être testable : la décision ne dépend que de la présence d'un
- * adaptateur.
- */
-export function chooseVariant(hasWebGPUAdapter) {
-  return hasWebGPUAdapter
-    ? { dtype: "q4f16", device: "webgpu", mb: 1165 }
-    : { dtype: "q4",    device: "wasm",   mb: 1704 };
+export { chooseVariant };
+
+// Mémorise qu'un chargement WebGPU a déjà échoué sur cet appareil : les tentatives
+// suivantes passent directement par WASM (sans re-sonder un chemin qui a bloqué).
+const WEBGPU_KO_KEY = "velohnav_ai_webgpu_ko";
+
+function webgpuKnownBroken() {
+  try { return !!globalThis.localStorage?.getItem(WEBGPU_KO_KEY); } catch { return false; }
+}
+function markWebGPUBroken(reason) {
+  try { globalThis.localStorage?.setItem(WEBGPU_KO_KEY, reason || "1"); } catch { /* mode privé */ }
 }
 
-// Renseigné au premier chargement, pour que l'interface annonce la bonne taille.
-let chosen = null;
-export const chatModelMB = () => (chosen ? chosen.mb : 1704);
-
-/** Un adaptateur WebGPU réel est-il disponible sur cet appareil ? */
-async function hasWebGPUAdapter() {
-  try {
-    if (typeof navigator === "undefined" || !navigator.gpu) return false;
-    return (await navigator.gpu.requestAdapter()) != null;
-  } catch {
-    return false;
+/** Échec de chargement ou de génération, avec un code traduisible côté interface. */
+export class ModelError extends Error {
+  constructor(code, { detail = "", seconds = 0, mb = 0 } = {}) {
+    super(detail ? `${code}: ${detail}` : code);
+    this.name = "ModelError";
+    this.code = code;
+    this.detail = detail;
+    this.seconds = seconds;
+    this.mb = mb;
   }
 }
 
-// Si le modèle est packagé localement (public/models/ via scripts/fetch-model.sh),
-// il est chargé depuis l'appareil (zéro téléchargement). Sinon, fallback hub HF.
-const LOCAL_DIR = "Qwen2.5-1.5B-Instruct";
-const LOCAL_PATH = "/models/";
+// Variante retenue (ou celle que la prochaine tentative utilisera), pour que
+// l'interface annonce la bonne taille.
+let chosen = null;
+export const chatModelMB = () => (chosen ? chosen.mb : VARIANTS.wasm.mb);
 
-let generator = null;
+let worker = null;
+let ready = false;
 let loadPromise = null;
+let seq = 0;
+const pending = new Map(); // id de génération → { resolve, reject }
 
 /** Le modèle est-il chargé et prêt à générer ? */
 export function isModelReady() {
-  return generator !== null;
+  return ready;
+}
+
+/** Arrête le worker (libère la mémoire et tout ce qui y était bloqué). */
+function killWorker(err) {
+  if (worker) worker.terminate();
+  worker = null;
+  ready = false;
+  for (const { reject } of pending.values()) reject(err || new ModelError("generate"));
+  pending.clear();
+}
+
+// Après un échec WebGPU, le fichier q4f16 (1,17 Go) ne servira plus sur cet appareil :
+// on le retire du cache de transformers.js pour laisser la place à la variante WASM.
+async function purgeCachedVariant(dtype) {
+  try {
+    if (typeof caches === "undefined") return;
+    const cache = await withTimeout(caches.open("transformers-cache"), 5000, "cache");
+    const keys = await withTimeout(cache.keys(), 5000, "cache");
+    await Promise.all(keys.filter((r) => r.url.includes(`model_${dtype}.onnx`)).map((r) => cache.delete(r)));
+  } catch { /* au pire l'espace n'est pas libéré */ }
+}
+
+function onRuntimeMessage({ data }) {
+  if (data?.type !== "result") return;
+  const p = pending.get(data.id);
+  if (!p) return;
+  pending.delete(data.id);
+  if (data.error) p.reject(new ModelError("generate", { detail: data.error }));
+  else p.resolve(data.text);
+}
+
+function runLoad(onProgress, onPhase) {
+  return new Promise((resolve, reject) => {
+    const w = new Worker(new URL("./modelWorker.js", import.meta.url), { type: "module" });
+    worker = w;
+    let st = initialProgress(Date.now());
+    let device = null;
+    let settled = false;
+
+    const done = (err) => {
+      if (settled) return;
+      settled = true;
+      clearInterval(tick);
+      if (err) reject(err);
+      else resolve();
+    };
+
+    const fail = (phase, { timedOut = false, seconds = 0, detail = "" } = {}) => {
+      if (settled) return;
+      const d = decideAfterFailure({ device: device || "wasm", phase, timedOut });
+      killWorker();
+      if (d.markWebGPUBroken) {
+        markWebGPUBroken(detail || d.code);
+        purgeCachedVariant(d.purgeDtype);
+      }
+      chosen = d.next; // la prochaine tentative (« Réessayer ») et sa taille
+      console.warn(`[IA] échec ${d.code} (${device || "?"}, phase ${phase}) :`, detail);
+      done(new ModelError(d.code, { detail, seconds, mb: d.next.mb }));
+    };
+
+    const start = (probe) => {
+      const known = webgpuKnownBroken();
+      const plan = planLoad({ webgpuKnownBroken: known, assessment: known ? null : assessWebGPU(probe) });
+      chosen = plan.variant;
+      device = plan.variant.device;
+      console.info(`[IA] variante ${plan.variant.dtype}/${device} (${plan.reason})`);
+      onPhase?.({ phase: "download", device });
+      w.postMessage({ type: "load", variant: plan.variant });
+    };
+
+    // Le chien de garde : la seule chose qui voit un blocage (une attente qui ne se
+    // résout jamais ne lève pas d'exception).
+    const tick = setInterval(() => {
+      const v = watchdog({ ...st, device: device || "wasm" }, Date.now());
+      if (v) fail(v.phase, { timedOut: true, seconds: v.seconds, detail: `timeout ${v.seconds} s` });
+    }, 1000);
+
+    w.onerror = (e) => fail(st.phase, { detail: e?.message || "worker error" });
+    w.onmessage = ({ data }) => {
+      if (settled || !data) return;
+      if (data.type === "probe") start(data.probe);
+      else if (data.type === "progress") {
+        const prev = st.phase;
+        st = progressReducer(st, data.ev, Date.now());
+        onProgress?.(st.pct);
+        if (st.phase !== prev && st.phase === "init") onPhase?.({ phase: "init", device });
+      } else if (data.type === "ready") {
+        w.onmessage = onRuntimeMessage;
+        w.onerror = (e) => killWorker(new ModelError("generate", { detail: e?.message || "worker error" }));
+        ready = true;
+        done();
+      } else if (data.type === "error") {
+        fail(st.phase, { detail: data.message });
+      }
+    };
+
+    if (webgpuKnownBroken()) start(null);
+    else w.postMessage({ type: "probe" });
+  });
 }
 
 /**
  * Charge le modèle une seule fois (cache en mémoire, pas de re-téléchargement).
+ * Ne peut pas rester en attente indéfiniment : chaque phase est bornée (LIMITS).
  * @param {(pct: number) => void} [onProgress] progression du téléchargement (0-100)
- * @returns {Promise<object>}
+ * @param {(p: {phase: "download"|"init", device: string}) => void} [onPhase]
+ * @returns {Promise<void>}
  */
-async function hasLocalModel() {
-  try {
-    const r = await fetch(`${LOCAL_PATH}${LOCAL_DIR}/config.json`, { method: "HEAD" });
-    return r.ok;
-  } catch {
-    return false;
-  }
-}
-
-export function loadModel(onProgress) {
-  if (generator) return Promise.resolve(generator);
+export function loadModel(onProgress, onPhase) {
+  if (ready && worker) return Promise.resolve();
   if (loadPromise) return loadPromise;
-  loadPromise = (async () => {
-    let ref = MODEL_ID;
-    if (await hasLocalModel()) {
-      env.allowLocalModels = true;
-      env.localModelPath = LOCAL_PATH;
-      ref = LOCAL_DIR;
-    }
-    // Tentatives, de la plus légère à la plus sûre. Sur mobile, WebGPU peut échouer à
-    // l'INITIALISATION (mémoire GPU, support de q4f16) alors que le téléchargement a
-    // abouti — la progression affichait 100 % et l'utilisateur restait sans modèle.
-    // On se rabat donc automatiquement sur WASM + q4, qui fonctionne partout. On garde
-    // chaque échec : sans message, l'utilisateur ne peut que constater « indisponible ».
-    const essais = [];
-    if (await hasWebGPUAdapter()) essais.push(chooseVariant(true));
-    essais.push(chooseVariant(false));
-    let derniereErreur = null;
-    for (const v of essais) {
-      try {
-        chosen = v;
-        return await pipeline("text-generation", ref, {
-          dtype: v.dtype,
-          device: v.device,
-          progress_callback: (p) => {
-            if (p?.status === "progress" && onProgress) {
-              onProgress(Math.round(p.progress ?? 0));
-            }
-          },
-        });
-      } catch (e) {
-        derniereErreur = e;
-        console.warn(`[IA] variante ${v.dtype}/${v.device} refusée :`, e?.message || e);
-      }
-    }
-    throw derniereErreur || new Error("chargement du modèle impossible");
-  })()
-    .then((g) => {
-      generator = g;
-      return g;
-    })
-    .catch((e) => {
-      loadPromise = null; // autorise un retry après échec
-      throw e;
-    });
+  loadPromise = runLoad(onProgress, onPhase).finally(() => {
+    loadPromise = null; // succès : `ready` prend le relais ; échec : retry possible
+  });
   return loadPromise;
 }
 
@@ -139,20 +195,36 @@ function cleanReply(text) {
 
 /**
  * Génère une réponse à partir du system prompt + historique de conversation.
+ * Bornée dans le temps : au-delà de LIMITS.generateMs, le worker est arrêté (il sera
+ * recréé, depuis le cache, à la prochaine demande).
  * @param {string} system
  * @param {Array<{role:string, content:string}>} history
  * @param {{maxNewTokens?: number, temperature?: number}} [opts]
  * @returns {Promise<string>}
  */
 export async function generate(system, history, opts = {}) {
-  const g = await loadModel();
+  await loadModel();
   const prompt = buildPrompt(system, history);
-  const out = await g(prompt, {
-    max_new_tokens: opts.maxNewTokens ?? 256,
-    temperature: opts.temperature ?? 0.2,
-    top_p: 0.9,
-    do_sample: false, // greedy = déterministe, fiable pour la balise [NAV:…]
-  });
-  const full = Array.isArray(out) ? out[0]?.generated_text ?? "" : out?.generated_text ?? "";
+  const id = ++seq;
+  const seconds = Math.round(LIMITS.generateMs / 1000);
+  const full = await withTimeout(
+    new Promise((resolve, reject) => {
+      pending.set(id, { resolve, reject });
+      worker.postMessage({
+        type: "generate",
+        id,
+        prompt,
+        options: {
+          max_new_tokens: opts.maxNewTokens ?? 256,
+          temperature: opts.temperature ?? 0.2,
+          top_p: 0.9,
+          do_sample: false, // greedy = déterministe, fiable pour la balise [NAV:…]
+        },
+      });
+    }),
+    LIMITS.generateMs,
+    "generate",
+    () => killWorker(new ModelError("generate_timeout", { seconds })),
+  );
   return cleanReply(full.slice(prompt.length));
 }
