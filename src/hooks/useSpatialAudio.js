@@ -25,6 +25,7 @@
 import { useEffect, useRef, useCallback } from "react";
 import { haversine, getBearing } from "../utils.js";
 import { waypointKey } from "../components/ar/navProgress.js";
+import { getCurrentLang } from "../i18n.js";
 
 const ANNOUNCE_DISTANCES = [200, 100, 50, 20];  // m — déclenche annonces
 const REPEAT_COOLDOWN_MS = 12_000;              // 12s mini entre 2 annonces du même waypoint
@@ -53,28 +54,42 @@ function relAngleToXYZ(relDeg) {
   return { x, y, z };
 }
 
+// Phrases par langue (les seules du hook — gardées ici plutôt que dans les
+// locales, pour que le texte prononcé et la voix restent appariés).
+const PHRASES = {
+  fr: {
+    km: d => `${d} kilomètres`, m: d => `${d} mètres`, prefix: d => `Dans ${d}, `, on: " sur ",
+    dir: { left: "tournez à gauche", right: "tournez à droite", "sharp left": "virage serré à gauche",
+      "sharp right": "virage serré à droite", "slight left": "légère gauche", "slight right": "légère droite",
+      uturn: "demi-tour", straight: "continuez tout droit" }, def: "continuez",
+  },
+  en: {
+    km: d => `${d} kilometres`, m: d => `${d} metres`, prefix: d => `In ${d}, `, on: " onto ",
+    dir: { left: "turn left", right: "turn right", "sharp left": "sharp left", "sharp right": "sharp right",
+      "slight left": "bear left", "slight right": "bear right", uturn: "make a U-turn", straight: "continue straight" },
+    def: "continue",
+  },
+};
+/** Langue de synthèse : celle de l'interface (repli : français). */
+export function ttsLang(lang = getCurrentLang()) {
+  return PHRASES[lang] ? lang : "fr";
+}
+const VOICE_LOCALE = { fr: "fr-FR", en: "en-GB" };
+
 /**
- * Phrase à prononcer selon manoeuvre + distance.
+ * Phrase à prononcer selon manoeuvre + distance, dans la langue de l'interface
+ * (avant : toujours en français, voix française, même interface en anglais).
  * Style concis et naturel ("dans 80m, à droite") — évite le robotique.
  */
-function buildAnnouncement(modifier, distance, streetName = "") {
+export function buildAnnouncement(modifier, distance, streetName = "", lang = ttsLang()) {
+  const P = PHRASES[lang] ?? PHRASES.fr;
   const dist = distance >= 1000
-    ? `${(distance / 1000).toFixed(1)} kilomètres`
-    : `${Math.round(distance / 10) * 10} mètres`;
-  const dir = ({
-    "left":        "tournez à gauche",
-    "right":       "tournez à droite",
-    "sharp left":  "virage serré à gauche",
-    "sharp right": "virage serré à droite",
-    "slight left": "légère gauche",
-    "slight right":"légère droite",
-    "uturn":       "demi-tour",
-    "straight":    "continuez tout droit",
-  })[modifier] || "continuez";
-  const prefix = distance > 50 ? `Dans ${dist}, ` : "";
-  return streetName
-    ? `${prefix}${dir} sur ${streetName}.`
-    : `${prefix}${dir}.`;
+    ? P.km((distance / 1000).toFixed(1))
+    : P.m(Math.round(distance / 10) * 10);
+  const dir = P.dir[modifier] || P.def;
+  const prefix = distance > 50 ? P.prefix(dist) : "";
+  const phrase = `${prefix}${dir}${streetName ? P.on + streetName : ""}.`;
+  return phrase.charAt(0).toUpperCase() + phrase.slice(1);
 }
 
 /**
@@ -87,9 +102,10 @@ function buildAnnouncement(modifier, distance, streetName = "") {
  * 2. fetch() classique sinon — fonctionne en dev (vite proxy) ou si le
  *    WebView accepte la requête sans CORS strict
  */
-async function fetchTTSBuffer(ctx, text) {
-  if (ttsCache.has(text)) return ttsCache.get(text);
-  const url = `${GTTS_BASE}?ie=UTF-8&q=${encodeURIComponent(text)}&tl=fr&client=tw-ob`;
+async function fetchTTSBuffer(ctx, text, lang = "fr") {
+  const cacheKey = `${lang}|${text}`;
+  if (ttsCache.has(cacheKey)) return ttsCache.get(cacheKey);
+  const url = `${GTTS_BASE}?ie=UTF-8&q=${encodeURIComponent(text)}&tl=${lang}&client=tw-ob`;
   let arrayBuffer = null;
 
   // Tentative #1 : CapacitorHttp (native Android/iOS — bypass CORS)
@@ -147,7 +163,7 @@ async function fetchTTSBuffer(ctx, text) {
       const firstKey = ttsCache.keys().next().value;
       ttsCache.delete(firstKey);
     }
-    ttsCache.set(text, buffer);
+    ttsCache.set(cacheKey, buffer);
     return buffer;
   } catch (e) {
     console.warn("[SpatialAudio] decodeAudioData failed:", e.message);
@@ -165,35 +181,43 @@ export function useSpatialAudio({ enabled, gpsPos, heading, route }) {
   const announcedRef  = useRef(new Map());       // waypointKey → { atDist, ts }
   const initFailedRef = useRef(false);
 
-  // ── Init lazy de l'AudioContext (nécessite un user gesture sur iOS) ──
-  const ensureCtx = useCallback(async () => {
+  // ── Init de l'AudioContext — SYNCHRONE ───────────────────────────────
+  // Appelée depuis un geste (warmUp) : création ET resume() doivent partir
+  // avant tout `await`, sinon iOS ne les rattache plus au geste. Avant :
+  // `await ctx.resume()` puis seulement `ctxRef.current = ctx` — deux appels
+  // rapprochés créaient deux contextes, et un resume() refusé (hors geste)
+  // reste en attente pour toujours : l'annonce restait bloquée, sans repli.
+  // Un contexte déjà créé mais « suspended » n'était jamais relancé.
+  const ensureCtx = useCallback(() => {
     if (initFailedRef.current) return null;
-    if (ctxRef.current && ctxRef.current.state !== "closed") return ctxRef.current;
-    try {
-      const Ctx = window.AudioContext || window.webkitAudioContext;
-      if (!Ctx) throw new Error("Web Audio API indisponible");
-      const ctx = new Ctx();
-      // Resume si suspended (souvent sur Android Chrome au boot)
-      if (ctx.state === "suspended") await ctx.resume();
-      // PannerNode HRTF — modèle 3D le plus réaliste
-      const panner = ctx.createPanner();
-      panner.panningModel  = "HRTF";
-      panner.distanceModel = "inverse";
-      panner.refDistance   = 1;
-      panner.maxDistance   = 10;
-      panner.rolloffFactor = 0;       // pas d'atténuation — voix toujours intelligible
-      panner.coneInnerAngle  = 360;
-      panner.coneOuterAngle  = 0;
-      panner.coneOuterGain   = 0;
-      panner.connect(ctx.destination);
-      ctxRef.current = ctx;
-      pannerRef.current = panner;
-      return ctx;
-    } catch (e) {
-      console.warn("[SpatialAudio] init failed:", e.message);
-      initFailedRef.current = true;
-      return null;
+    let ctx = ctxRef.current;
+    if (!ctx || ctx.state === "closed") {
+      try {
+        const Ctx = window.AudioContext || window.webkitAudioContext;
+        if (!Ctx) throw new Error("Web Audio API indisponible");
+        ctx = new Ctx();
+        // PannerNode HRTF — modèle 3D le plus réaliste
+        const panner = ctx.createPanner();
+        panner.panningModel  = "HRTF";
+        panner.distanceModel = "inverse";
+        panner.refDistance   = 1;
+        panner.maxDistance   = 10;
+        panner.rolloffFactor = 0;       // pas d'atténuation — voix toujours intelligible
+        panner.coneInnerAngle  = 360;
+        panner.coneOuterAngle  = 0;
+        panner.coneOuterGain   = 0;
+        panner.connect(ctx.destination);
+        ctxRef.current = ctx;
+        pannerRef.current = panner;
+      } catch (e) {
+        console.warn("[SpatialAudio] init failed:", e.message);
+        initFailedRef.current = true;
+        return null;
+      }
     }
+    // Sans await : la promesse se résout quand le navigateur l'autorise.
+    if (ctx.state === "suspended") ctx.resume().catch(() => {});
+    return ctx;
   }, []);
 
   // Génération de version pour invalider les annonces obsolètes en flight.
@@ -204,7 +228,8 @@ export function useSpatialAudio({ enabled, gpsPos, heading, route }) {
   // ── Annonce vocale spatialisée ──────────────────────────────────────
   const announce = useCallback(async (text, relAngleDeg) => {
     const myVersion = ++announceVersionRef.current;
-    const ctx = await ensureCtx();
+    const ctx = ensureCtx();
+    const lang = ttsLang();
 
     // Position 3D selon angle relatif
     const { x, y, z } = relAngleToXYZ(relAngleDeg);
@@ -212,16 +237,25 @@ export function useSpatialAudio({ enabled, gpsPos, heading, route }) {
     // Fallback SpeechSynthesis si Web Audio indisponible
     const fallbackTTS = () => {
       try {
-        speechSynthesis.cancel();
         const u = new SpeechSynthesisUtterance(text);
-        u.lang = "fr-FR";
+        u.lang = VOICE_LOCALE[lang] ?? "fr-FR";
         u.rate = 1.05;
         u.pitch = 1.0;
-        speechSynthesis.speak(u);
+        // cancel() suivi immédiatement de speak() perd l'énoncé sur certains
+        // Chrome Android : on n'annule que si quelque chose parle, et on laisse
+        // passer un court délai dans ce cas.
+        if (speechSynthesis.speaking || speechSynthesis.pending) {
+          speechSynthesis.cancel();
+          setTimeout(() => speechSynthesis.speak(u), 80);
+        } else {
+          speechSynthesis.speak(u);
+        }
       } catch {}
     };
 
-    if (!ctx || !pannerRef.current) return fallbackTTS();
+    // Contexte non démarré (aucun geste encore) : une source jouerait du
+    // silence sans erreur — la synthèse native a plus de chances d'être audible.
+    if (!ctx || !pannerRef.current || ctx.state !== "running") return fallbackTTS();
 
     // Update position panner pour la prochaine source
     try {
@@ -233,7 +267,7 @@ export function useSpatialAudio({ enabled, gpsPos, heading, route }) {
     }
 
     // Fetch TTS + decode → AudioBuffer
-    const buffer = await fetchTTSBuffer(ctx, text);
+    const buffer = await fetchTTSBuffer(ctx, text, lang);
 
     // Si une annonce plus récente a été déclenchée pendant le fetch,
     // on abandonne celle-ci (sa situation est probablement obsolète).
@@ -311,7 +345,7 @@ export function useSpatialAudio({ enabled, gpsPos, heading, route }) {
     if (Date.now() - announceState.ts < REPEAT_COOLDOWN_MS) return;
 
     // Annonce !
-    const text = buildAnnouncement(wp.modifier, dist, wp.streetName || "");
+    const text = buildAnnouncement(wp.modifier, dist, wp.streetName || "");   // langue courante
     announce(text, rel);
 
     announced.set(key, { atDist: triggered, ts: Date.now() });

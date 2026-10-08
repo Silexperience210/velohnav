@@ -214,12 +214,15 @@ function ARScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey=""
     if (camRestartingRef.current) return;
     camRestartingRef.current = true;
     setCam("requesting");
-    // Geste utilisateur : on en profite pour ouvrir l'AudioContext (iOS),
-    // sinon le guidage vocal restait muet (ctx « suspended », resume ignoré).
-    try { await warmUpAudio?.(); } catch {}
-    // Boussole en premier (iOS 13 : requestPermission doit être dans le geste)
-    await startCompass();
-    // Puis caméra
+    // Tout ce qui exige le geste part de façon SYNCHRONE, avant le premier await.
+    // (03a7c62 faisait `await warmUpAudio()` AVANT la boussole : la demande de
+    // permission iOS partait hors du geste, et un resume() refusé restait en
+    // attente pour toujours — « INITIALISATION… » à vie.)
+    try { warmUpAudio?.(); } catch {}              // AudioContext créé + resume() dans le geste
+    let compassReady;
+    try { compassReady = startCompass(); } catch {}  // requestPermission (iOS) appelé dans le geste
+    try { await compassReady; } catch {}
+    // Puis caméra (getUserMedia n'exige pas de geste)
     try{
       // Couper l'ancien stream si présent (au cas où on relance)
       const oldStream = vidRef.current?.srcObject;
@@ -549,7 +552,7 @@ function ARScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey=""
           {(cam==="idle")&&(
             <>
               <div style={{color:C.muted,fontSize:9,fontFamily:C.fnt,letterSpacing:3}}>VUE AR VELOHNAV</div>
-              <button onPointerDown={startAR} style={{
+              <button onClick={startAR} style={{
                 background:C.accentBg,border:`1px solid ${C.accent}`,color:C.accent,
                 borderRadius:5,padding:"12px 32px",fontSize:12,fontFamily:C.fnt,
                 fontWeight:700,cursor:"pointer",letterSpacing:2,boxShadow:`0 0 20px ${C.accent}25`}}>
@@ -572,7 +575,7 @@ function ARScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey=""
               <div style={{color:C.muted,fontSize:9,fontFamily:C.fnt,lineHeight:1.7}}>
                 Paramètres → Apps → VelohNav → Autorisations → Caméra
               </div>
-              <button onPointerDown={startAR} style={{
+              <button onClick={startAR} style={{
                 background:"rgba(224,62,62,0.1)",border:`1px solid ${C.bad}`,color:C.bad,
                 borderRadius:4,padding:"8px 20px",fontSize:9,fontFamily:C.fnt,
                 cursor:"pointer",marginTop:12}}>{t("ar.retry")}</button>
@@ -586,7 +589,7 @@ function ARScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey=""
               <div style={{color:C.warn,fontSize:11,fontFamily:C.fnt,marginBottom:8,letterSpacing:1.5}}>
                 {t("nav.cam_lost")}
               </div>
-              <button onPointerDown={startAR} style={{
+              <button onClick={startAR} style={{
                 background:C.accentBg,border:`1px solid ${C.accent}`,color:C.accent,
                 borderRadius:4,padding:"10px 24px",fontSize:10,fontFamily:C.fnt,
                 fontWeight:700,letterSpacing:2,cursor:"pointer",marginTop:8}}>
@@ -1043,14 +1046,14 @@ function ARScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey=""
             </div>
             {/* Boutons navigation AR — affichés uniquement hors nav active */}
             <div style={{display:"flex",gap:6,marginTop:10}}>
-              <div onPointerDown={()=>startNav("cycling")}
+              <div role="button" onClick={()=>{ warmUpAudio?.(); startNav("cycling"); }}
                 style={{flex:1,display:"flex",alignItems:"center",justifyContent:"center",gap:5,
                   background:"rgba(59,130,246,0.12)",border:`1px solid #3B82F644`,
                   borderRadius:6,padding:"8px 0",cursor:"pointer"}}>
                 <span style={{fontSize:13}}>🚲</span>
                 <span style={{color:"#3B82F6",fontSize:8,fontFamily:C.fnt,fontWeight:700,letterSpacing:1}}>{t("ar.nav_cycling")}</span>
               </div>
-              <div onPointerDown={()=>startNav("walking")}
+              <div role="button" onClick={()=>{ warmUpAudio?.(); startNav("walking"); }}
                 style={{flex:1,display:"flex",alignItems:"center",justifyContent:"center",gap:5,
                   background:"rgba(167,139,250,0.12)",border:`1px solid #A78BFA44`,
                   borderRadius:6,padding:"8px 0",cursor:"pointer"}}>
