@@ -348,5 +348,8 @@ export function useSpatialAudio({ enabled, gpsPos, heading, route }) {
   const speakNow = useCallback((text, relAngleDeg = 0) => announce(text, relAngleDeg), [announce]);
   const reset = useCallback(() => { announcedRef.current.clear(); }, []);
 
-  return { speakNow, reset };
+  // Sur iOS, un AudioContext créé hors geste reste « suspended » et tout
+  // resume() ultérieur est ignoré : le guidage restait muet jusqu'au tap suivant.
+  // On l'ouvre donc explicitement depuis les gestes de l'interface (startAR, startNav).
+  return { speakNow, reset, warmUp: ensureCtx };
 }

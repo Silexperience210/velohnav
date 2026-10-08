@@ -177,7 +177,8 @@ function ARScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey=""
   // Activé uniquement si le toggle Settings est ON ET nav active.
   // Le hook calcule lui-même le waypoint courant et déclenche les annonces
   // aux seuils de distance (200m, 100m, 50m, 20m).
-  useSpatialAudio({
+  // `warmUp` sert à ouvrir l'AudioContext depuis un vrai geste (iOS) : voir startAR.
+  const { warmUp: warmUpAudio } = useSpatialAudio({
     enabled: spatialAudio && navMode !== null,
     gpsPos, heading, route,
   });
@@ -212,6 +213,9 @@ function ARScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey=""
     if (camRestartingRef.current) return;
     camRestartingRef.current = true;
     setCam("requesting");
+    // Geste utilisateur : on en profite pour ouvrir l'AudioContext (iOS),
+    // sinon le guidage vocal restait muet (ctx « suspended », resume ignoré).
+    try { await warmUpAudio?.(); } catch {}
     // Boussole en premier (iOS 13 : requestPermission doit être dans le geste)
     await startCompass();
     // Puis caméra
