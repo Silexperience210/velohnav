@@ -5,7 +5,7 @@ import { haversine, getBearing, fDist, fWalk, bCol, bTag, pins } from "../utils.
 
 import { useI18n } from "../i18n.js";
 
-function SettingsScreen({ apiKey, setApiKey, onRefresh, apiLive, isMock, gpsPos, lnAddr, setLnAddr, lnOn, setLnOn, ads, setAds, mapsKey, setMapsKey, hafasKey="", setHafasKey, spatialAudio=false, setSpatialAudio=()=>{} }) {
+function SettingsScreen({ apiKey, setApiKey, onRefresh, apiLive, isMock, dataSource="demo", gpsPos, lnAddr, setLnAddr, lnOn, setLnOn, ads, setAds, mapsKey, setMapsKey, hafasKey="", setHafasKey, spatialAudio=false, setSpatialAudio=()=>{} }) {
   const [draft,setDraft]=useState(apiKey);
   const [saved,setSaved]=useState(false);
   const [mapsDraft,setMapsDraft]=useState(mapsKey||"");
@@ -55,30 +55,37 @@ function SettingsScreen({ apiKey, setApiKey, onRefresh, apiLive, isMock, gpsPos,
       </div>
 
       <div style={{ padding:"14px 14px 0" }}>
-        <div style={{ color:C.muted,fontSize:8,fontFamily:C.fnt,letterSpacing:2,marginBottom:10 }}>{t("settings.jcd_key")}</div>
+        <div style={{ color:C.muted,fontSize:8,fontFamily:C.fnt,letterSpacing:2,marginBottom:10 }}>{t("settings.data_src")}</div>
         <div style={{ background:"rgba(255,255,255,0.02)",border:`1px solid ${C.border}`,borderRadius:8,padding:"14px" }}>
           <div style={{ background:apiLive?"rgba(46,204,143,0.08)":"rgba(245,130,13,0.08)",
-            border:`1px solid ${apiLive?C.good+"40":C.accent+"40"}`,borderRadius:4,padding:"7px 10px",marginBottom:10 }}>
+            border:`1px solid ${apiLive?C.good+"40":C.accent+"40"}`,borderRadius:4,padding:"7px 10px" }}>
             <div style={{ color:apiLive?C.good:C.accent,fontSize:9,fontFamily:C.fnt }}>
-              {apiLive?t("settings.jcd_live"):isMock?t("settings.jcd_demo"):t("settings.jcd_invalid")}
+              {t(`settings.src_${dataSource}`)}
             </div>
-            {isMock&&<div style={{ color:C.muted,fontSize:8,fontFamily:C.fnt,marginTop:2 }}>developer.jcdecaux.com (gratuit)</div>}
-          </div>
-          <div style={{ display:"flex",gap:8 }}>
-            <input value={draft} onChange={e=>setDraft(e.target.value)} placeholder="Clé API JCDecaux…" type="password"
-              style={{ flex:1,background:"rgba(0,0,0,0.4)",border:`1px solid ${C.border}`,
-                borderRadius:4,padding:"8px 10px",color:C.text,fontSize:11,fontFamily:C.fnt,outline:"none" }}/>
-            <div onPointerDown={saveKey} style={{ background:saved?"rgba(46,204,143,0.15)":C.accentBg,
-              border:`1px solid ${saved?C.good:C.accent}`,color:saved?C.good:C.accent,
-              borderRadius:4,padding:"8px 12px",fontSize:9,fontFamily:C.fnt,cursor:"pointer",fontWeight:700,whiteSpace:"nowrap" }}>
-              {saved?t("settings.ok"):t("settings.apply")}
+            <div style={{ color:C.muted,fontSize:8,fontFamily:C.fnt,marginTop:2 }}>
+              api.cyclocity.fr · GBFS v3 · station_information + station_status
             </div>
           </div>
-          <div style={{ color:C.muted,fontSize:8,fontFamily:C.fnt,marginTop:8,lineHeight:1.8 }}>
-            GET /vls/v3/stations?contract=Luxembourg{"\n"}
-            available_bikes · electrical_bikes{"\n"}
-            available_bike_stands · status · position · last_update
-          </div>
+          {/* Clé JCDecaux : repli optionnel, replié par défaut */}
+          <details open={!!apiKey} style={{ marginTop:10 }}>
+            <summary style={{ color:C.muted,fontSize:8,fontFamily:C.fnt,letterSpacing:2,cursor:"pointer" }}>
+              {t("settings.advanced")}{apiKey?" · JCDecaux ✓":""}
+            </summary>
+            <div style={{ color:C.muted,fontSize:8,fontFamily:C.fnt,margin:"8px 0 6px",lineHeight:1.6 }}>
+              {t("settings.jcd_key")}
+            </div>
+            <div style={{ display:"flex",gap:8 }}>
+              <input value={draft} onChange={e=>setDraft(e.target.value)} placeholder="Clé API JCDecaux…" type="password"
+                style={{ flex:1,background:"rgba(0,0,0,0.4)",border:`1px solid ${C.border}`,
+                  borderRadius:4,padding:"8px 10px",color:C.text,fontSize:11,fontFamily:C.fnt,outline:"none" }}/>
+              <div onPointerDown={saveKey} style={{ background:saved?"rgba(46,204,143,0.15)":C.accentBg,
+                border:`1px solid ${saved?C.good:C.accent}`,color:saved?C.good:C.accent,
+                borderRadius:4,padding:"8px 12px",fontSize:9,fontFamily:C.fnt,cursor:"pointer",fontWeight:700,whiteSpace:"nowrap" }}>
+                {saved?t("settings.ok"):t("settings.apply")}
+              </div>
+            </div>
+            <div style={{ color:C.muted,fontSize:8,fontFamily:C.fnt,marginTop:6 }}>developer.jcdecaux.com (gratuit)</div>
+          </details>
         </div>
       </div>
 

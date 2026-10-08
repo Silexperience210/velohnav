@@ -7,6 +7,7 @@ import { haversine, getBearing, fDist, bTag, bCol, enrich, parseStation,
 import { useWeather } from "./hooks/useWeather.js";
 import { useTransit } from "./hooks/useTransit.js";
 import { saveStations, loadStations } from "./hooks/useStationsCache.js";
+import { fetchGBFSStations } from "./utils/gbfs.js";
 import { recordAvailability } from "./hooks/useAvailability.js";
 const ARScreen    = lazy(() => import("./components/ARScreen.jsx"));
 const AIScreen    = lazy(() => import("./components/AIScreen.jsx"));
@@ -96,6 +97,8 @@ export default function App() {
   const [stations,setStations] = useState(()=>enrich(FALLBACK,null));
   const [apiLive,setApiLive]   = useState(false);
   const [isMock,setIsMock]     = useState(true);
+  // Source des dispos : "gbfs" | "jcdecaux" | "cache" | "demo"
+  const [dataSource,setDataSource] = useState("demo");
   const [gpsPos,setGpsPos]     = useState(null);
   const [refreshing,setRefreshing] = useState(false);
 
@@ -148,12 +151,19 @@ export default function App() {
   const loadData = useCallback(async()=>{
     const userPos = gpsRef.current;
     let newStations = null;
-    if (apiKey) {
+    // 1. GBFS public cyclocity (sans clé) — chemin par défaut, retry intégré
+    const gbfs = await fetchGBFSStations();
+    if (gbfs) {
+      newStations = enrich(gbfs, userPos);
+      setApiLive(true); setIsMock(false); setDataSource("gbfs");
+    }
+    // 2. Repli optionnel : JCDecaux si l'utilisateur a saisi une clé
+    if (!newStations && apiKey) {
       try {
         const raw = await fetchJCDecaux(apiKey);
         if (raw && Array.isArray(raw)) {
           newStations = enrich(raw.map(parseStation), userPos);
-          setApiLive(true); setIsMock(false);
+          setApiLive(true); setIsMock(false); setDataSource("jcdecaux");
         }
       } catch(e) { console.warn("JCDecaux load:", e); }
     }
@@ -163,11 +173,11 @@ export default function App() {
       if (cached?.stations?.length) {
         newStations = enrich(cached.stations, userPos);
         const ageMin = Math.round(cached.age / 60000);
-        setApiLive(false); setIsMock(false);
+        setApiLive(false); setIsMock(false); setDataSource("cache");
         console.log(`[Cache] ${cached.stations.length} stations chargées (${ageMin}min)`);
       } else {
         newStations = enrich(FALLBACK, userPos);
-        setApiLive(false); setIsMock(true);
+        setApiLive(false); setIsMock(true); setDataSource("demo");
       }
     } else {
       // Fetch réussi → persister en cache pour offline
@@ -306,7 +316,7 @@ export default function App() {
           mapsKey={mapsKey}  setMapsKey={setMapsKey}
           hafasKey={hafasKey} setHafasKey={setHafasKey}
           spatialAudio={spatialAudio} setSpatialAudio={setSpatialAudio}
-          onRefresh={loadData} apiLive={apiLive} isMock={isMock} gpsPos={gpsPos}/>}
+          onRefresh={loadData} apiLive={apiLive} isMock={isMock} dataSource={dataSource} gpsPos={gpsPos}/>}
       </div>
       <NavBar tab={tab} setTab={setTab}/>
     </div>
