@@ -63,6 +63,8 @@ function ARScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey=""
           offRoute, recalculating, manualRecalc } =
     useRoute(gpsPos, navMode ? navStation : null, navMode||"cycling", mapsKey);
 
+  // Nav ARCore native en cours : elle détient la caméra (voir releaseCamForNative).
+  const nativeNavRef = useRef(false);
   // `stationArg` permet de démarrer la nav sans attendre que `sel` soit reflété
   // dans le rendu : la closure courante connaît l'ancien `sel`, et un démarrage
   // différé par timer partait donc sur la mauvaise station — ou sur rien.
@@ -70,18 +72,18 @@ function ARScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey=""
     const target = stationArg ?? navStation;
     if (!target) return;
     const navModeVal = mode === "walking" ? "walking" : "cycling";
-    try {
-      await launchNativeArNav(
-        target.lat, target.lng, target.name,
-        mode === "walking" ? "walking" : "bicycling",
-        mapsKey
-      );
-      // Native AR lancé — on active aussi le tracé WebView en arrière-plan
-      setNavMode(navModeVal);
-    } catch {
-      // Native indispo — fallback tracé WebView uniquement
-      setNavMode(navModeVal);
-    }
+    // launchNativeArNav ne lève jamais : elle renvoie false hors appli native
+    // ou si l'activité n'a pas pu démarrer (promesse rejetée côté plugin).
+    const native = await launchNativeArNav(
+      target.lat, target.lng, target.name,
+      mode === "walking" ? "walking" : "bicycling",
+      mapsKey
+    );
+    if (native) releaseCamForNative();
+    // Dans les deux cas, le tracé WebView tourne (en arrière-plan si natif :
+    // c'est lui qui porte le guidage vocal)
+    setNavMode(navModeVal);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   },[navStation, mapsKey]);
 
   const stopNav = useCallback(()=>setNavMode(null),[]);
@@ -266,15 +268,34 @@ function ARScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey=""
   //   - readyState devient < 2 alors qu'on est censé être actif
   useEffect(() => {
     if (cam === "lost") {
+      // Pas de relance tant que la page est cachée ou que l'activité ARCore
+      // détient la caméra : getUserMedia échouerait et l'écran afficherait
+      // « caméra refusée » au retour. La reprise se fait au retour (onVis).
+      if (nativeNavRef.current || document.hidden) return;
       // Délai 300ms pour éviter une boucle infernale si le hardware refuse
       const t = setTimeout(() => startAR(), 300);
       return () => clearTimeout(t);
     }
   }, [cam, startAR]);
 
+  // Nav native lancée : on libère nous-mêmes la caméra pour ARCore (elle
+  // est exclusive) au lieu de la laisser arracher au WebView, ce qui passait
+  // par `onended` → « lost » → relance → échec → « refusée ».
+  function releaseCamForNative() {
+    nativeNavRef.current = true;
+    try { vidRef.current?.srcObject?.getTracks().forEach(t=>t.stop()); } catch {}
+    setCam(c => (c === "active" || c === "lost") ? "paused" : c);
+  }
+
   useEffect(() => {
     const onVis = () => {
       if (document.visibilityState !== "visible") return;
+      // Retour de la nav native (ou caméra perdue pendant l'arrière-plan) : reprise
+      if (cam === "paused" || cam === "lost") {
+        nativeNavRef.current = false;
+        startAR();
+        return;
+      }
       if (cam !== "active") return;
       const vid = vidRef.current;
       // Relancer si le stream est mort, paused, ou readyState insuffisant
@@ -292,12 +313,14 @@ function ARScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey=""
       }
     };
     document.addEventListener("visibilitychange", onVis);
+    document.addEventListener("resume", onVis);   // Capacitor : retour de l'activité native
     window.addEventListener("focus", onVis);
     return () => {
       document.removeEventListener("visibilitychange", onVis);
+      document.removeEventListener("resume", onVis);
       window.removeEventListener("focus", onVis);
     };
-  }, [cam]);
+  }, [cam, startAR]);
 
   // Ping périodique : 1× / 5s, vérifie que la vidéo joue effectivement.
   // Couvre les cas où ni onended ni visibilitychange ne se déclenchent
