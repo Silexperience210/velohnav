@@ -1,11 +1,12 @@
 // ── ObstaclePin — affichage AR des obstacles signalés ──────────────
 // Projette les obstacles Nostr sur la vue AR, avec halo coloré selon type.
 import { useState } from "react";
-import { C, FOV } from "../../constants.js";
+import { C } from "../../constants.js";
+import { AR_RADIUS, LENS_HFOV_DEG, pinX, pinY, relBearing } from "./arProjection.js";
 import { haversine, getBearing } from "../../utils.js";
 import { OBSTACLE_TYPES } from "../../hooks/useObstacles.js";
 
-export function ObstaclePins({ obstacles, gpsPos, heading }) {
+export function ObstaclePins({ obstacles, gpsPos, heading, fov = LENS_HFOV_DEG }) {
   if (!obstacles?.length || !gpsPos || heading === null) return null;
 
   return (
@@ -14,10 +15,10 @@ export function ObstaclePins({ obstacles, gpsPos, heading }) {
         const dist = haversine(gpsPos.lat, gpsPos.lng, o.lat, o.lng);
         if (dist > 500) return null;
         const bear = getBearing(gpsPos.lat, gpsPos.lng, o.lat, o.lng);
-        const rel  = ((bear - heading + 540) % 360) - 180;
-        if (Math.abs(rel) > FOV/2 + 8) return null;
-        const x = 50 + (rel / (FOV/2)) * 50;
-        const y = 72 - (1 - Math.min(dist, 500)/500) * 38;
+        const rel  = relBearing(bear, heading);
+        if (Math.abs(rel) > fov/2 + 4) return null;
+        const x = pinX(rel, fov);
+        const y = pinY(dist, AR_RADIUS);   // même convention que les stations
         const meta = OBSTACLE_TYPES[o.type];
         if (!meta) return null;
         const ageMin = Math.round((Date.now() - o.createdAt) / 60000);

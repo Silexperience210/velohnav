@@ -10,7 +10,7 @@ import { windImpact } from "../../hooks/useWeather.js";
 import { climbEtaFactor, EBIKE_ASCENT_THRESHOLD_M } from "../../hooks/useRoute.js";
 
 function RouteOverlay({ route, gpsPos, heading, mode, onClose, weather=null, spatialAudio=false,
-                        offRoute=false, recalculating=false, manualRecalc=null, isNight=false }) {
+                        offRoute=false, recalculating=false, manualRecalc=null, isNight=false, fov }) {
   const cvRef = useRef();
   const [step, setStep] = useState(0); // index du prochain waypoint
 
@@ -111,7 +111,7 @@ function RouteOverlay({ route, gpsPos, heading, mode, onClose, weather=null, spa
     const sampled = route.coords.filter((_, i) => i % STRIDE === 0 || i === route.coords.length - 1);
 
     const pts = sampled
-      .map(p => projectPoint(gpsPos.lat, gpsPos.lng, hdgUsed, p.lat, p.lng, W, H, true))
+      .map(p => projectPoint(gpsPos.lat, gpsPos.lng, hdgUsed, p.lat, p.lng, W, H, true, fov))
       .filter(Boolean);
 
     // Garder uniquement la portion contiguë qui passe par le FOV
@@ -173,7 +173,7 @@ function RouteOverlay({ route, gpsPos, heading, mode, onClose, weather=null, spa
 
     // ── 2. Dessiner les flèches de virage aux waypoints
     route.waypoints.slice(step, step+4).forEach((wp, wi)=>{
-      const p = projectPoint(gpsPos.lat, gpsPos.lng, hdgUsed, wp.lat, wp.lng, W, H);
+      const p = projectPoint(gpsPos.lat, gpsPos.lng, hdgUsed, wp.lat, wp.lng, W, H, false, fov);
       if (!p) return;
       const isNext = wi === 0;
       const r = isNext ? 16 : 10;
@@ -230,7 +230,7 @@ function RouteOverlay({ route, gpsPos, heading, mode, onClose, weather=null, spa
       ctx.fillStyle = footGrad; ctx.fill();
     }
 
-  },[route, gpsPos, heading, mode, step, tick, wrongWay.wrongWay]);
+  },[route, gpsPos, heading, mode, step, tick, wrongWay.wrongWay, fov]);
 
   // (tick déclaré plus haut — alimente le redraw à 30 fps)
 

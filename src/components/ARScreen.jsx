@@ -1,8 +1,8 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { t } from "../i18n.js";
-import { C, COMPASS_LABELS, FOV, FISCHER_STORES } from "../constants.js";
-import { AR_RADIUS, COMPASS_VIEW_W, compassOffsetPx, compassLabelWidth, pinX, pinY } from "./ar/arProjection.js";
-import { haversine, getBearing, fDist, fWalk, bCol, bTag, pins } from "../utils.js";
+import { C, COMPASS_LABELS, FISCHER_STORES } from "../constants.js";
+import { AR_RADIUS, COMPASS_VIEW_W, compassOffsetPx, compassLabelWidth, pinX, pinY, relBearing, effectiveHFov } from "./ar/arProjection.js";
+import { haversine, getBearing, fDist, fWalk, bCol, bTag } from "../utils.js";
 
 import { useCompass } from "../hooks/useCompass.js";
 import { useFusedHeading } from "../hooks/useFusedHeading.js";
@@ -45,6 +45,7 @@ const COMPASS_STRIP = [...COMPASS_LABELS, ...COMPASS_LABELS, ...COMPASS_LABELS];
 function ARScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey="", fischerVisible=false, weather=null, transitStops=[], transitDepartures={}, spatialAudio=false }) {
   const isNight = useDarkMode();
   const vidRef=useRef(null);
+  const rootRef=useRef(null);
   const [cam,   setCam]  =useState("idle");
   const [pulse, setPulse]=useState(false);
   const {heading:magHeading,perm,start:startCompass}=useCompass();
@@ -315,6 +316,34 @@ function ARScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey=""
     return () => clearInterval(id);
   }, [cam]);
 
+  // ── Champ de vision réellement affiché ─────────────────────────
+  // Dépend de l'orientation, du ratio écran et du ratio du flux (object-fit:
+  // cover rogne les côtés) : ~39° en portrait sur un téléphone 19,5:9, 68° en
+  // paysage. Recalculé au redimensionnement et quand le flux change de format.
+  const [dims, setDims] = useState({ viewW: 0, viewH: 0, videoW: 0, videoH: 0 });
+  useEffect(() => {
+    const root = rootRef.current, vid = vidRef.current;
+    if (!root) return;
+    const measure = () => setDims(d => {
+      const n = { viewW: root.clientWidth, viewH: root.clientHeight,
+                  videoW: vid?.videoWidth || 0, videoH: vid?.videoHeight || 0 };
+      return (n.viewW === d.viewW && n.viewH === d.viewH && n.videoW === d.videoW && n.videoH === d.videoH) ? d : n;
+    });
+    measure();
+    const ro = typeof ResizeObserver !== "undefined" ? new ResizeObserver(measure) : null;
+    ro?.observe(root);
+    window.addEventListener("orientationchange", measure);
+    vid?.addEventListener("loadedmetadata", measure);
+    vid?.addEventListener("resize", measure);   // le flux peut pivoter avec l'appareil
+    return () => {
+      ro?.disconnect();
+      window.removeEventListener("orientationchange", measure);
+      vid?.removeEventListener("loadedmetadata", measure);
+      vid?.removeEventListener("resize", measure);
+    };
+  }, []);
+  const fov = useMemo(() => effectiveHFov(dims), [dims]);
+
   // ── Projection AR réelle ───────────────────────────────────────
   const arPins=useMemo(()=>{
     if(heading===null||!gpsPos) return null;
@@ -323,9 +352,9 @@ function ARScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey=""
       .filter(s=>s.lat&&s.lng&&s.dist<=AR_RADIUS)
       .map(s=>{
         const bear=getBearing(gpsPos.lat,gpsPos.lng,s.lat,s.lng);
-        const rel=((bear-heading+540)%360)-180;
-        if(Math.abs(rel)>FOV/2+8) return null;
-        const x=pinX(rel,FOV);
+        const rel=relBearing(bear,heading);
+        if(Math.abs(rel)>fov/2+4) return null;
+        const x=Math.max(2,Math.min(98,pinX(rel,fov)));
         const y=pinY(s.dist,AR_RADIUS);
         const scale=Math.max(0.5,1-Math.min(s.dist,AR_RADIUS)/(AR_RADIUS*1.5));
         return{...s,x,y,scale,labelRight:rel<0,rel};
@@ -333,15 +362,13 @@ function ARScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey=""
       .filter(Boolean)
       .sort((a,b)=>a.dist-b.dist)  // plus proche = devant
       .slice(0,AR_MAX);
-  },[heading,gpsPos,stations]);
-
-  const fakePins=useMemo(()=>pins(stations,heading,gpsPos),[stations,heading,gpsPos]);
+  },[heading,gpsPos,stations,fov]);
 
   // ── Clustering — groupe les stations proches dans le FOV ──────────
   // Évite la surcharge visuelle quand beaucoup de pins se superposent.
   // En dessous de 500m : pins individuels. Au-delà : clusters si ≥2 stations dans un rayon de 6% écran.
   const clusteredPins = useMemo(()=>{
-    const raw = arPins ?? fakePins;
+    const raw = arPins ?? [];
     if (!raw.length) return [];
 
     const CLUSTER_R = 6; // % écran — rayon de regroupement
@@ -376,7 +403,7 @@ function ARScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey=""
       }
     });
     return result;
-  },[arPins, fakePins]);
+  },[arPins]);
 
   const visiblePins = clusteredPins;
 
@@ -390,23 +417,22 @@ function ARScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey=""
         const dist = haversine(gpsPos.lat, gpsPos.lng, s.lat, s.lng);
         if (dist > RADIUS) return null;
         const bear = getBearing(gpsPos.lat, gpsPos.lng, s.lat, s.lng);
-        const rel  = ((bear - heading + 540) % 360) - 180;
-        if (Math.abs(rel) > FOV / 2 + 8) return null;
-        const x     = 50 + (rel / (FOV / 2)) * 50;
-        const y     = 70 - (1 - Math.min(dist, RADIUS) / RADIUS) * 44;
+        const rel  = relBearing(bear, heading);
+        if (Math.abs(rel) > fov / 2 + 4) return null;
+        const x     = pinX(rel, fov);
+        const y     = pinY(dist, AR_RADIUS);   // même convention que les stations
         const scale = Math.max(0.55, 1 - dist / (RADIUS * 1.8));
         return { ...s, dist, x, y, scale };
       })
       .filter(Boolean)
       .sort((a, b) => a.dist - b.dist)
       .slice(0, 4);
-  },[fischerOn, heading, gpsPos]);
+  },[fischerOn, heading, gpsPos, fov]);
 
   // ── Nav overlay ────────────────────────────────────────────────
   const navRel=useMemo(()=>{
     if(!navStation||!gpsPos||heading===null) return null;
-    const bear=getBearing(gpsPos.lat,gpsPos.lng,navStation.lat,navStation.lng);
-    return((bear-heading+540)%360)-180;
+    return relBearing(getBearing(gpsPos.lat,gpsPos.lng,navStation.lat,navStation.lng),heading);
   },[navStation,gpsPos,heading]);
 
   // % 360 : 359,7° s'affichait « 360° » au lieu de « 0° »
@@ -428,7 +454,7 @@ function ARScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey=""
   const showCalib = perm==="nosignal" || (perm==="granted" && heading===null && cam==="active");
 
   return (
-    <div style={{position:"relative",flex:1,overflow:"hidden",minHeight:0,background:"#000"}}>
+    <div ref={rootRef} style={{position:"relative",flex:1,overflow:"hidden",minHeight:0,background:"#000"}}>
 
       <video ref={vidRef} muted playsInline autoPlay style={{
         position:"absolute",inset:0,width:"100%",height:"100%",objectFit:"cover",zIndex:1,
@@ -458,7 +484,7 @@ function ARScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey=""
           spatialAudio={spatialAudio}
           offRoute={offRoute} recalculating={recalculating}
           manualRecalc={manualRecalc}
-          isNight={isNight}
+          isNight={isNight} fov={fov}
         />
       )}
       {/* Chargement itinéraire */}
@@ -626,9 +652,9 @@ function ARScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey=""
       )}
 
       {/* Pin destination dédié — affiché seulement en mode nav, projeté sur la station cible */}
-      {navMode && navStation && navRel !== null && Math.abs(navRel) <= FOV/2 + 10 && (
+      {navMode && navStation && navRel !== null && Math.abs(navRel) <= fov/2 + 10 && (
         (() => {
-          const x = pinX(navRel, FOV);
+          const x = pinX(navRel, fov);
           const y = pinY(navStation.dist, AR_RADIUS);
           const arriving = navStation.dist < 30;
           return (
@@ -713,11 +739,12 @@ function ARScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey=""
           hasGhost={hasGhost}
           bestTime={bestTime}
           ghostSource={ghostSource}
+          fov={fov}
         />
       )}
 
       {/* Obstacles crowd-sourced via Nostr */}
-      <ObstaclePins obstacles={obstacles} gpsPos={gpsPos} heading={heading}/>
+      <ObstaclePins obstacles={obstacles} gpsPos={gpsPos} heading={heading} fov={fov}/>
 
       {/* Zone capture long-press — partie centrale de l'écran uniquement.
           Hors nav, ne couvre pas les pins (qui sont en haut). En nav active,

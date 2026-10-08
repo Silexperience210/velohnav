@@ -2,32 +2,35 @@
 // Convertit un point GPS en coordonnées canvas via bearing + distance.
 // Utilisé par RouteOverlay pour projeter le tracé de route en AR.
 import { haversine, getBearing } from "../../utils.js";
-import { HORIZON_PCT, BAS_PCT } from "./arProjection.js";
+import { AR_RADIUS, LENS_HFOV_DEG, pinX, pinY, relBearing } from "./arProjection.js";
 
 // Constantes — ajustées pour visibilité sans dérive excessive.
 const PROJ_MAX_DIST    = 500;  // m — au-delà : invisible (bruit GPS dominant)
-const PROJ_FOV_H       = 50;   // demi-FOV horizontal ±50° (cohérent avec FOV=68 + marge)
 const PROJ_BEHIND_MAX  = 90;   // ±90° = limite physique : tout ce qui est au-delà est DERRIÈRE
                                 // → on ne projette JAMAIS un point derrière (sinon le tracé
                                 //    se replie aux bords et donne l'illusion d'un virage).
 
 /**
  * Projette un point GPS sur le canvas AR via bearing + distance.
+ * Même géométrie que les pins (arProjection.pinX/pinY) : avant, le tracé
+ * utilisait ±50° (100° sur la largeur) et les pins 68° — à 20° de cap, le
+ * tracé et le pin de la même destination étaient à 35 px l'un de l'autre.
  * @param {boolean} clamp — si true, projette quand même les points hors champ visible
  *                          (utile pour relier la ligne sans coupures brutales) — MAIS
  *                          jamais au-delà de ±90° (point physiquement derrière).
+ * @param {number} fov — champ horizontal affiché (arProjection.effectiveHFov)
  * @returns {{x:number, y:number, inFov:boolean, behind:boolean, relBear:number, dist:number} | null}
  *          - null    : point au-delà de PROJ_MAX_DIST OU strictement derrière (>90°)
  *          - inFov   : true si dans le champ visible (FOV)
  *          - behind  : true si latéral (entre FOV et 90°) — le caller peut décider
  *                      de l'afficher en "edge marker" plutôt qu'en tracé continu.
  */
-export function projectPoint(fromLat, fromLng, heading, toLat, toLng, W, H, clamp = false) {
+export function projectPoint(fromLat, fromLng, heading, toLat, toLng, W, H, clamp = false, fov = LENS_HFOV_DEG) {
   const dist = haversine(fromLat, fromLng, toLat, toLng);
   if (dist > PROJ_MAX_DIST) return null;
 
   const bear    = getBearing(fromLat, fromLng, toLat, toLng);
-  const relBear = ((bear - heading + 540) % 360) - 180; // -180..+180
+  const relBear = relBearing(bear, heading); // -180..+180
   const absRel  = Math.abs(relBear);
 
   // FIX BUG-1 : un point physiquement derrière la caméra (>90° de la direction)
@@ -36,24 +39,17 @@ export function projectPoint(fromLat, fromLng, heading, toLat, toLng, W, H, clam
   // que la route partait à gauche/droite alors qu'elle revenait derrière soi.
   if (absRel > PROJ_BEHIND_MAX) return null;
 
-  const inFov  = absRel <= PROJ_FOV_H;
+  const half   = fov / 2;
+  const inFov  = absRel <= half;
   const behind = !inFov; // entre FOV et 90° = visible en bord d'écran mais pas devant
 
   if (!inFov && !clamp) return null;
 
-  // Clamp horizontal aux bords du FOV pour les points proches mais hors champ.
-  // On limite à ±PROJ_FOV_H : ainsi x reste strictement dans [0, W].
-  // (Les points entre FOV et 90° sont "collés" au bord d'écran — c'est la
-  // bonne UX : indique la direction sans laisser le tracé sortir de l'écran.)
-  const clamped = Math.max(-PROJ_FOV_H, Math.min(PROJ_FOV_H, relBear));
-  const x = W / 2 + (clamped / PROJ_FOV_H) * (W / 2);
-
-  // Proche = bas de l'écran, lointain = horizon. Les deux bornes viennent
-  // d'arProjection.js : une seule définition de l'horizon pour tout l'écran
-  // (une deuxième valeur ici donnait deux projections contradictoires).
-  // Courbe non linéaire (sqrt) : effet perspective plus naturel.
-  const t = Math.sqrt(Math.min(1, dist / PROJ_MAX_DIST)); // 0..1
-  const y = H * (BAS_PCT + t * (HORIZON_PCT - BAS_PCT)) / 100;
+  // Les points entre le bord du champ et 90° sont « collés » au bord d'écran :
+  // ils indiquent la direction sans laisser le tracé sortir de l'écran.
+  const clamped = Math.max(-half, Math.min(half, relBear));
+  const x = W * pinX(clamped, fov) / 100;
+  const y = H * pinY(dist, AR_RADIUS) / 100;
 
   return { x, y, inFov, behind, relBear, dist };
 }
@@ -86,8 +82,7 @@ export function detectWrongWay(coords, gpsPos, heading, sampleMeters = 150) {
     if (accDist < 5) continue; // ignorer les points trop proches (bruit GPS)
     total++;
     const bear = getBearing(gpsPos.lat, gpsPos.lng, p.lat, p.lng);
-    const relBear = ((bear - heading + 540) % 360) - 180;
-    if (Math.abs(relBear) > 90) behind++;
+    if (Math.abs(relBearing(bear, heading)) > 90) behind++;
     if (accDist >= sampleMeters) break;
   }
   if (total === 0) return { wrongWay: false, ratio: 0, sampleSize: 0 };

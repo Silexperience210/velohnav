@@ -1,22 +1,71 @@
 // Tests de la géométrie AR — chaque cas correspond à un défaut réel corrigé.
 import { describe, it, expect } from "vitest";
 import {
-  pinX, pinY, compassOffsetPx, compassLabelWidth, compassLabelIndexAtMarker, detourVia, alternativeRadius,
+  pinX, pinY, relBearing, effectiveHFov, LENS_HFOV_DEG, compassOffsetPx, compassLabelWidth, compassLabelIndexAtMarker, detourVia, alternativeRadius,
   AR_RADIUS, HORIZON_PCT, BAS_PCT, COMPASS_STEP_DEG, PX_PER_DEG, COMPASS_VIEW_W,
 } from "./arProjection.js";
 
-describe("pinX — projection horizontale", () => {
+describe("pinX — projection horizontale (sténopé)", () => {
   it("place le centre quand l'écart de cap est nul", () => {
     expect(pinX(0, 68)).toBe(50);
   });
   it("atteint les bords au demi-FOV", () => {
-    expect(pinX(34, 68)).toBe(100);
-    expect(pinX(-34, 68)).toBe(0);
+    expect(pinX(34, 68)).toBeCloseTo(100, 9);
+    expect(pinX(-34, 68)).toBeCloseTo(0, 9);
   });
-  it("reste cohérent après le passage 359°→1°", () => {
-    // L'appelant doit fournir un écart signé (−180..180), pas un cap brut :
-    // 350° vu avec un cap de 10° donne −20°, jamais +340°.
-    expect(pinX(-20, 68)).toBeCloseTo(20.59, 1);
+  it("suit tan(écart) comme la caméra, pas l'angle (défaut corrigé)", () => {
+    // Objectif rectilinéaire : à 20° sur un champ de 68°, l'objet est à
+    // 50 − 50·tan20/tan34 = 23,0 % — l'interpolation linéaire donnait 20,6 %.
+    expect(pinX(-20, 68)).toBeCloseTo(23.02, 1);
+  });
+  it("reste fini au-delà de 90° (clampé)", () => {
+    expect(Number.isFinite(pinX(120, 40))).toBe(true);
+  });
+});
+
+describe("relBearing — écart signé cap → relèvement", () => {
+  it("nord, est, sud, ouest vus d'un cap nord", () => {
+    expect(relBearing(0, 0)).toBe(0);
+    expect(relBearing(90, 0)).toBe(90);
+    expect(relBearing(270, 0)).toBe(-90);
+    expect(Math.abs(relBearing(180, 0))).toBe(180);
+  });
+  it("passage 359°→1° : relèvement 350° vu à 10° → −20°, jamais +340°", () => {
+    expect(relBearing(350, 10)).toBe(-20);
+    expect(relBearing(10, 350)).toBe(20);
+  });
+  it("accepte des caps hors de 0..360 (y compris très négatifs)", () => {
+    expect(relBearing(10, -350)).toBe(0);
+    expect(relBearing(10, -710)).toBe(0);
+    expect(relBearing(10, 730)).toBe(0);
+  });
+});
+
+describe("effectiveHFov — champ réellement affiché", () => {
+  it("paysage 4:3 sans rognage : le champ de l'objectif", () => {
+    expect(effectiveHFov({ viewW: 800, viewH: 600, videoW: 640, videoH: 480 })).toBeCloseTo(68, 6);
+  });
+  it("portrait 19,5:9 avec flux 3:4 : ~39°, pas 68° (défaut corrigé)", () => {
+    const f = effectiveHFov({ viewW: 390, viewH: 735, videoW: 480, videoH: 640 });
+    expect(f).toBeGreaterThan(37);
+    expect(f).toBeLessThan(41);
+  });
+  it("sans dimensions de flux : suppose un flux 4:3 orienté comme l'écran", () => {
+    expect(effectiveHFov({ viewW: 390, viewH: 735 }))
+      .toBeCloseTo(effectiveHFov({ viewW: 390, viewH: 735, videoW: 3, videoH: 4 }), 9);
+  });
+  it("sans vue mesurée : le champ de l'objectif", () => {
+    expect(effectiveHFov({})).toBe(LENS_HFOV_DEG);
+  });
+  it("un objet au bord du flux visible tombe au bord de l'écran", () => {
+    // Portrait 390×735, flux 480×640 → l'image est mise à l'échelle par la
+    // hauteur ; un objet à un pixel-flux du bord visible doit tomber à ~100 %.
+    const fov = effectiveHFov({ viewW: 390, viewH: 735, videoW: 480, videoH: 640 });
+    const f = 320 / Math.tan(34 * Math.PI / 180);             // focale (px flux)
+    const visibleHalf = (390 / (735 / 640)) / 2;              // demi-largeur visible (px flux)
+    const angle = Math.atan(visibleHalf / f) * 180 / Math.PI;
+    expect(pinX(angle, fov)).toBeCloseTo(100, 6);
+    expect(pinX(angle, 68)).toBeLessThan(80);                  // l'ancienne échelle le mettait vers 77 %
   });
 });
 

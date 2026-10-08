@@ -2,10 +2,11 @@
 // Projette la position fantôme calculée par useGhostTrail sur le canvas AR.
 // Affiche un indicateur de delta (avance/retard) flottant + visuel "vélo
 // orange semi-transparent" qui suit le tracé du best run.
-import { C, FOV } from "../../constants.js";
+import { C } from "../../constants.js";
+import { AR_RADIUS, LENS_HFOV_DEG, pinX, pinY, relBearing } from "./arProjection.js";
 import { haversine, getBearing } from "../../utils.js";
 
-function GhostPin({ ghostPos, gpsPos, heading, currentDelta, hasGhost, bestTime, ghostSource = null }) {
+function GhostPin({ ghostPos, gpsPos, heading, currentDelta, hasGhost, bestTime, ghostSource = null, fov = LENS_HFOV_DEG }) {
   // ghostSource: "world" = on court contre le record MONDIAL du segment (Nostr)
   if (!hasGhost || !ghostPos || !gpsPos || heading === null) return null;
   if (ghostPos.finished) return null;
@@ -15,11 +16,12 @@ function GhostPin({ ghostPos, gpsPos, heading, currentDelta, hasGhost, bestTime,
   // Si trop loin, juste afficher un indicateur en haut sans pin
   const showPin = dist <= 300;
   const bear = getBearing(gpsPos.lat, gpsPos.lng, ghostPos.lat, ghostPos.lng);
-  const rel  = ((bear - heading + 540) % 360) - 180;
-  const inFov = Math.abs(rel) <= FOV / 2 + 8;
+  const rel  = relBearing(bear, heading);
+  const inFov = Math.abs(rel) <= fov / 2 + 4;
 
-  const x = 50 + (Math.max(-FOV/2, Math.min(FOV/2, rel)) / (FOV/2)) * 50;
-  const y = 70 - (1 - Math.min(dist, 300) / 300) * 40;
+  // Même projection que les stations : proche → bas, loin → horizon
+  const x = pinX(Math.max(-fov/2, Math.min(fov/2, rel)), fov);
+  const y = pinY(dist, AR_RADIUS);
 
   // Status delta — couleur
   const isAhead = currentDelta < -2;   // on bat le record de >2s
