@@ -6,12 +6,15 @@ import { fetchWeather, getWeatherAdvice } from "../hooks/useWeather.js";
 import { formatDeparturesForAI } from "../hooks/useTransit.js";
 import { loadModel, generate } from "../ai/localModel.js";
 import { Icon } from "../ui/icons.jsx";
-import { Badge, IconButton, ProgressBar, Spinner, Button } from "../ui/primitives.jsx";
+import { IconButton, ProgressBar, Spinner, Button } from "../ui/primitives.jsx";
 import { wmo, bikeScore, scoreTone, reasonLabel } from "../ui/weather.js";
 import { fmtDist, stationView, cardinal } from "../ui/format.js";
+import { answerLocally as localAnswer, upcoming, approxDist } from "../ai/localAnswers.js";
 
 // ── Détection balise NAV dans la réponse IA ───────────────────────
-// L'assistant répond [NAV:lat,lng,nom,mode] pour lancer l'AR navigation
+// L'assistant répond [NAV:lat,lng,nom,mode] pour lancer l'AR navigation.
+// Ce chemin ne sert plus qu'à la conversation libre : le guidage courant passe
+// par le bouton de la carte station, sans modèle.
 const NAV_RE = /\[NAV:([\d.]+),([\d.]+),([^,\]]+)(?:,(bicycling|walking))?\]/i;
 
 function parseNavCommand(text) {
@@ -25,26 +28,9 @@ function stripNavTag(text) {
   return text.replace(NAV_RE, "").trim();
 }
 
-const approxDist = (a, b) => Math.sqrt((a.lat - b.lat) ** 2 + (a.lng - b.lng) ** 2) * 111000;
-
-// Prochain départ de bus parmi les arrêts proches (données useTransit)
-function nextBus(stops, deps) {
-  for (const s of stops || []) {
-    const d = deps?.[s.id]?.find(x => !x.cancelled);
-    if (d) return { stop: s.name, line: d.line, dir: d.direction, time: d.rtTime || d.time, late: !!d.rtTime && d.rtTime !== d.time };
-  }
-  return null;
-}
-
-// ── Carte de contexte (météo / station / bus) ──────────────────────
-function Ctx({ icon, iconColor, label, children }) {
-  return (
-    <div className="vn-ctx">
-      <div className="vn-ctx__label"><span style={{ color: iconColor, display: "flex" }}><Icon name={icon} size={13} stroke={2}/></span>{label}</div>
-      {children}
-    </div>
-  );
-}
+// Taille réelle du modèle conversationnel, annoncée AVANT tout téléchargement :
+// rien ne part sans que l'utilisateur l'ait décidé.
+const CHAT_MODEL_MB = 986;
 
 // ── Composant principal ────────────────────────────────────────────
 function AIScreen({ stations, aiHistory, setAiHistory,
@@ -57,26 +43,19 @@ function AIScreen({ stations, aiHistory, setAiHistory,
   const [localWeather, setLocalWeather] = useState(null);
   // Arrêts + départs Transitous fournis par App (un seul polling partagé, sans clé)
   const busStops = transitStops, busDeps = transitDepartures;
-  const hasTransit = true;
   const weather = weatherProp !== undefined ? weatherProp : localWeather;
-  const [forecast, setForecast] = useState(null); // prévisions 3h
-  const [modelState, setModelState] = useState("loading"); // loading | ready | error
+  const [forecast, setForecast] = useState(null);        // prévisions 3 h
+  const [modelState, setModelState] = useState("off");   // off | loading | ready | error
   const [modelProgress, setModelProgress] = useState(0);
-  const [loadSeq, setLoadSeq] = useState(0); // incrémenté par « Réessayer »
+  const [loadSeq, setLoadSeq] = useState(0);             // incrémenté par « Réessayer »
+  // La conversation libre est DÉSACTIVÉE par défaut : le modèle pèse près d'1 Go,
+  // il n'est téléchargé que sur demande explicite. Sans lui, l'écran reste utile :
+  // tout ce qui est factuel est calculé sur l'appareil, exactement.
+  const [chatOn, setChatOn] = useState(false);
   const endRef = useRef();
   const inputRef = useRef();
 
   useEffect(()=>endRef.current?.scrollIntoView({behavior:"smooth", block:"end"}),[aiDisplay, busy]);
-
-  // ── Préchargement du modèle IA local (en arrière-plan, relançable) ──
-  useEffect(()=>{
-    let dead = false;
-    setModelState("loading");
-    loadModel((pct)=>{ if(!dead) setModelProgress(pct); })
-      .then(()=>{ if(!dead) setModelState("ready"); })
-      .catch(()=>{ if(!dead) setModelState("error"); });
-    return ()=>{ dead = true; };
-  },[loadSeq]);
 
   // ── Fetch météo (si non fournie par App) + prévisions 3h ─────────
   useEffect(()=>{
@@ -122,44 +101,48 @@ function AIScreen({ stations, aiHistory, setAiHistory,
   const score  = bikeScore(weather);
   const advice = getWeatherAdvice(weather);
   const nearest = useMemo(()=>stations.find(s=>s.bikes>0 && s.status!=="CLOSED") ?? null,[stations]);
-  const bus = useMemo(()=>nextBus(busStops, busDeps),[busStops, busDeps]);
+  const deps = useMemo(()=>upcoming(busStops, busDeps, 3),[busStops, busDeps]);
+
+  // ── Modèle : chargé UNIQUEMENT si la conversation libre est activée ──
+  useEffect(()=>{
+    if (!chatOn) return;                 // rien n'est téléchargé sans décision de l'utilisateur
+    let dead = false;
+    setModelState("loading");
+    loadModel((pct)=>{ if(!dead) setModelProgress(pct); })
+      .then(()=>{ if(!dead) setModelState("ready"); })
+      .catch(()=>{ if(!dead) setModelState("error"); });
+    return ()=>{ dead = true; };
+  },[chatOn, loadSeq]);
 
   // ── Message d'accueil proactif (localisé, sans emoji) ─────────────
   const initMsg = useMemo(()=>{
-    const avail = stations.filter(s=>s.bikes>0).length;
     const lines = [];
     if (weather) {
       lines.push(t("ui.ai.welcome_wx", { label: wmo(weather.code).label, temp: weather.temp, wind: weather.wind, score }));
       const rainSoon = forecast?.find(f=> f.rainProb > 50 || f.rain > 0.5);
       if (rainSoon) lines.push(t("ui.ai.welcome_rain", { h: rainSoon.h, p: rainSoon.rainProb }));
-      if (advice.mode === "transit") {
-        lines.push(t("ui.ai.welcome_transit", { reason: reasonLabel(advice.reason) }));
-        const near = gpsPos ? TRANSIT_STOPS.filter(s=>approxDist(s, gpsPos) < 800).slice(0,2).map(s=>s.name) : [];
-        if (near.length) lines.push(t("ui.ai.welcome_stops", { stops: near.join(", ") }));
-      }
     }
     lines.push(nearest
-      ? t("ui.ai.welcome", { avail, total: stations.length, name: nearest.name, dist: fmtDist(nearest.dist),
-          bikes: nearest.bikes, elec: stationView(nearest).elec })
+      ? t("ui.ai.welcome", { avail: stations.filter(s=>s.bikes>0).length, total: stations.length,
+          name: nearest.name, dist: fmtDist(nearest.dist), bikes: nearest.bikes, elec: stationView(nearest).elec })
       : t("map.loading"));
     return lines.join("\n");
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [stations, weather, forecast, gpsPos, lang]);
 
   useEffect(()=>{
-    if (aiHistory.length === 0)
-      setAiDisplay([{ role:"ai", text:initMsg }]);
+    if (aiDisplay.length === 0)
+      setAiDisplay([{ role:"ai", text:initMsg, local:true }]);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initMsg]);
 
-  // ── Système prompt ────────────────────────────────────────────────
+  // ── Système prompt (uniquement pour la conversation libre) ────────
   const systemPrompt = useMemo(()=>{
     const hist = getHistory().slice(0,5);
     const histTxt = hist.length
       ? `\nStations récemment visitées : ${hist.map(h=>h.name).join(", ")}.`
       : "";
 
-    // Tram proches
     const nearTram = gpsPos
       ? TRANSIT_STOPS.filter(s=>approxDist(s, gpsPos) < 600).map(s=>{
           const d = Math.round(approxDist(s, gpsPos));
@@ -168,7 +151,6 @@ function AIScreen({ stations, aiHistory, setAiHistory,
       : [];
     const tramNear = nearTram.length ? `\nArrêts tram T1 proches : ${nearTram.join(", ")}.` : "";
 
-    // Météo
     const meteoTxt = weather
       ? `\nMÉTÉO ACTUELLE : ${wmo(weather.code).label} | ${weather.temp}°C | Pluie: ${weather.rain}mm/h | Vent: ${weather.wind}km/h ${cardinal(weather.windDir)} | Score vélo: ${score}/10`
       : "\nMétéo : données non disponibles.";
@@ -177,17 +159,15 @@ function AIScreen({ stations, aiHistory, setAiHistory,
       ? `\nPRÉVISIONS : ${forecast.map(f=>`+${f.h}h: ${f.temp}°C, pluie ${f.rain}mm (${f.rainProb}% proba), vent ${f.wind}km/h`).join(" | ")}`
       : "";
 
-    // Position GPS
     const gpsTxt = gpsPos
       ? `\nPosition GPS : ${gpsPos.lat.toFixed(5)}, ${gpsPos.lng.toFixed(5)}`
       : "";
 
-    // Bus + tram temps réel (Transitous) — arrêts proches avec départs live
     let busTxt = "";
     if (busStops.length > 0) {
       busTxt = busStops.slice(0, 2).map(stop => {
-        const deps = busDeps[stop.id];
-        return deps?.length ? formatDeparturesForAI(stop.name, deps) : "";
+        const d = busDeps[stop.id];
+        return d?.length ? formatDeparturesForAI(stop.name, d) : "";
       }).filter(Boolean).join("");
       if (!busTxt) busTxt = `\n(Arrêts proches détectés : ${busStops.slice(0,3).map(s=>s.name).join(", ")} — départs en cours de chargement)`;
     } else {
@@ -219,12 +199,26 @@ Ne l'utilise pas pour de simples informations ou conseils.`;
   // eslint-disable-next-line react-hooks/exhaustive-deps
   },[stations, weather, forecast, gpsPos, busStops, busDeps, lang]);
 
-  // ── Envoi message + parsing réponse AR ───────────────────────────
+  // ── Réponses locales : la logique vit dans src/ai/localAnswers.js (module pur, testé) ──
+  const answerLocally = useCallback(
+    q => localAnswer(q, { stations, nearest, deps, weather, forecast, advice, score, gpsPos, t }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [stations, nearest, deps, weather, forecast, advice, score, gpsPos, lang]);
+
+  // ── Envoi : réponse locale d'abord, modèle seulement si activé ────
   const sendText = useCallback(async(text)=>{
     const q = (text||input).trim();
     if (!q || busy) return;
-    setInput(""); setBusy(true);
+    setInput("");
     setAiDisplay(d=>[...d,{role:"user",text:q}]);
+
+    if (!chatOn) {                        // réponse locale : instantanée, exacte
+      const { text: rep, nav } = answerLocally(q);
+      setAiDisplay(d=>[...d,{role:"ai",text:rep,nav,local:true}]);
+      return;
+    }
+
+    setBusy(true);
     const hist = [...aiHistory,{role:"user",content:q}].slice(-20);
     try {
       const raw   = await generate(systemPrompt, hist); // IA locale, zéro réseau
@@ -239,9 +233,9 @@ Ne l'utilise pas pour de simples informations ou conseils.`;
       setAiDisplay(d=>[...d,{role:"ai",text:msg, error:true}]);
     }
     setBusy(false);
-  },[input,busy,aiHistory,systemPrompt,modelState,setAiHistory,setAiDisplay]);
+  },[input,busy,aiHistory,systemPrompt,modelState,chatOn,answerLocally,setAiHistory,setAiDisplay]);
 
-  // ── Lancer la nav AR depuis le bouton ─────────────────────────────
+  // ── Lancer la nav AR (bouton de la carte station, sans modèle) ────
   const [launching, setLaunching] = useState(false);
   const [navError, setNavError] = useState(null);
 
@@ -262,13 +256,10 @@ Ne l'utilise pas pour de simples informations ou conseils.`;
     setLaunching(false);
   },[mapsKey, onLaunchAR, launching]);
 
-  // ── Questions rapides contextuelles ──────────────────────────────
+  // ── Questions rapides : toutes répondables sans modèle ───────────
   const QUICK = useMemo(()=>{
-    const out = [];
-    const near = stations.find(s=>s.bikes>0 && s.dist < 500);
-    if (near) out.push({ icon:"ar", text:t("ui.ai.q.guide", { name:near.name }), accent:true });
-    out.push({ icon:"pin", text:t("ui.ai.q.nearest") });
-    out.push({ icon:"ebike", text:t("ui.ai.q.elec") });
+    const out = [{ icon:"bike", text:t("ui.ai.q.can_bike") },
+                 { icon:"pin",  text:t("ui.ai.q.nearest") }];
     if (weather && score !== null) out.push(score < 5
       ? { icon:"tram", text:t("ui.ai.q.tram") }
       : { icon:"wind", text:t("ui.ai.q.weather") });
@@ -276,82 +267,109 @@ Ne l'utilise pas pour de simples informations ou conseils.`;
     out.push({ icon:"dock", text:t("ui.ai.q.dock") });
     return out.slice(0,5);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  },[weather, score, stations, busStops.length, lang]);
+  },[weather, score, busStops.length, lang]);
 
-  const w = weather ? wmo(weather.code) : null;
   const nv = nearest ? stationView(nearest) : null;
   const canSend = !!input.trim() && !busy;
+  const verdictOk = advice.mode !== "transit";
+  const maxDocks = nearest ? Math.max(1, (nearest.bikes || 0) + (nearest.docks || 0)) : 1;
+  const nextRain = forecast?.find(f=> f.rainProb > 50);
 
   // ── Rendu ─────────────────────────────────────────────────────────
   return (
     <div style={{ flex:1, display:"flex", flexDirection:"column", minHeight:0 }}>
+      <div className="vn-thread vn-scroll" role="log" aria-live="polite" aria-label={t("ui.screen.ai")}>
 
-      {/* État du modèle */}
-      <div className="vn-model" data-state={modelState} role="status">
-        <span className="vn-model__icon">
-          {modelState==="loading" ? <Spinner size={14}/> : <Icon name={modelState==="error" ? "alert" : "cpu"} size={14} stroke={2}/>}
-        </span>
-        <span className="vn-model__text">
-          {modelState==="loading" ? t("ui.ai.model.loading", { pct:modelProgress })
-            : modelState==="error" ? t("ui.ai.model.error")
-            : t("ui.ai.model.ready")}
-        </span>
-        {modelState==="ready" && <span className="vn-model__aside">{t("ui.ai.model.private")}</span>}
-        {modelState==="error" && (
-          <Button size="sm" variant="secondary" icon="refresh" style={{ marginLeft:"auto" }}
-            onClick={()=>setLoadSeq(n=>n+1)}>{t("ui.ai.model.retry")}</Button>
-        )}
-        {modelState==="loading" && (
-          <div style={{ position:"absolute", left:0, right:0, bottom:-1 }}>
-            <ProgressBar value={modelProgress} indeterminate={modelProgress===0} label={t("ui.ai.model.loading", { pct:modelProgress })}/>
+        {/* Verdict immédiat — calculé sur l'appareil */}
+        <section className={`vn-dcard ${verdictOk ? "vn-dcard--ok" : "vn-dcard--warn"}`}>
+          <div className="vn-dcard__head">
+            <span className="vn-dcard__flash"><Icon name={verdictOk ? "bolt" : "tram"} size={17} stroke={2}/></span>
+            <strong className="vn-dcard__title">
+              {weather ? (verdictOk ? t("ui.ai.verdict.ok") : t("ui.ai.verdict.no")) : t("ui.ai.verdict.unknown")}
+            </strong>
           </div>
-        )}
-      </div>
+          <div className="vn-dcard__why">
+            {weather && advice.reason
+              ? t("ui.ai.verdict.why", { reason: reasonLabel(advice.reason) })
+              : t("ui.ai.verdict.local")}
+            {nextRain ? " " + t("ui.ai.verdict.rain", { h: nextRain.h }) : ""}
+          </div>
+          {weather && (
+            <div className="vn-metrics">
+              <span className="vn-metric vn-num">{weather.temp} °C</span>
+              <span className="vn-metric vn-metric--elec vn-num">{weather.rain} mm/h</span>
+              <span className="vn-metric vn-num">{weather.wind} km/h{weather.windDir != null ? " " + cardinal(weather.windDir) : ""}</span>
+              <span className={`vn-metric vn-num ${scoreTone(score)==="good" ? "vn-metric--good" : scoreTone(score)==="bad" ? "vn-metric--bad" : ""}`}>{score}/10</span>
+            </div>
+          )}
+        </section>
 
-      {/* Contexte : météo · station la plus proche · prochain bus */}
-      <div className="vn-ctxrow">
-        <Ctx icon={w?.icon ?? "cloud"} label={t("ui.ai.ctx.weather")}>
-          {weather ? (
-            <>
-              <div className="vn-ctx__value vn-num">{weather.temp}°
-                <Badge tone={scoreTone(score)} style={{ marginLeft:6 }}>{score}/10</Badge></div>
-              <div className="vn-ctx__sub vn-num">
-                <Icon name="navigation" size={11} stroke={2} style={{ transform:`rotate(${((weather.windDir ?? 0)+180)%360}deg)`, display:"inline", verticalAlign:"-1px" }}/>
-                {" "}{weather.wind} km/h{forecast?.some(f=>f.rainProb>50) ? ` · ${Math.max(...forecast.map(f=>f.rainProb))} %` : ""}
-              </div>
-            </>
-          ) : <div className="vn-ctx__sub">—</div>}
-        </Ctx>
-        <Ctx icon="bike" iconColor="var(--vn-good)" label={t("ui.ai.ctx.nearest")}>
+        {/* Station la plus proche + navigation en un geste */}
+        <section className="vn-dcard">
+          <div className="vn-dcard__label">{t("ui.ai.card.nearest")}</div>
           {nv ? (
             <>
-              <div className="vn-ctx__value vn-num">{nv.bikes}
-                <span style={{ color:"var(--vn-elec)", fontSize:13, marginLeft:6 }}><Icon name="bolt" size={12} stroke={2} style={{ display:"inline", verticalAlign:"-1px" }}/>{nv.elec}</span>
+              <div className="vn-dcard__row">
+                <div className="vn-ellipsis" style={{ fontSize:14.5, fontWeight:600 }}>{nv.name}</div>
+                <div className="vn-num vn-dcard__dist">{fmtDist(nv.dist)}</div>
               </div>
-              <div className="vn-ctx__sub" title={nv.name}>{nv.name} · {fmtDist(nv.dist)}</div>
+              <div className="vn-counts">
+                <div className="vn-count"><span className="vn-num vn-count__n" style={{ color:"var(--vn-elec)" }}>{nv.elec}</span><span className="vn-count__t">{t("ui.ai.card.elec_short")}</span></div>
+                <div className="vn-count"><span className="vn-num vn-count__n">{nv.docks}</span><span className="vn-count__t">{t("ui.ai.card.docks_short")}</span></div>
+                <div className="vn-count"><span className="vn-num vn-count__n" style={{ color:"var(--vn-good)" }}>{nv.bikes}</span><span className="vn-count__t">{t("ui.ai.card.bikes_short", { total: maxDocks })}</span></div>
+              </div>
+              <div className="vn-fill" aria-hidden="true">
+                <i style={{ background:"var(--vn-elec)", width:`${Math.min(100,(nv.elec/maxDocks*100)).toFixed(1)}%` }}/>
+                <i style={{ background:"var(--vn-good)",  width:`${Math.min(100,(Math.max(0,nv.bikes-nv.elec)/maxDocks*100)).toFixed(1)}%` }}/>
+              </div>
+              <button type="button" className="vn-gobtn" onClick={()=>launchNav({ lat:nearest.lat, lng:nearest.lng, name:nearest.name, mode:"bicycling" })}
+                disabled={launching} aria-busy={launching || undefined}>
+                {launching ? <Spinner size={15}/> : <Icon name="ar" size={16}/>}
+                {launching ? t("ui.ai.nav.opening") : t("ui.ai.nav.button")}
+              </button>
+              {navError && <div className="vn-dcard__err">{navError}</div>}
             </>
-          ) : <div className="vn-ctx__sub">—</div>}
-        </Ctx>
-        <Ctx icon="bus" iconColor="var(--vn-transit)" label={t("ui.ai.ctx.bus")}>
-          {bus ? (
-            <>
-              <div className="vn-ctx__value vn-num">{bus.time}
-                <span style={{ fontSize:12, color:"var(--vn-transit)", marginLeft:6, fontWeight:700 }}>{bus.line}</span></div>
-              <div className="vn-ctx__sub" title={bus.dir}>{bus.dir}</div>
-            </>
-          ) : <div className="vn-ctx__sub" style={{ marginTop:4 }}>{t("ui.ai.ctx.no_bus")}</div>}
-        </Ctx>
-      </div>
+          ) : <div className="vn-dcard__why">{t("ui.ai.ans.no_station")}</div>}
+        </section>
 
-      {/* Conversation */}
-      <div className="vn-thread vn-scroll" role="log" aria-live="polite" aria-label={t("ui.screen.ai")}>
+        {/* Prochains départs temps réel */}
+        <section className="vn-dcard">
+          <div className="vn-dcard__label">{t("ui.ai.card.departures")}</div>
+          {deps.length ? deps.map((d,i)=>(
+            <div key={i} className="vn-dep">
+              <span className="vn-dep__line vn-num">{d.line}</span>
+              <span style={{ flex:"1 1 auto", minWidth:0 }}>
+                <b className="vn-ellipsis" style={{ display:"block", fontSize:12.5, fontWeight:550 }}>{d.dir}</b>
+                <span style={{ fontSize:10.5, color:"var(--vn-text3)" }}>{d.stop}{d.dist != null ? ` · ${fmtDist(d.dist)}` : ""}</span>
+              </span>
+              <span className={`vn-dep__when vn-num ${d.late ? "vn-dep__when--late" : ""}`}>{d.time}</span>
+            </div>
+          )) : <div className="vn-dcard__why">{t("ui.ai.ans.bus_none")}</div>}
+        </section>
+
+        {/* Prévisions */}
+        {forecast?.length ? (
+          <section className="vn-dcard">
+            <div className="vn-dcard__label">{t("ui.ai.card.next_hours")}</div>
+            <div className="vn-fc">
+              {forecast.map(f=>(
+                <div key={f.h}>
+                  <div className="vn-fc__h vn-num">+{f.h} h</div>
+                  <div className="vn-fc__t vn-num">{f.temp}°</div>
+                  <div className="vn-fc__r vn-num">{f.rain} mm</div>
+                </div>
+              ))}
+            </div>
+          </section>
+        ) : null}
+
+        {/* Conversation : locale d'abord, modèle seulement si activé */}
         {aiDisplay.map((m,i)=>(
           <div key={i} className={`vn-msg vn-msg--${m.role}`} data-error={m.error || undefined}>
             {m.role==="ai" && <span className="vn-msg__avatar" aria-hidden="true"><Icon name={m.error ? "alert" : "ai"} size={14} stroke={2}/></span>}
             <div className="vn-msg__bubble">
               <span className="vn-sr">{m.role==="user" ? t("ui.ai.you") : "VELOH·AI"} : </span>
               {m.text}
-              {/* Action AR inline dans le message */}
               {m.nav && (
                 <button type="button" className="vn-navcard" onClick={()=>launchNav(m.nav)}
                   aria-busy={launching || undefined} disabled={launching}>
@@ -373,31 +391,52 @@ Ne l'utilise pas pour de simples informations ou conseils.`;
         {busy && (
           <div className="vn-msg vn-msg--ai">
             <span className="vn-msg__avatar" aria-hidden="true"><Icon name="ai" size={14} stroke={2}/></span>
-            <div className="vn-msg__bubble vn-typing" aria-label={t("ui.ai.thinking")}>
-              <span/><span/><span/>
-            </div>
+            <div className="vn-msg__bubble vn-typing" aria-label={t("ui.ai.thinking")}><span/><span/><span/></div>
           </div>
         )}
         <div ref={endRef}/>
       </div>
 
-      {/* Questions suggérées */}
+      {/* Conversation libre : optionnelle, désactivée par défaut, coût annoncé */}
+      <div className="vn-chatopt">
+        <button type="button" className="vn-chatopt__switch" role="switch" aria-checked={chatOn}
+          aria-label={t("ui.ai.chat.title")} onClick={()=>setChatOn(v=>!v)}>
+          <span className="vn-chatopt__knob"/>
+        </button>
+        <div style={{ flex:1, minWidth:0 }}>
+          <div style={{ fontSize:12, fontWeight:600 }}>{t("ui.ai.chat.title")}</div>
+          <div style={{ fontSize:10.5, color:"var(--vn-text3)", lineHeight:1.45 }} role="status">
+            {!chatOn ? t("ui.ai.chat.note", { mb: CHAT_MODEL_MB })
+              : modelState==="loading" ? t("ui.ai.model.loading", { pct:modelProgress })
+              : modelState==="error"   ? t("ui.ai.model.error")
+              : t("ui.ai.model.ready")}
+          </div>
+        </div>
+        {chatOn && modelState==="error" && (
+          <Button size="sm" variant="secondary" icon="refresh" onClick={()=>setLoadSeq(n=>n+1)}>{t("ui.ai.model.retry")}</Button>
+        )}
+        {chatOn && modelState==="loading" && (
+          <div style={{ width:64 }}>
+            <ProgressBar value={modelProgress} indeterminate={modelProgress===0} label={t("ui.ai.model.loading", { pct:modelProgress })}/>
+          </div>
+        )}
+      </div>
+
+      {/* Suggestions */}
       <div className="vn-suggest vn-scroll" role="group" aria-label={t("ui.ai.suggest")}>
         {QUICK.map(q=>(
-          <button key={q.text} type="button" className="vn-chip" disabled={busy}
-            style={q.accent ? { borderColor:"rgba(245,130,13,0.45)", color:"var(--vn-text)" } : undefined}
-            onClick={()=>sendText(q.text)}>
-            <Icon name={q.icon} size={15} style={q.accent ? { color:"var(--vn-accent)" } : undefined}/>
+          <button key={q.text} type="button" className="vn-chip" disabled={busy} onClick={()=>sendText(q.text)}>
+            <Icon name={q.icon} size={15}/>
             <span>{q.text}</span>
           </button>
         ))}
       </div>
 
-      {/* Saisie fixée en bas */}
+      {/* Saisie */}
       <form className="vn-composer" onSubmit={e=>{ e.preventDefault(); sendText(input); }}>
         <input ref={inputRef} className="vn-input" value={input} onChange={e=>setInput(e.target.value)}
-          placeholder={t("ui.ai.placeholder")} aria-label={t("ui.ai.placeholder")}
-          enterKeyHint="send" autoComplete="off"/>
+          placeholder={chatOn ? t("ui.ai.placeholder") : t("ui.ai.placeholder_local")}
+          aria-label={t("ui.ai.placeholder")} enterKeyHint="send" autoComplete="off"/>
         <IconButton type="submit" icon="send" label={t("ui.ai.send")} variant="accent"
           disabled={!canSend} loading={busy}/>
       </form>
