@@ -150,10 +150,10 @@ export function StationSheet({ station, open = true, onClose, mode = "cycling", 
         <IconButton icon="x" label={t("ui.close")} onClick={onClose} style={{ marginTop: -6, marginRight: -8 }}/>
       </div>
 
-      <div className="vn-stgrid" style={{ marginTop: 12 }}>
+      <div className="vn-stgrid" style={{ marginTop: 12, gridTemplateColumns: v.meca > 0 ? undefined : "repeat(3, 1fr)" }}>
         <Stat size="lg" value={v.bikes} label={t("ui.st.bikes")} color={sc} icon="bike"/>
         <Stat size="lg" value={v.elec} label={t("ui.st.elec")} color={v.elec ? color.elec : undefined} icon="bolt"/>
-        <Stat size="lg" value={v.meca} label={t("ui.st.meca")}/>
+        {v.meca > 0 && <Stat size="lg" value={v.meca} label={t("ui.st.meca")}/>}
         <Stat size="lg" value={v.docks} label={t("ui.st.docks")} color={v.docks ? color.text : color.bad} icon="dock"/>
       </div>
       <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 10 }}>

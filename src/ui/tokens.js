@@ -30,7 +30,7 @@ export const color = {
   closed:    "#5C6573",   // station fermée
   elec:      "#5AA9FF",   // vélos électriques
   transit:   "#A78BFA",   // bus / tram
-  user:      "#3B82F6",   // position utilisateur
+  user:      "#F5F7FA",   // position utilisateur
   sats:      "#FFC53D",   // ⚡ Lightning — or chaud
 };
 

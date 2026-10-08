@@ -493,7 +493,10 @@ button { background: none; border: 0; cursor: pointer; }
 .vn-search__input::placeholder { color: var(--vn-text3); }
 .vn-search__input::-webkit-search-cancel-button { display: none; }
 .vn-search__count { font-size: 11px; color: var(--vn-text3); white-space: nowrap; }
-.vn-filters { display: flex; gap: 6px; overflow-x: auto; padding: 2px 0; }
+.vn-filters { display: flex; gap: 6px; overflow-x: auto; padding: 2px 0; -webkit-mask-image: linear-gradient(90deg,#000 calc(100% - 18px),transparent); mask-image: linear-gradient(90deg,#000 calc(100% - 18px),transparent); }
+.vn-filters .vn-chip { padding: 0 10px; }
+/* Écrans étroits : les 4 filtres tiennent sur une ligne sans défilement (icône masquée, le compteur reste) */
+@media (max-width: 420px) { .vn-filters .vn-chip > svg { display: none; } .vn-filters .vn-chip { padding: 0 9px; gap: 5px; } }
 .vn-netsum { display: flex; gap: 12px; align-items: center; font-size: 12px; color: var(--vn-text2); }
 .vn-netsum b { font-weight: 700; }
 .vn-legend {
