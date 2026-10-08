@@ -17,7 +17,8 @@ import { useOnline } from "./ui/hooks.js";
 import { tripSats } from "./ui/format.js";
 const ARScreen    = lazy(() => import("./components/ARScreen.jsx"));
 const AIScreen    = lazy(() => import("./components/AIScreen.jsx"));
-const UiKit       = lazy(() => import("./ui/kit/UiKit.jsx"));
+// Galerie du design system : développement uniquement (éliminée du bundle de production)
+const UiKit       = import.meta.env.DEV ? lazy(() => import("./ui/kit/UiKit.jsx")) : null;
 import MapScreen   from "./components/MapScreen.jsx";
 import SettingsScreen from "./components/SettingsScreen.jsx";
 
@@ -43,7 +44,7 @@ function ScreenFallback() {
 export default function App() {
   // Galerie du design system : ?kit (ou ?kit=map|ar|base), chunk séparé.
   const kit = typeof window !== "undefined" ? new URLSearchParams(window.location.search).get("kit") : null;
-  if (kit !== null) return <Suspense fallback={<ScreenFallback/>}><UiKit view={kit || "base"}/></Suspense>;
+  if (kit !== null && UiKit) return <Suspense fallback={<ScreenFallback/>}><UiKit view={kit || "base"}/></Suspense>;
   return <ToastProvider><Shell/></ToastProvider>;
 }
 
