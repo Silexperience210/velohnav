@@ -75,3 +75,88 @@ describe("brouterToRoute", () => {
     expect(brouterToRoute(null)).toBe(null);
   });
 });
+
+// ── v4 phase 3 : Google Directions et commandes BRouter ───────────────
+import { googleToRoute, googleManeuverToModifier, brouterHintToModifier } from "./useRoute.js";
+
+describe("googleManeuverToModifier", () => {
+  it("distingue demi-tour, légère et serrée (défaut corrigé : tout devenait left/right)", () => {
+    expect(googleManeuverToModifier("uturn-left")).toBe("uturn");
+    expect(googleManeuverToModifier("uturn-right")).toBe("uturn");
+    expect(googleManeuverToModifier("turn-slight-left")).toBe("slight left");
+    expect(googleManeuverToModifier("turn-sharp-right")).toBe("sharp right");
+    expect(googleManeuverToModifier("keep-right")).toBe("slight right");
+    expect(googleManeuverToModifier("turn-left")).toBe("left");
+    expect(googleManeuverToModifier("roundabout-right")).toBe("right");
+    expect(googleManeuverToModifier("straight")).toBe("straight");
+    expect(googleManeuverToModifier(undefined)).toBe("straight");
+  });
+});
+
+describe("googleToRoute", () => {
+  const P = (lat, lng) => ({ lat, lng });
+  const DATA = { routes: [{ overview_polyline: { points: "" }, legs: [{
+    distance: { value: 600 }, duration: { value: 150 }, end_location: P(49.62, 6.14),
+    steps: [
+      { start_location: P(49.60, 6.13), end_location: P(49.61, 6.13), distance: { value: 200 } },             // départ
+      { start_location: P(49.61, 6.13), end_location: P(49.61, 6.14), distance: { value: 200 }, maneuver: "turn-left" },
+      { start_location: P(49.61, 6.14), end_location: P(49.62, 6.14), distance: { value: 200 }, maneuver: "uturn-right" },
+    ],
+  }] }] };
+
+  it("place chaque manœuvre à son point de départ (défaut corrigé : une étape de retard)", () => {
+    const r = googleToRoute(DATA);
+    // « à gauche » se fait en (49.61, 6.13) — l'ancien code la plaçait en (49.61, 6.14)
+    expect(r.waypoints[0]).toMatchObject({ lat: 49.61, lng: 6.13, modifier: "left" });
+    expect(r.waypoints[1]).toMatchObject({ lat: 49.61, lng: 6.14, modifier: "uturn" });
+  });
+  it("termine sur la destination", () => {
+    const r = googleToRoute(DATA);
+    expect(r.waypoints.at(-1)).toMatchObject({ lat: 49.62, lng: 6.14, instruction: "arrive" });
+    expect(r.waypoints).toHaveLength(3);
+    expect(r.totalDist).toBe(600);
+  });
+  it("réponse vide → null", () => {
+    expect(googleToRoute({ routes: [] })).toBeNull();
+  });
+});
+
+describe("brouterHintToModifier", () => {
+  it("suit la commande BRouter quand elle existe (mesuré : 54° = légère droite)", () => {
+    expect(angleToModifier(54)).toBe("right");                // l'angle seul
+    expect(brouterHintToModifier(6, 54)).toBe("slight right"); // la commande BRouter
+    expect(brouterHintToModifier(4, -126)).toBe("sharp left");
+    expect(brouterHintToModifier(11, 0)).toBe("uturn");
+  });
+  it("retombe sur l'angle pour les commandes sans direction (rond-point…)", () => {
+    expect(brouterHintToModifier(14, -90)).toBe("left");
+  });
+});
+
+// Réponse BRouter RÉELLE (brouter.de, 08/10/2026, trekking, Hamilius → Amelie).
+import { readFileSync } from "node:fs";
+import { getBearing } from "../utils.js";
+
+describe("convention de signe BRouter — vérifiée sur une réponse réelle", () => {
+  const geo = JSON.parse(readFileSync(new URL("../__fixtures__/brouter_hamilius_amelie.json", import.meta.url), "utf8"));
+  const c = geo.features[0].geometry.coordinates;
+  const hints = geo.features[0].properties.voicehints;
+
+  it("angle négatif = virage géométrique à gauche, positif = à droite", () => {
+    let verifies = 0;
+    for (const [i, , , , angle] of hints) {
+      if (i < 1 || i >= c.length - 1 || Math.abs(angle) < 20) continue;
+      const avant = getBearing(c[i - 1][1], c[i - 1][0], c[i][1], c[i][0]);
+      const apres = getBearing(c[i][1], c[i][0], c[i + 1][1], c[i + 1][0]);
+      const virage = ((apres - avant + 540) % 360) - 180;          // + = sens horaire = droite
+      expect(Math.sign(virage)).toBe(Math.sign(angle));
+      verifies++;
+    }
+    expect(verifies).toBeGreaterThanOrEqual(6);
+  });
+  it("la route convertie garde ces sens", () => {
+    const r = brouterToRoute(geo);
+    expect(r.waypoints[0].modifier).toBe("left");                 // cmd 2, −108°
+    expect(r.waypoints.some(w => w.modifier === "slight right")).toBe(true);
+  });
+});

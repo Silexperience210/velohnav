@@ -81,6 +81,50 @@ export async function fetchOSRM(fromLat, fromLng, toLat, toLng, mode = "cycling"
 }
 
 // ── Google Directions (fallback, clé requise) ─────────────────────
+// `maneuver` Google → modifier OSRM/BRouter (vocabulaire de l'app). Pure + testée.
+// Avant : `includes("left") ? "left"` — demi-tour, légère et serrée devenaient
+// tous « tournez à gauche ».
+export function googleManeuverToModifier(m) {
+  if (!m) return "straight";
+  if (m.startsWith("uturn")) return "uturn";
+  const side = m.includes("left") ? "left" : m.includes("right") ? "right" : null;
+  if (!side) return "straight";                       // straight, merge, ferry…
+  if (m.includes("sharp")) return `sharp ${side}`;
+  if (m.includes("slight") || m.startsWith("keep") || m.startsWith("fork") || m.startsWith("ramp"))
+    return `slight ${side}`;
+  return side;                                        // turn-*, roundabout-*
+}
+
+// Réponse Directions → route. Pure + testée.
+// Chez Google, `maneuver` d'une étape est l'action à faire à son DÉBUT
+// (start_location). L'ancien code la plaçait sur end_location : chaque
+// consigne était affichée à l'intersection suivante, avec une étape de retard.
+export function googleToRoute(data) {
+  const leg = data?.routes?.[0]?.legs?.[0];
+  if (!leg?.steps?.length) return null;
+  const waypoints = leg.steps.slice(1).map(s => ({
+    lat: s.start_location.lat, lng: s.start_location.lng,
+    instruction: s.maneuver || "straight",
+    modifier: googleManeuverToModifier(s.maneuver),
+    distMeters: s.distance?.value ?? 0,
+    streetName: "",
+  }));
+  waypoints.push({
+    lat: leg.end_location?.lat ?? leg.steps.at(-1).end_location.lat,
+    lng: leg.end_location?.lng ?? leg.steps.at(-1).end_location.lng,
+    instruction: "arrive", modifier: "straight", distMeters: 0, streetName: "",
+  });
+  return {
+    waypoints,
+    coords: decodePolyline(data.routes[0].overview_polyline?.points ?? ""),
+    totalDist: leg.distance.value,
+    totalTime: leg.duration.value,
+    totalAscent: null, totalDescent: null,
+    provider: "google",
+    computedAt: Date.now(),
+  };
+}
+
 export async function fetchGoogleRoute(fromLat, fromLng, toLat, toLng, mode = "bicycling", apiKey) {
   if (!apiKey) return null;
   const modeMap = { cycling: "bicycling", walking: "walking", driving: "driving" };
@@ -90,21 +134,7 @@ export async function fetchGoogleRoute(fromLat, fromLng, toLat, toLng, mode = "b
     const r = await fetch(url);
     const data = await r.json();
     if (data.status !== "OK") return null;
-    const leg = data.routes[0].legs[0];
-    return {
-      waypoints: leg.steps.map(s => ({
-        lat: s.end_location.lat, lng: s.end_location.lng,
-        instruction: s.maneuver || "straight",
-        modifier: s.maneuver?.includes("left") ? "left" : s.maneuver?.includes("right") ? "right" : "straight",
-        distMeters: s.distance.value,
-      })),
-      coords: decodePolyline(data.routes[0].overview_polyline.points),
-      totalDist: leg.distance.value,
-      totalTime: leg.duration.value,
-      totalAscent: null, totalDescent: null,
-      provider: "google",
-      computedAt: Date.now(),
-    };
+    return googleToRoute(data);
   } catch { return null; }
 }
 
@@ -121,6 +151,19 @@ export function angleToModifier(angle) {
   if (abs >= 110) return `sharp ${side}`;
   if (abs < 40) return `slight ${side}`;
   return side;
+}
+
+// Commande BRouter (élément [1] des voicehints) → modifier. BRouter classe le
+// virage en tenant compte des autres voies du carrefour : mesuré sur un trajet
+// réel (Hamilius → Amelie), un virage de 54° y est « légère droite » (cmd 6)
+// alors que l'angle seul donnait « droite ». L'angle reste le repli.
+const BROUTER_CMD_MODIFIER = {
+  1: "straight", 2: "left", 3: "slight left", 4: "sharp left",
+  5: "right", 6: "slight right", 7: "sharp right", 8: "slight left", 9: "slight right",
+  10: "uturn", 11: "uturn", 12: "uturn",
+};
+export function brouterHintToModifier(cmd, angle) {
+  return BROUTER_CMD_MODIFIER[cmd | 0] ?? angleToModifier(angle);
 }
 
 const BROUTER_CMD_LABEL = {
@@ -185,7 +228,7 @@ export function brouterToRoute(geojson) {
     return {
       lat: pt.lat, lng: pt.lng,
       instruction: BROUTER_CMD_LABEL[h[1] | 0] || "continue",
-      modifier: angleToModifier(h[4]),
+      modifier: brouterHintToModifier(h[1], h[4]),
       distMeters: Math.round(Number(h[3] ?? 0)),
       streetName: "",
     };
