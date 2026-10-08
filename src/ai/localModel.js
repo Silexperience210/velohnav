@@ -6,6 +6,37 @@ import { pipeline, env } from "@huggingface/transformers";
 // Modèle instruct ONNX quantifié int4 (~1 Go). Bon suivi d'instructions, bon français.
 // (Alternative plus puissante : "onnx-community/Qwen2.5-3B-Instruct".)
 const MODEL_ID = "onnx-community/Qwen2.5-1.5B-Instruct";
+/**
+ * Choix de la quantification, décidé sur l'appareil.
+ *
+ * Mesuré sur le dépôt : q4 = 1,7 Go, q4f16 = 1,17 Go. q4f16 n'est utilisable que sur
+ * WebGPU ; sans adaptateur graphique, seule la variante q4 fonctionne (WASM). Un
+ * téléphone récent a du WebGPU et télécharge donc 530 Mo de moins ; un appareil sans
+ * GPU garde la variante qui marche. Vérifié à la mesure : sans adaptateur, demander
+ * q4f16 fait échouer le chargement.
+ *
+ * Fonction pure, pour être testable : la décision ne dépend que de la présence d'un
+ * adaptateur.
+ */
+export function chooseVariant(hasWebGPUAdapter) {
+  return hasWebGPUAdapter
+    ? { dtype: "q4f16", device: "webgpu", mb: 1165 }
+    : { dtype: "q4",    device: "wasm",   mb: 1704 };
+}
+
+// Renseigné au premier chargement, pour que l'interface annonce la bonne taille.
+let chosen = null;
+export const chatModelMB = () => (chosen ? chosen.mb : 1704);
+
+/** Un adaptateur WebGPU réel est-il disponible sur cet appareil ? */
+async function hasWebGPUAdapter() {
+  try {
+    if (typeof navigator === "undefined" || !navigator.gpu) return false;
+    return (await navigator.gpu.requestAdapter()) != null;
+  } catch {
+    return false;
+  }
+}
 
 // Si le modèle est packagé localement (public/models/ via scripts/fetch-model.sh),
 // il est chargé depuis l'appareil (zéro téléchargement). Sinon, fallback hub HF.
@@ -44,9 +75,10 @@ export function loadModel(onProgress) {
       env.localModelPath = LOCAL_PATH;
       ref = LOCAL_DIR;
     }
+    chosen = chooseVariant(await hasWebGPUAdapter());
     return pipeline("text-generation", ref, {
-      dtype: "q4",
-      device: "webgpu", // WebGPU si dispo ; fallback WASM automatique
+      dtype: chosen.dtype,
+      device: chosen.device,
       progress_callback: (p) => {
         if (p?.status === "progress" && onProgress) {
           onProgress(Math.round(p.progress ?? 0));

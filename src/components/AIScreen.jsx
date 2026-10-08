@@ -4,7 +4,7 @@ import { TRANSIT_STOPS } from "../constants.js";
 import { fDist, bTag, getHistory, launchNativeArNav } from "../utils.js";
 import { fetchWeather, getWeatherAdvice } from "../hooks/useWeather.js";
 import { formatDeparturesForAI } from "../hooks/useTransit.js";
-import { loadModel, generate } from "../ai/localModel.js";
+import { loadModel, generate, chatModelMB } from "../ai/localModel.js";
 import { Icon } from "../ui/icons.jsx";
 import { IconButton, ProgressBar, Spinner, Button } from "../ui/primitives.jsx";
 import { wmo, bikeScore, scoreTone, reasonLabel } from "../ui/weather.js";
@@ -30,7 +30,8 @@ function stripNavTag(text) {
 
 // Taille réelle du modèle conversationnel, annoncée AVANT tout téléchargement :
 // rien ne part sans que l'utilisateur l'ait décidé.
-const CHAT_MODEL_MB = 986;
+// Taille annoncée : celle de la variante que l'appareil sait réellement faire tourner
+// (1,17 Go avec WebGPU, 1,7 Go sinon) — voir chatModelMB().
 
 // ── Composant principal ────────────────────────────────────────────
 function AIScreen({ stations, aiHistory, setAiHistory,
@@ -424,7 +425,7 @@ Ne l'utilise pas pour de simples informations ou conseils.`;
         <div style={{ flex:1, minWidth:0 }}>
           <div style={{ fontSize:12, fontWeight:600 }}>{t("ui.ai.chat.title")}</div>
           <div style={{ fontSize:10.5, color:"var(--vn-text3)", lineHeight:1.45 }}>
-            {!chatOn ? t("ui.ai.chat.note", { mb: CHAT_MODEL_MB })
+            {!chatOn ? t("ui.ai.chat.note", { mb: chatModelMB() })
               : modelState==="loading" ? t("ui.ai.model.loading", { pct:modelProgress })
               : modelState==="error"   ? t("ui.ai.model.error")
               : t("ui.ai.model.ready")}
