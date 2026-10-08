@@ -34,6 +34,19 @@ class RouteManager(private val mapsApiKey: String) {
         fun formatDistance(meters: Int): String =
             if (meters < 1000) "${meters}m" else "${"%.1f".format(meters / 1000.0)}km"
 
+        /** Libellé français d'une manœuvre — mêmes textes que le web (ui.nav.*). */
+        fun maneuverLabel(m: String?): String = when (m?.replace('-', ' ')) {
+            "left" -> "Tournez à gauche"
+            "right" -> "Tournez à droite"
+            "slight left", "keep left" -> "Légèrement à gauche"
+            "slight right", "keep right" -> "Légèrement à droite"
+            "sharp left" -> "Virage serré à gauche"
+            "sharp right" -> "Virage serré à droite"
+            "uturn", "uturn left", "uturn right" -> "Faites demi-tour"
+            "arrive" -> "Vous êtes arrivé"
+            else -> "Continuez tout droit"
+        }
+
         /** "2 min" ou "1h 05" */
         fun formatDuration(seconds: Int): String {
             val m = seconds / 60
@@ -131,20 +144,20 @@ class RouteManager(private val mapsApiKey: String) {
         fun lat(i: Int) = coords[i.coerceIn(0, coords.size - 1)][1]
         fun lng(i: Int) = coords[i.coerceIn(0, coords.size - 1)][0]
 
-        // Indices des points de virage (depuis les voicehints) + destination finale.
+        // Points de virage (voicehints : [index, commande, sortie, distance, angle])
+        // + destination finale, en paires (index du point, manœuvre).
         val turns = hints.map { h ->
             val idx = (h.getOrNull(0) ?: 0.0).toInt().coerceIn(0, coords.size - 1)
-            val angle = h.getOrNull(4) ?: 0.0
-            Pair(idx, angle)
+            Pair(idx, brouterManeuver(h.getOrNull(1)?.toInt(), h.getOrNull(4) ?: 0.0))
         }.toMutableList()
         if (turns.isEmpty() || turns.last().first < coords.size - 1) {
-            turns.add(Pair(coords.size - 1, 0.0))
+            turns.add(Pair(coords.size - 1, "arrive"))
         }
 
         val steps = mutableListOf<NavigationStep>()
         var prevIdx = 0
         for ((i, turn) in turns.withIndex()) {
-            val (endIdx, angle) = turn
+            val (endIdx, man) = turn
             var d = 0.0
             var j = prevIdx
             while (j < endIdx) {
@@ -152,7 +165,6 @@ class RouteManager(private val mapsApiKey: String) {
                 j++
             }
             val frac = if (totalDist > 0) d / totalDist else 0.0
-            val man = angleToManeuver(angle)
             steps.add(
                 NavigationStep(
                     index = i,
@@ -160,7 +172,7 @@ class RouteManager(private val mapsApiKey: String) {
                     endLat = lat(endIdx), endLng = lng(endIdx),
                     distanceMeters = d.toInt(),
                     durationSeconds = (totalTime * frac).toInt(),
-                    instruction = man, maneuver = man, streetName = ""
+                    instruction = maneuverLabel(man), maneuver = man, streetName = ""
                 )
             )
             prevIdx = endIdx
@@ -168,7 +180,20 @@ class RouteManager(private val mapsApiKey: String) {
         return steps
     }
 
-    // Angle de virage BRouter → modifier (négatif = gauche, positif = droite).
+    // Commande BRouter → modifier ; l'angle est le repli (rond-point, inconnu).
+    // Même règle que le web (useRoute.brouterHintToModifier) : BRouter classe le
+    // virage en tenant compte du carrefour (mesuré : 54° = « légère droite »).
+    private fun brouterManeuver(cmd: Int?, angle: Double): String = when (cmd) {
+        1 -> "straight"
+        2 -> "left"; 3 -> "slight left"; 4 -> "sharp left"
+        5 -> "right"; 6 -> "slight right"; 7 -> "sharp right"
+        8 -> "slight left"; 9 -> "slight right"
+        10, 11, 12 -> "uturn"
+        else -> angleToManeuver(angle)
+    }
+
+    // Angle de virage BRouter → modifier (négatif = gauche, positif = droite ;
+    // convention vérifiée sur une réponse réelle, voir useRoute.test.js).
     private fun angleToManeuver(angle: Double): String {
         val abs = kotlin.math.abs(angle)
         if (abs < 18) return "straight"
@@ -219,6 +244,15 @@ class RouteManager(private val mapsApiKey: String) {
                 // Pour endLat/endLng, on prend le début du step suivant si disponible,
                 // sinon on utilise la destination finale (dLat, dLng).
                 val nextStep = rawSteps.getOrNull(i + 1)
+                // La consigne affichée PENDANT une étape (avec la distance jusqu'à sa
+                // fin) est la manœuvre à faire à cette fin = celle de l'étape
+                // suivante — comme pour BRouter ci-dessus et côté web. Avant : la
+                // manœuvre de l'étape elle-même, déjà effectuée (décalage d'un cran).
+                val man = when {
+                    nextStep == null || nextStep.maneuver.type == "arrive" -> "arrive"
+                    nextStep.maneuver.type == "depart" -> "straight"
+                    else -> nextStep.maneuver.modifier ?: "straight"
+                }
                 val (eLat, eLng) = if (nextStep != null)
                     Pair(nextStep.maneuver.location[1], nextStep.maneuver.location[0])
                 else
@@ -231,9 +265,9 @@ class RouteManager(private val mapsApiKey: String) {
                     endLng = eLng,
                     distanceMeters = step.distance.toInt(),
                     durationSeconds = step.duration.toInt(),
-                    instruction = step.name.ifEmpty { step.maneuver.type },
-                    maneuver = step.maneuver.modifier,
-                    streetName = step.name
+                    instruction = maneuverLabel(man),
+                    maneuver = man,
+                    streetName = (nextStep ?: step).name
                 )
             }
             
@@ -274,13 +308,17 @@ class RouteManager(private val mapsApiKey: String) {
             
             val leg = resp.routes.first().legs.first()
             Result.success(NavigationRoute(
-                steps = leg.steps.mapIndexed { i, s -> 
+                steps = leg.steps.mapIndexed { i, s ->
+                    // Google : `maneuver`/`html_instructions` décrivent l'action au
+                    // DÉBUT d'une étape. Pendant l'étape i, il faut donc annoncer
+                    // celle de l'étape i+1 (même décalage corrigé que pour OSRM).
+                    val next = leg.steps.getOrNull(i + 1)
                     NavigationStep(
                         i, s.startLocation.lat, s.startLocation.lng,
                         s.endLocation.lat, s.endLocation.lng,
                         s.distance.value, s.duration.value,
-                        s.htmlInstructions.replace(Regex("<[^>]+>"), ""),
-                        s.maneuver, ""
+                        next?.htmlInstructions?.replace(Regex("<[^>]+>"), "") ?: maneuverLabel("arrive"),
+                        if (next == null) "arrive" else next.maneuver, ""
                     )
                 },
                 totalDistanceMeters = leg.distance.value,

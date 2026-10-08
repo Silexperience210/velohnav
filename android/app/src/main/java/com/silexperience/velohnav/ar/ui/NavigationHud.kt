@@ -25,15 +25,16 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.silexperience.velohnav.ar.*
 
-// Palette cyberpunk VelohNav — cohérente avec le web
-private val Orange     = Color(0xFFF5820D)
-private val DarkBg     = Color(0xDD0A0A0A)
-private val DarkCard   = Color(0xEE111111)
+// Palette = design tokens du web (src/ui/tokens.js) — mêmes valeurs
+private val Orange     = Color(0xFFF5820D)   // color.accent
+private val DarkBg     = Color(0xDD07090B)   // color.bg
+private val DarkCard   = Color(0xEE0D1014)   // color.surface1
 private val OrangeDim  = Color(0x66F5820D)
-private val OrangeGlow = Color(0x22F5820D)
-private val GrayText   = Color(0xFFAAAAAA)
-private val GreenOK    = Color(0xFF2ECC8F)
-private val RedBad     = Color(0xFFE03E3E)
+private val OrangeGlow = Color(0x24F5820D)   // color.accentSoft (0.14)
+private val GrayText   = Color(0xFFA9B1BD)   // color.text2 (avant #AAAAAA)
+private val GreenOK    = Color(0xFF2ECC8F)   // color.good
+private val WarnYellow = Color(0xFFF2B33D)   // color.warn (distinct de l'accent)
+private val RedBad     = Color(0xFFF0524A)   // color.bad (avant #E03E3E)
 
 @Composable
 fun VelohNavArTheme(content: @Composable () -> Unit) =
@@ -242,10 +243,11 @@ private fun VpsBadge(acc: VpsAccuracy, mode: TrackingMode, modifier: Modifier) {
         }
         return
     }
+    // Mêmes seuils que le web (src/ui/format.js, positioning) : ≤ 1,5 m bon, ≤ 5 m moyen
     val c = when {
-        acc.horizontalMeters < 2  -> GreenOK
-        acc.horizontalMeters < 5  -> Orange
-        else                       -> RedBad
+        acc.horizontalMeters <= 1.5 -> GreenOK
+        acc.horizontalMeters <= 5   -> WarnYellow
+        else                        -> RedBad
     }
     Box(
         modifier
@@ -417,14 +419,21 @@ private fun ErrorCard(msg: String, onClose: () -> Unit) {
 }
 
 // ── Icône de manœuvre ─────────────────────────────────────────────
+// Ordre : du plus spécifique au plus général. Avant, `contains("left")` passait
+// en premier : « slight-left », « uturn-left » et « roundabout-left » tombaient
+// tous sur TurnLeft (branches suivantes mortes), et « slight left » (BRouter,
+// avec une espace) n'était jamais reconnu.
 @Composable
-private fun maneuverIcon(m: String?): ImageVector = when {
-    m == null                 -> Icons.Filled.ArrowUpward
-    m.contains("left")        -> Icons.Filled.TurnLeft
-    m.contains("right")       -> Icons.Filled.TurnRight
-    m.contains("slight-left") -> Icons.Filled.TurnSlightLeft
-    m.contains("slight-right")-> Icons.Filled.TurnSlightRight
-    m.contains("uturn")       -> Icons.Filled.UTurnLeft
-    m.contains("roundabout")  -> Icons.Filled.RotateRight
-    else                       -> Icons.Filled.ArrowUpward
+private fun maneuverIcon(m: String?): ImageVector {
+    val k = m?.replace('-', ' ') ?: return Icons.Filled.ArrowUpward
+    return when {
+        k.contains("uturn")                               -> Icons.Filled.UTurnLeft
+        k.contains("roundabout")                          -> Icons.Filled.RotateRight
+        k.contains("slight left") || k.contains("keep left")   -> Icons.Filled.TurnSlightLeft
+        k.contains("slight right") || k.contains("keep right") -> Icons.Filled.TurnSlightRight
+        k.contains("left")                                -> Icons.Filled.TurnLeft
+        k.contains("right")                               -> Icons.Filled.TurnRight
+        k == "arrive"                                     -> Icons.Filled.Flag
+        else                                              -> Icons.Filled.ArrowUpward
+    }
 }

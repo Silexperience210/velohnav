@@ -13,10 +13,12 @@ class ArNavigationPlugin : Plugin() {
     @PluginMethod(returnType = PluginMethod.RETURN_PROMISE)
     fun startNavigation(call: PluginCall) {
         android.util.Log.d("ArNavPlugin", "startNavigation appelé")
-        android.util.Log.d("ArNavPlugin", "  destLat  = ${call.getDouble("destLat")}")
-        android.util.Log.d("ArNavPlugin", "  destLng  = ${call.getDouble("destLng")}")
-        android.util.Log.d("ArNavPlugin", "  destName = ${call.getString("destName")}")
-        android.util.Log.d("ArNavPlugin", "  activity = $activity")
+        // Destination (donc lieu de l'utilisateur) : jamais dans logcat en production
+        if (BuildConfig.DEBUG) {
+            android.util.Log.d("ArNavPlugin", "  destLat  = ${call.getDouble("destLat")}")
+            android.util.Log.d("ArNavPlugin", "  destLng  = ${call.getDouble("destLng")}")
+            android.util.Log.d("ArNavPlugin", "  destName = ${call.getString("destName")}")
+        }
 
         val destLat    = call.getDouble("destLat")    ?: run {
             android.util.Log.e("ArNavPlugin", "REJECT: destLat manquant")

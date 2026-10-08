@@ -236,7 +236,7 @@ class ArNavigationActivity : ComponentActivity() {
 
     private fun startNavigation() {
         val v = arView ?: run { Log.e(TAG, "ARSceneView null"); return }
-        Log.d(TAG, "startNavigation → $pendingDestLat, $pendingDestLng")
+        if (com.silexperience.velohnav.BuildConfig.DEBUG) Log.d(TAG, "startNavigation → $pendingDestLat, $pendingDestLng")
         viewModel.initializeNavigation(v, pendingDestLat, pendingDestLng, pendingDestName, pendingTravelMode, pendingMapsKey)
     }
 

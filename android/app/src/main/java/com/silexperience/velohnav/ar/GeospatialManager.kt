@@ -92,8 +92,9 @@ class GeospatialManager {
                 p.horizontalAccuracy < 5.0 && p.headingAccuracy < 15.0
             )
             if (frameCount % 60 == 0) {
-                Log.d(TAG, "VPS pose: horiz=±${p.horizontalAccuracy}m head=±${p.headingAccuracy}° " +
-                          "lat=${p.latitude} lng=${p.longitude}")
+                // Position de l'utilisateur : réservée aux builds de débogage
+                Log.d(TAG, "VPS pose: horiz=±${p.horizontalAccuracy}m head=±${p.headingAccuracy}°" +
+                          if (com.silexperience.velohnav.BuildConfig.DEBUG) " lat=${p.latitude} lng=${p.longitude}" else "")
             }
         } catch (e: Exception) {
             Log.w(TAG, "onFrame error (frame=$frameCount): ${e.message}", e)

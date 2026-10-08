@@ -93,6 +93,17 @@ class ArNavigationViewModel(application: Application) : AndroidViewModel(applica
     @Volatile private var lastGpsLat: Double = 0.0
     @Volatile private var lastGpsLng: Double = 0.0
     private var gpsWatchJob: Job? = null
+    // Fix GPS plus imprécis que ça : ignoré pour la progression (seuil de franchissement 20 m)
+    private val MAX_GPS_ACCURACY_M = 30f
+    // Dernière pose VPS acceptée pour la progression. Si le suivi Earth se perd
+    // en pleine nav (tunnel, passage couvert), updateProgress sortait sans rien
+    // faire et la progression gelait : au-delà de VPS_STALE_MS, le GPS prend le
+    // relais jusqu'au retour d'une pose VPS fiable.
+    private var lastVpsProgressAt = 0L
+    private val VPS_STALE_MS = 10_000L
+    // Ancres posées avant la fin du chargement du modèle GLB : elles restaient
+    // vides (flèches invisibles) — complétées dès que le modèle arrive.
+    private val arrowsWithoutModel = java.util.concurrent.ConcurrentHashMap.newKeySet<Int>()
 
     // ── Initialisation ─────────────────────────────────────────────
     fun initializeNavigation(
@@ -110,6 +121,7 @@ class ArNavigationViewModel(application: Application) : AndroidViewModel(applica
         vpsReady = false
         currentStepIdx = 0
         arrowNodes.clear()
+        arrowsWithoutModel.clear()
         lastEarth = null
 
         _state.value = NavState(status = NavStatus.LOCATING, destName = destName)
@@ -118,6 +130,16 @@ class ArNavigationViewModel(application: Application) : AndroidViewModel(applica
             try {
                 modelAsset = arSceneView.modelLoader.loadModel("models/arrow_navigation.glb")
                 Log.d(TAG, "GLB chargé")
+                // Rattraper les flèches déjà ancrées sans modèle (VPS plus rapide que le GLB)
+                modelAsset?.let { asset ->
+                    for (idx in arrowsWithoutModel.toList()) {
+                        val node = arrowNodes[idx] ?: continue
+                        arSceneView.modelLoader.createInstance(asset)?.let { instance ->
+                            node.addChildNode(ModelNode(modelInstance = instance, scaleToUnits = 0.8f))
+                        }
+                        arrowsWithoutModel.remove(idx)
+                    }
+                }
             } catch (e: Exception) {
                 Log.w(TAG, "GLB load failed (nav textuelle): ${e.message}")
             }
@@ -231,12 +253,16 @@ class ArNavigationViewModel(application: Application) : AndroidViewModel(applica
                     withContext(Dispatchers.IO) {
                         fusedLocation.getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, null).await()
                     }?.let {
+                        // Fix trop imprécis : ni position de repli, ni progression
+                        if (it.hasAccuracy() && it.accuracy > MAX_GPS_ACCURACY_M) return@let
                         lastGpsLat = it.latitude
                         lastGpsLng = it.longitude
-                        // Si on est en mode fallback, on met à jour la progression depuis le GPS
-                        if (_state.value.trackingMode == TrackingMode.GPS_FALLBACK &&
-                            _state.value.status == NavStatus.NAVIGATING) {
-                            updateProgressGps()
+                        val s = _state.value
+                        if (s.status == NavStatus.NAVIGATING) {
+                            // Mode GPS, ou VPS sans pose exploitable depuis VPS_STALE_MS
+                            val vpsStale = s.trackingMode == TrackingMode.VPS &&
+                                System.currentTimeMillis() - lastVpsProgressAt > VPS_STALE_MS
+                            if (s.trackingMode == TrackingMode.GPS_FALLBACK || vpsStale) updateProgressGps()
                         }
                     }
                 } catch (e: Exception) {
@@ -297,6 +323,7 @@ class ArNavigationViewModel(application: Application) : AndroidViewModel(applica
                        "reliable=$reliable acceptable=$acceptable) — démarrage nav")
             vpsReady = true
             vpsTimeoutJob?.cancel()
+            lastVpsProgressAt = System.currentTimeMillis()
             placeArrows(arView, earth, r, 0, minOf(3, r.steps.size))
             _state.value = _state.value.copy(
                 status = NavStatus.NAVIGATING,
@@ -363,7 +390,10 @@ class ArNavigationViewModel(application: Application) : AndroidViewModel(applica
         viewModelScope.launch {
             try {
                 val anchorNode = AnchorNode(engine = arView.engine, anchor = anchor)
-                modelAsset?.let { asset ->
+                val asset = modelAsset
+                if (asset == null) {
+                    arrowsWithoutModel.add(idx)   // modèle pas encore chargé : complété plus tard
+                } else {
                     val instance = arView.modelLoader.createInstance(asset)
                     if (instance != null)
                         anchorNode.addChildNode(ModelNode(modelInstance = instance, scaleToUnits = 0.8f))
@@ -392,6 +422,7 @@ class ArNavigationViewModel(application: Application) : AndroidViewModel(applica
         // Une pose très imprécise ne doit pas faire avancer une étape : on attend un
         // meilleur fix plutôt que de valider un franchissement au hasard.
         if (pose.horizontalAccuracy > MAX_STEP_ACCURACY_M) return
+        lastVpsProgressAt = System.currentTimeMillis()
         val step = r.steps[currentStepIdx]
         val dist = GeospatialManager.distanceMeters(pose.latitude, pose.longitude, step.endLat, step.endLng)
 
@@ -457,6 +488,7 @@ class ArNavigationViewModel(application: Application) : AndroidViewModel(applica
             }
         }
         arrowNodes.clear()
+        arrowsWithoutModel.clear()
         geo.cleanup()
         modelAsset = null
         cleanupView = null
