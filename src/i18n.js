@@ -88,6 +88,16 @@ function subscribe(fn) {
  * Hook React — re-render de tous les composants abonnés quand la langue change
  * Usage : const { t, lang, setLanguage } = useI18n();
  */
+/**
+ * Pluriel : renvoie « n unité » avec la bonne forme.
+ * Le français met 0 et 1 au singulier, l'anglais seulement 1.
+ *   tn("ui.ai.unit.bike", 1) → « 1 vélo »   tn("ui.ai.unit.bike", 3) → « 3 vélos »
+ */
+export function tn(baseKey, n) {
+  const singular = n === 1 || (n === 0 && getLang() !== "en");
+  return `${n} ${t(`${baseKey}.${singular ? "one" : "many"}`)}`;
+}
+
 export function useI18n() {
   const lang = useSyncExternalStore(subscribe, getLang, getLang);
   const setLanguage = useCallback((newLang) => setLang(newLang), []);

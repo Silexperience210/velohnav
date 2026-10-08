@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
-import { t, useI18n } from "../i18n.js";
+import { t, tn, useI18n } from "../i18n.js";
 import { TRANSIT_STOPS } from "../constants.js";
 import { fDist, bTag, getHistory, launchNativeArNav } from "../utils.js";
 import { fetchWeather, getWeatherAdvice } from "../hooks/useWeather.js";
@@ -130,7 +130,9 @@ function AIScreen({ stations, aiHistory, setAiHistory,
     }
     lines.push(nearest
       ? t("ui.ai.welcome", { avail: stations.filter(s=>s.bikes>0).length, total: stations.length,
-          name: nearest.name, dist: fmtDist(nearest.dist), bikes: nearest.bikes, elec: stationView(nearest).elec })
+          name: nearest.name, dist: fmtDist(nearest.dist),
+          bikes: tn("ui.ai.unit.bike", nearest.bikes),
+          elec: tn("ui.ai.unit.elec", stationView(nearest).elec) })
       : t("map.loading"));
     return lines.join("\n");
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -207,7 +209,7 @@ Ne l'utilise pas pour de simples informations ou conseils.`;
 
   // ── Réponses locales : la logique vit dans src/ai/localAnswers.js (module pur, testé) ──
   const answerLocally = useCallback(
-    q => localAnswer(q, { stations, nearest, nearestReturn, deps, weather, forecast, advice, score, gpsPos, t }),
+    q => localAnswer(q, { stations, nearest, nearestReturn, deps, weather, forecast, advice, score, gpsPos, t, tn }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [stations, nearest, nearestReturn, deps, weather, forecast, advice, score, gpsPos, lang]);
 

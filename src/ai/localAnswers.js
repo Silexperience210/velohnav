@@ -43,6 +43,17 @@ function verdict(t, advice, ok, tail) {
   return phrase + " " + tail;
 }
 
+/** Détail d'une station, avec compteurs accordés. */
+function details(t, tn, st) {
+  return t("ui.ai.ans.nearest", {
+    name: st.name,
+    dist: fmtDist(st.dist),
+    bikes: tn("ui.ai.unit.bike", st.bikes),
+    elec: tn("ui.ai.unit.elec", stationView(st).elec),
+    docks: tn("ui.ai.unit.dock", st.docks),
+  });
+}
+
 /**
  * Répond à une question à partir des données de l'appareil.
  * @returns {{text: string, nav?: {lat:number,lng:number,name:string,mode:string}}}
@@ -50,6 +61,9 @@ function verdict(t, advice, ok, tail) {
 export function answerLocally(question, ctx) {
   const { stations = [], nearest = null, nearestReturn = null, deps = [], weather = null, forecast = null,
           advice = { mode: "bike", reason: null }, score = null, gpsPos = null, t } = ctx;
+  // Mise au pluriel : injectée par l'application (consciente de la langue), avec un
+  // repli neutre pour les appels sans contexte.
+  const tn = ctx.tn || ((key, n) => `${n} ${t(key + (n === 1 ? ".one" : ".many"))}`);
   const q = norm(question);
 
   // 1. Demande de guidage : le lieu est cherché dans les données, pas par un modèle
@@ -84,10 +98,7 @@ export function answerLocally(question, ctx) {
       && /(maintenant|puis-je|peux|veux|voudrais|possible|moment|aujourd|ce soir|partir|now|today|can i|should i|is it ok)/.test(q)
       && !/\b(rendre|deposer|garer|remettre|borne|dock|return|lock)\b/.test(q)) {
     const ok = advice.mode !== "transit";
-    const tail = nearest
-      ? t("ui.ai.ans.nearest", { name: nearest.name, dist: fmtDist(nearest.dist), bikes: nearest.bikes,
-                                 elec: stationView(nearest).elec, docks: nearest.docks })
-      : t("ui.ai.ans.no_station");
+    const tail = nearest ? details(t, tn, nearest) : t("ui.ai.ans.no_station");
     return { text: verdict(t, advice, ok, tail) };
   }
 
@@ -102,22 +113,20 @@ export function answerLocally(question, ctx) {
     // Pour rendre un vélo, il faut des bornes LIBRES : la station la plus proche
     // d'un vélo disponible n'est pas forcément celle où l'on peut le déposer.
     const cible = nearestReturn || nearest;
-    return { text: cible ? t("ui.ai.ans.docks", { name: cible.name, docks: cible.docks })
+    return { text: cible ? t("ui.ai.ans.docks", { name: cible.name, docks: tn("ui.ai.unit.dock", cible.docks) })
                          : t("ui.ai.ans.no_station") };
   }
 
 
   // 5. Station la plus proche
   if (/(station|proche|plus pres|pres de moi|ou est|ou trouver|nearest|closest|where is|where can)/.test(q)) {
-    return { text: nearest
-      ? t("ui.ai.ans.nearest", { name: nearest.name, dist: fmtDist(nearest.dist), bikes: nearest.bikes,
-                                 elec: stationView(nearest).elec, docks: nearest.docks })
-      : t("ui.ai.ans.no_station") };
+    return { text: nearest ? details(t, tn, nearest) : t("ui.ai.ans.no_station") };
   }
 
   // 6. Vélos électriques
   if (/(electri|elec\b|ebike|electric|e-bike)/.test(q)) {
-    return { text: nearest ? t("ui.ai.ans.elec", { n: stationView(nearest).elec, name: nearest.name })
+    const n = nearest ? stationView(nearest).elec : 0;
+    return { text: nearest ? t("ui.ai.ans.elec", { n: tn("ui.ai.unit.elec", n), name: nearest.name })
                            : t("ui.ai.ans.no_station") };
   }
 
@@ -137,7 +146,8 @@ export function answerLocally(question, ctx) {
   if (/(ou aller|ou partir|conseil|que faire|recommande|meilleur|what should|advice|recommend|best option)/.test(q)) {
     const ok = advice.mode !== "transit";
     const cible = nearest
-      ? t("ui.ai.ans.where_station", { name: nearest.name, dist: fmtDist(nearest.dist), bikes: nearest.bikes })
+      ? t("ui.ai.ans.where_station", { name: nearest.name, dist: fmtDist(nearest.dist),
+                                       bikes: tn("ui.ai.unit.bike", nearest.bikes) })
       : t("ui.ai.ans.no_station");
     return { text: verdict(t, advice, ok, cible) };
   }

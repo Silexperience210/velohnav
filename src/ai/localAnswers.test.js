@@ -175,6 +175,52 @@ describe("confusions corrigées (constatées dans le navigateur)", () => {
   });
 });
 
+describe("accord des compteurs", () => {
+  // On injecte un pluriel espion : on vérifie que le module demande bien la bonne
+  // forme au bon endroit, sans dépendre du moteur de traduction.
+  const espion = () => {
+    const appels = [];
+    const tn = (key, n) => { appels.push([key, n]); return `${n}·${key}`; };
+    return { tn, appels };
+  };
+
+  it("station : chaque compteur est accordé séparément", () => {
+    const { tn, appels } = espion();
+    const r = answerLocally("station la plus proche ?", { ...base, tn });
+    expect(r.text).toContain("ui.ai.unit.bike");
+    expect(r.text).toContain("ui.ai.unit.elec");
+    expect(r.text).toContain("ui.ai.unit.dock");
+    expect(appels).toContainEqual(["ui.ai.unit.bike", 9]);
+    expect(appels).toContainEqual(["ui.ai.unit.dock", 12]);
+  });
+
+  it("une seule unité est annoncée au singulier", () => {
+    const { tn, appels } = espion();
+    const une = { id: "9", name: "Solo", lat: 49.61, lng: 6.13, dist: 90, bikes: 1, elec: 1, docks: 1, status: "OPEN" };
+    answerLocally("station la plus proche ?", { ...base, nearest: une, tn });
+    expect(appels.find(a => a[0] === "ui.ai.unit.bike")[1]).toBe(1);
+    expect(appels.find(a => a[0] === "ui.ai.unit.dock")[1]).toBe(1);
+  });
+
+  it("bornes : le compteur de la station de retour est accordé", () => {
+    const { tn, appels } = espion();
+    answerLocally("où rendre mon vélo ?", { ...base, tn });
+    expect(appels).toContainEqual(["ui.ai.unit.dock", 12]);
+  });
+
+  it("électriques et conseil : compteurs accordés eux aussi", () => {
+    const a = espion(); answerLocally("des vélos électriques ?", { ...base, tn: a.tn });
+    expect(a.appels).toContainEqual(["ui.ai.unit.elec", 9]);
+    const b = espion(); answerLocally("où aller maintenant ?", { ...base, tn: b.tn });
+    expect(b.appels).toContainEqual(["ui.ai.unit.bike", 9]);
+  });
+
+  it("sans pluriel injecté, le module ne lève pas et se rabat sur un compteur brut", () => {
+    expect(() => answerLocally("station la plus proche ?", base)).not.toThrow();
+    expect(answerLocally("station la plus proche ?", base).text).toContain("9");
+  });
+});
+
 describe("relecture Kimi — défauts confirmés et corrigés", () => {
   it("« je ramène le vélo » ne doit pas être pris pour un guidage (amene ⊂ ramene)", () => {
     const r = answerLocally("je ramène le vélo à la station", base);
