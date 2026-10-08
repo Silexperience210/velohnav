@@ -56,7 +56,8 @@ jobs:
           # Le service worker entre en conflit avec le schéma capacitor:// /
           # https://localhost et cause un écran noir au boot dans le WebView.
           VITE_DISABLE_PWA: '1'
-        run: npm run build
+        # DIAGNOSTIC : React en mode developpement nomme le composant fautif
+        run: npm run build -- --mode development
 
       - name: Capacitor sync Android
         run: npx cap sync android

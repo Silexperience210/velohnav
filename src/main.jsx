@@ -30,6 +30,9 @@ class ErrorBoundary extends Component {
         <pre style={{color:'#8a94a6',whiteSpace:'pre-wrap',fontSize:9,marginBottom:16}}>
           {'moteur : ' + navigator.userAgent}
         </pre>
+        <pre style={{color:'#7fd1a0',whiteSpace:'pre-wrap',fontSize:9}}>
+          {'journal console :\n' + (window.__vnLog || []).join('\n---\n')}
+        </pre>
         <button onClick={()=>window.location.reload()}
           style={{padding:'8px 20px',background:'#F5820D',color:'#000',border:'none',cursor:'pointer',fontFamily:'monospace',fontWeight:700}}>
           Recharger
