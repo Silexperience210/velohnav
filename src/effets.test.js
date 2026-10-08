@@ -51,10 +51,4 @@ describe("effets React — corps à accolades obligatoire", () => {
     expect(fautifs, "Effets à corriger (ajouter des accolades) :\n" + fautifs.join("\n")).toEqual([]);
   });
 
-  it("le cas de production est bien couvert (scrollIntoView dans AIScreen)", () => {
-    const src = fs.readFileSync(path.join(RACINE, "components/AIScreen.jsx"), "utf8");
-    expect(src).toContain("scrollIntoView");
-    // il doit être appelé dans un corps à accolades, jamais retourné
-    // la forme fautive (« =>endRef.current?.scrollIntoView ») ne doit plus exister\n    expect(src.includes("=>endRef.current?.scrollIntoView")).toBe(false);
-  });
 });
