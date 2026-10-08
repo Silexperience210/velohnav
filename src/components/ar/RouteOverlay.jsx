@@ -5,7 +5,7 @@ import { useState, useEffect, useRef, useMemo } from "react";
 import { t } from "../../i18n.js";
 import { C } from "../../constants.js";
 import { haversine, fDist, getBearing } from "../../utils.js";
-import { projectPoint, detectWrongWay } from "./projection.js";
+import { projectPoint, detectWrongWay, wrongWayHysteresis } from "./projection.js";
 import { progressFor } from "./navProgress.js";
 import { windImpact } from "../../hooks/useWeather.js";
 import { climbEtaFactor, EBIKE_ASCENT_THRESHOLD_M } from "../../hooks/useRoute.js";
@@ -63,7 +63,7 @@ function RouteOverlay({ route, gpsPos, heading, mode, onClose, weather=null, spa
   // affiche un overlay "FAITES DEMI-TOUR" plein écran.
   // On échantillonne les coords après le step courant pour que le ré-alignement
   // suive bien la progression (ex : après le u-turn, plus de wrong way).
-  const wrongWay = useMemo(() => {
+  const wrongWayRaw = useMemo(() => {
     if (!route?.coords?.length || !gpsPos || heading === null) {
       return { wrongWay: false, ratio: 0, sampleSize: 0 };
     }
@@ -75,13 +75,18 @@ function RouteOverlay({ route, gpsPos, heading, mode, onClose, weather=null, spa
       if (d < nearestD) { nearestD = d; nearestIdx = i; }
     }
     const ahead = route.coords.slice(nearestIdx);
-    return detectWrongWay(ahead, gpsPos, heading, 150);
+    // Cap lissé (comme le tracé) plutôt que le cap brut, plus nerveux
+    return detectWrongWay(ahead, gpsPos, smoothedHdgRef.current ?? heading, 150);
   }, [
     route?.coords,
     gpsPos ? Math.round(gpsPos.lat * 10000) : null,
     gpsPos ? Math.round(gpsPos.lng * 10000) : null,
     heading != null ? Math.round(heading / 5) : null, // re-eval tous les 5°
   ]);
+  // Hystérésis : entrée à 60 % du tracé derrière soi, sortie sous 40 %.
+  const wrongWayPrevRef = useRef(false);
+  const wrongWay = { ...wrongWayRaw, wrongWay: wrongWayHysteresis(wrongWayPrevRef.current, wrongWayRaw) };
+  wrongWayPrevRef.current = wrongWay.wrongWay;
 
   // Canvas : dessine le tracé de la route projeté en AR
   useEffect(()=>{

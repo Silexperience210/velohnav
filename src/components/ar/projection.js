@@ -90,6 +90,22 @@ export function detectWrongWay(coords, gpsPos, heading, sampleMeters = 150) {
   return { wrongWay: ratio >= 0.6, ratio, sampleSize: total };
 }
 
+/** Seuils d'hystérésis du « mauvais sens » : on entre à 60 %, on ne sort que sous 40 %. */
+export const WRONG_WAY_ON  = 0.6;
+export const WRONG_WAY_OFF = 0.4;
+
+/**
+ * État « mauvais sens » avec hystérésis. Avec un seuil unique (0,6), un cap
+ * qui oscille de quelques degrés autour de la frontière faisait clignoter
+ * l'écran entre le tracé et l'overlay plein écran « DEMI-TOUR ».
+ * @param {boolean} prev  état précédent
+ * @param {{ratio:number, sampleSize:number}} ww  résultat de detectWrongWay
+ */
+export function wrongWayHysteresis(prev, ww) {
+  if (!ww || ww.sampleSize === 0) return false;
+  return prev ? ww.ratio >= WRONG_WAY_OFF : ww.ratio >= WRONG_WAY_ON;
+}
+
 /**
  * Calcule la distance minimum entre un point GPS et la polyline d'itinéraire.
  * Utilisé pour la détection off-route et le re-routing automatique.
