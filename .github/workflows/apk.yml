@@ -59,7 +59,6 @@ jobs:
           # DIAGNOSTIC : sans ceci, vite force NODE_ENV=production et React
           # n'emet aucun avertissement (le journal de l'APK precedent etait vide).
           NODE_ENV: development
-          NODE_ENV: development
         # DIAGNOSTIC : React en version developpement nomme le composant fautif.
         # vite build force NODE_ENV=production : sans cette ligne, React reste en
         # version de production et n'emet AUCUN avertissement (journal vide).
