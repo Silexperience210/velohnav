@@ -1,38 +1,95 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 
+// ── Fonctions pures (exportées pour tests) ─────────────────────────
+
+const RAD = Math.PI / 180;
+
+/**
+ * Cap (0..360) de la direction visée par la caméra arrière, à partir des
+ * angles DeviceOrientation (repère W3C : alpha autour de z, beta autour de x,
+ * gamma autour de y ; Terre : x = est, y = nord). Formule de la spécification
+ * W3C (exemple « compassHeading ») : on projette l'axe −z de l'appareil sur
+ * le plan horizontal.
+ *
+ * Pourquoi pas simplement 360 − alpha : téléphone tenu droit (beta ≈ 90°),
+ * alpha et gamma décrivent TOUS DEUX une rotation autour de la verticale
+ * (blocage de cardan) ; le navigateur peut répartir le lacet entre les deux,
+ * et 360 − alpha ignore la part portée par gamma. En paysage, il se trompait
+ * en plus de 90°. Retourne null si la caméra vise presque le sol ou le ciel
+ * (cap indéfini) — l'appelant retombe alors sur 360 − alpha.
+ */
+export function headingFromOrientation(alpha, beta, gamma) {
+  if (alpha == null || beta == null || gamma == null) return null;
+  const a = alpha * RAD, b = beta * RAD, g = gamma * RAD;
+  const east  = -Math.sin(g) * Math.cos(a) - Math.cos(g) * Math.sin(b) * Math.sin(a);
+  const north = -Math.sin(g) * Math.sin(a) + Math.cos(g) * Math.sin(b) * Math.cos(a);
+  if (Math.hypot(east, north) < 0.3) return null;   // caméra à plus de ~73° de l'horizon
+  return ((Math.atan2(east, north) / RAD) % 360 + 360) % 360;
+}
+
+/**
+ * Un pas de lissage circulaire. `last` = état interne (null au départ).
+ * Renvoie le nouvel état, ou `last` inchangé si l'écart est sous la zone morte.
+ * L'état est TOUJOURS ramené dans [0, 360) : avant, il pouvait dériver sans
+ * borne (−370 après un tour complet vers la gauche) et le cap publié devenait
+ * négatif (« −10° », étiquette cardinale « undefined »).
+ */
+export function emaHeadingStep(last, h, alpha = 0.08, deadzone = 1.5) {
+  const hh = ((h % 360) + 360) % 360;
+  if (last == null) return hh;
+  const diff = ((hh - last + 540) % 360) - 180;
+  if (Math.abs(diff) < deadzone) return last;
+  return (((last + diff * alpha) % 360) + 360) % 360;
+}
+
+/** Cap publié : entier dans [0, 359] (Math.round(359,7) donnait 360). */
+export function publishHeading(last) {
+  return Math.round(last) % 360;
+}
+
+// ── Hook ───────────────────────────────────────────────────────────
+
 function useCompass(){
   const [heading,setHeading]=useState(null);
   const [perm,setPerm]=useState("idle");
   const cleanup=useRef(null);
 
   const start=useCallback(async()=>{
+    // Un nouvel appel (bouton « Réessayer », relance de la caméra par le
+    // watchdog) ne doit pas empiler une deuxième paire d'écouteurs : chacune
+    // avait son propre état de lissage et elles se disputaient le cap.
+    cleanup.current?.();
+    cleanup.current=null;
     setPerm("requesting");
 
-    // iOS 13+ seulement
-    if(typeof DeviceOrientationEvent?.requestPermission==="function"){
+    // `typeof window.X` et non `X?.` : un identifiant global non déclaré lève
+    // une ReferenceError même avec le chaînage optionnel.
+    const DOE = typeof window !== "undefined" ? window.DeviceOrientationEvent : undefined;
+    if(!DOE){setPerm("unavailable");return;}
+
+    // iOS 13+ seulement — DOIT être appelé dans le geste (pas d'await avant)
+    if(typeof DOE.requestPermission==="function"){
       try{
-        const r=await DeviceOrientationEvent.requestPermission();
+        const r=await DOE.requestPermission();
         if(r!=="granted"){setPerm("denied");return;}
       }catch{setPerm("denied");return;}
     }
-    if(!window.DeviceOrientationEvent){setPerm("unavailable");return;}
 
     let last=null;
     let gotAbsolute=false; // true dès qu'on reçoit un event absolu valide
 
     const update=(h)=>{
-      if(last===null){ last=h; setHeading(Math.round((h+360)%360)); return; }
-      const diff=((h-last+540)%360)-180;
-      if(Math.abs(diff)<1.5) return;           // deadzone : ignore le bruit < 1.5°
-      last=last+diff*0.08;                     // EMA lent → boussole stable
-      setHeading(Math.round((last+360)%360));
+      const next=emaHeadingStep(last,h);
+      if(next===last) return;
+      last=next;
+      setHeading(publishHeading(last));
     };
 
-    // Handler absolu (Android Chrome 74+ : alpha = cap magnétique réel)
+    // Handler absolu (Android Chrome 74+ : référencé au nord magnétique)
     const absHandler=(e)=>{
       if(e.alpha==null) return;
       gotAbsolute=true;
-      update((360-e.alpha+360)%360);
+      update(headingFromOrientation(e.alpha,e.beta,e.gamma) ?? (360-e.alpha+360)%360);
     };
 
     // Handler relatif — utilisé SEULEMENT si aucun absolu reçu
@@ -40,7 +97,7 @@ function useCompass(){
     const relHandler=(e)=>{
       if(gotAbsolute) return;
       if(e.webkitCompassHeading!=null)      update(e.webkitCompassHeading);
-      else if(e.alpha!=null)                update((360-e.alpha+360)%360);
+      else if(e.alpha!=null)                update(headingFromOrientation(e.alpha,e.beta,e.gamma) ?? (360-e.alpha+360)%360);
     };
 
     window.addEventListener("deviceorientationabsolute",absHandler,true);
@@ -49,10 +106,7 @@ function useCompass(){
 
     // Timeout : si aucun signal après 4s → diagnostic
     const t=setTimeout(()=>{
-      setHeading(h=>{
-        if(h===null) setPerm("nosignal");
-        return h;
-      });
+      if(last===null) setPerm("nosignal");
     },4000);
 
     cleanup.current=()=>{
@@ -65,7 +119,5 @@ function useCompass(){
   useEffect(()=>()=>cleanup.current?.(),[]);
   return{heading,perm,start};
 }
-
-// ── NAV OVERLAY — flèche AR + corridor bleu ───────────────────────
 
 export { useCompass };

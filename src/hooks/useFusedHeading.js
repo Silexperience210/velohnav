@@ -103,10 +103,20 @@ export function useFusedHeading(magHeading, gpsPos) {
     setGpsCourse({ course: courseRef.current, speed, at: now });
   }, [gpsPos?.lat, gpsPos?.lng]);
 
+  // Expiration de la course : sans ce minuteur, elle n'était réévaluée qu'au
+  // prochain tick boussole — immobile, la zone morte de 1,5° peut n'en produire
+  // aucun, et une course périmée restait appliquée indéfiniment.
+  const [expiredAt, setExpiredAt] = useState(0);
+  useEffect(() => {
+    if (!gpsCourse) return;
+    const id = setTimeout(() => setExpiredAt(gpsCourse.at), COURSE_TTL_MS + 50);
+    return () => clearTimeout(id);
+  }, [gpsCourse]);
+
   return useMemo(() => {
-    if (!gpsCourse || Date.now() - gpsCourse.at > COURSE_TTL_MS) return magHeading;
+    if (!gpsCourse || expiredAt === gpsCourse.at || Date.now() - gpsCourse.at > COURSE_TTL_MS) return magHeading;
     const w = speedWeight(gpsCourse.speed);
     const fused = blendHeadings(magHeading, gpsCourse.course, w);
-    return fused == null ? null : Math.round(fused);
-  }, [magHeading, gpsCourse]);
+    return fused == null ? null : Math.round(fused) % 360;
+  }, [magHeading, gpsCourse, expiredAt]);
 }
