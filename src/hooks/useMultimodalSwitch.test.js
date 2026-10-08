@@ -62,3 +62,19 @@ describe("planToSwitchSuggestion", () => {
     expect(planToSwitchSuggestion(plan, { stations: [], gpsPos, now })).toBeNull();
   });
 });
+
+// ── minutesUntilTime — passage de minuit (cas de la revue) ─────────────
+import { minutesUntilTime } from "./useMultimodalSwitch.js";
+
+describe("minutesUntilTime", () => {
+  const at = (h, m) => new Date(2026, 9, 8, h, m);
+  it("00:05 vu à 23:55 → 10 min (le lendemain)", () => {
+    expect(minutesUntilTime("00:05", at(23, 55))).toBe(10);
+  });
+  it("23:50 vu à 00:10 → départ passé de la veille, hors fenêtre (1420)", () => {
+    expect(minutesUntilTime("23:50", at(0, 10))).toBe(1420);
+  });
+  it("format invalide → NaN", () => {
+    expect(minutesUntilTime("bientôt", at(12, 0))).toBeNaN();
+  });
+});

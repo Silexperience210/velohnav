@@ -41,14 +41,13 @@ const MAX_WAIT_MIN     = 15;           // itinéraire qui part trop tard = pas u
  * Calcule les minutes restantes jusqu'à l'heure HH:MM (gère le passage à minuit).
  * Retourne NaN si le format est invalide.
  */
-function minutesUntilTime(timeStr) {
+export function minutesUntilTime(timeStr, now = new Date()) {
   if (!timeStr || typeof timeStr !== "string") return NaN;
   const parts = timeStr.split(":");
   if (parts.length < 2) return NaN;
   const h = parseInt(parts[0], 10);
   const m = parseInt(parts[1], 10);
   if (isNaN(h) || isNaN(m)) return NaN;
-  const now = new Date();
   const targetMin = h * 60 + m;
   const nowMin    = now.getHours() * 60 + now.getMinutes();
   let diff = targetMin - nowMin;
@@ -162,9 +161,17 @@ export function useMultimodalSwitch({
   // l'intervalle à chaque tick GPS et rappelait la météo toutes les secondes.
   const gpsRef = useRef(gpsPos);
   useEffect(() => { gpsRef.current = gpsPos; }, [gpsPos]);
+  // `hasFix` (booléen) et non la position : sans lui, une nav démarrée avant le
+  // premier fix ne lançait JAMAIS le polling (même défaut que useRoute).
+  const hasFix = gpsPos != null;
+  // L'intervalle doit appeler l'évaluation du rendu COURANT : en la capturant
+  // une fois au démarrage, la bascule était calculée 90 s plus tard avec la
+  // position et la destination du départ.
+  const evaluateRef = useRef(null);
 
   useEffect(() => {
-    if (!active || !gpsRef.current || navMode !== "cycling") return;
+    if (!active) lastWeatherRef.current = null;   // une nouvelle nav repart d'un relevé frais
+    if (!active || !hasFix || navMode !== "cycling") return;
     let cancelled = false;
     const tick = async () => {
       const pos = gpsRef.current;
@@ -172,13 +179,12 @@ export function useMultimodalSwitch({
       const fresh = await fetchWeather(pos.lat, pos.lng);
       if (cancelled || !fresh) return;
       lastWeatherRef.current = fresh;
-      evaluateSwitch(fresh);
+      evaluateRef.current?.(fresh);
     };
     tick();
     const id = setInterval(tick, POLL_INTERVAL_MS);
     return () => { cancelled = true; clearInterval(id); };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active, navMode]);
+  }, [active, navMode, hasFix]);
 
   // Heuristique historique : station pivot proche d'un arrêt avec un départ
   // imminent. Ne connaît pas la direction des lignes → repli uniquement.
@@ -286,10 +292,17 @@ export function useMultimodalSwitch({
   }, [active, gpsPos, navStation, navMode, stations, planFetcher, heuristicSwitch]);
 
 
-  // Re-évaluer si la météo prop change (le hook global useWeather)
+  evaluateRef.current = evaluateSwitch;
+
+  // Re-évaluer si la météo prop change (le hook global useWeather, 10 min).
+  // Deux défauts corrigés : `evaluateSwitch` en dépendance (il change à chaque
+  // tick GPS) faisait tourner cet effet à 1 Hz ; et la météo globale, plus
+  // ancienne, effaçait la suggestion que le relevé à 90 s venait de poser
+  // (« pas de pluie » → setSuggestion(null)). Le relevé frais fait foi.
   useEffect(() => {
-    if (weather && active) evaluateSwitch(weather);
-  }, [weather, active, navStation?.id, evaluateSwitch]);
+    if (!weather || !active) return;
+    evaluateRef.current?.(lastWeatherRef.current ?? weather);
+  }, [weather, active, navStation?.id]);
 
   const dismiss = () => {
     setSuggestion(null);
