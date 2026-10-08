@@ -4,7 +4,7 @@ import { C, COMPASS_LABELS, FOV, TRANSIT_STOPS } from "../constants.js";
 import { haversine, getBearing, fDist, fWalk, bCol, bTag, pins,
          getHistory, launchNativeArNav } from "../utils.js";
 import { fetchWeather, getWeatherAdvice } from "../hooks/useWeather.js";
-import { useTransit, formatDeparturesForAI } from "../hooks/useTransit.js";
+import { formatDeparturesForAI } from "../hooks/useTransit.js";
 import { loadModel, generate } from "../ai/localModel.js";
 
 // ── Score conditions vélo 0-10 ─────────────────────────────────────
@@ -51,12 +51,13 @@ function stripNavTag(text) {
 // ── Composant principal ────────────────────────────────────────────
 function AIScreen({ stations, aiHistory, setAiHistory,
                     aiDisplay, setAiDisplay, gpsPos=null,
-                    mapsKey="", hafasKey="", onLaunchAR=null }) {
+                    mapsKey="", transitStops=[], transitDepartures={}, onLaunchAR=null }) {
 
   const [input,    setInput]    = useState("");
   const [busy,     setBusy]     = useState(false);
   const [weather,  setWeather]  = useState(null);
-  const { stops: busStops, departures: busDeps } = useTransit(gpsPos, hafasKey);
+  // Arrêts + départs Transitous fournis par App (un seul polling partagé)
+  const busStops = transitStops, busDeps = transitDepartures;
   const [forecast, setForecast] = useState(null); // prévisions 3h
   const [navCmd,   setNavCmd]   = useState(null); // commande AR en attente
   const [modelState, setModelState] = useState("loading"); // loading | ready | error
@@ -193,16 +194,14 @@ function AIScreen({ stations, aiHistory, setAiHistory,
       ? `\nPosition GPS : ${gpsPos.lat.toFixed(5)}, ${gpsPos.lng.toFixed(5)}`
       : "";
 
-    // Bus RGTR temps réel — arrêts proches avec départs live
+    // Bus + tram (Transitous) — arrêts proches avec prochains départs
     let busTxt = "";
-    if (hafasKey && busStops.length > 0) {
+    if (busStops.length > 0) {
       busTxt = busStops.slice(0, 2).map(stop => {
         const deps = busDeps[stop.id];
         return deps?.length ? formatDeparturesForAI(stop.name, deps) : "";
       }).filter(Boolean).join("");
       if (!busTxt) busTxt = `\n(Arrêts proches détectés : ${busStops.slice(0,3).map(s=>s.name).join(", ")} — départs en cours de chargement)`;
-    } else if (!hafasKey) {
-      busTxt = `\n(Aucune clé HAFAS ATP configurée — l'utilisateur peut en demander une gratuitement à opendata-api@verkeiersverbond.lu et l'ajouter dans OPT pour voir les bus RGTR temps réel.)`;
     }
 
     return `Tu es VELOH·AI, assistant mobilité VelohNav pour Luxembourg.
@@ -216,7 +215,7 @@ TRAM T1 — Findel/Aéroport ↔ Gasperich/Stadion (24 arrêts, 16km, GRATUIT) :
 Horaires : 04h20→00h06 tous les jours
 Fréquence : 3-4 min (LuxExpo↔Bouneweg) | 8 min (extrémités) | 15 min heures creuses
 Hubs : Luxexpo, Rout Bréck/Pafendall (funiculaire+CFL), Place de l'Étoile, Hamilius, Gare Centrale (CFL), Howald (CFL), Cloche d'Or, Gasperich/Stadion
-${busTxt ? `\n🚌 BUS RGTR — départs temps réel aux arrêts proches :${busTxt}\n(Les transports publics au Luxembourg sont GRATUITS depuis 2020 pour tous.)` : ""}
+${busTxt ? `\n🚌 BUS / TRAM — prochains départs aux arrêts proches (Transitous) :${busTxt}\n(Les transports publics au Luxembourg sont GRATUITS depuis 2020 pour tous.)` : ""}
 
 NAVIGATION AR : Si l'utilisateur demande à être guidé vers une destination (station Vel'OH, arrêt tram, lieu),
 tu DOIS terminer ta réponse par une balise de navigation :
@@ -227,7 +226,7 @@ Exemples :
   → guider vers Luxexpo en vélo : [NAV:49.6267,6.1651,Luxexpo,bicycling]
 N'utilise cette balise QUE si l'utilisateur veut explicitement être guidé/naviguer/aller quelque part.
 Ne l'utilise pas pour de simples informations ou conseils.`;
-  },[stations, weather, forecast, gpsPos, busStops, busDeps, hafasKey]);
+  },[stations, weather, forecast, gpsPos, busStops, busDeps]);
 
   // ── Envoi message + parsing réponse AR ───────────────────────────
   const sendText = useCallback(async(text)=>{

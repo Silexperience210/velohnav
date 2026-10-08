@@ -4,8 +4,9 @@ import { C, COMPASS_LABELS, FOV } from "../constants.js";
 import { haversine, getBearing, fDist, fWalk, bCol, bTag, pins } from "../utils.js";
 
 import { useI18n } from "../i18n.js";
+import { TRANSITOUS_SOURCES_URL } from "../utils/transitous.js";
 
-function SettingsScreen({ apiKey, setApiKey, onRefresh, apiLive, isMock, dataSource="demo", gpsPos, lnAddr, setLnAddr, lnOn, setLnOn, ads, setAds, mapsKey, setMapsKey, hafasKey="", setHafasKey, spatialAudio=false, setSpatialAudio=()=>{} }) {
+function SettingsScreen({ apiKey, setApiKey, onRefresh, apiLive, isMock, dataSource="demo", gpsPos, lnAddr, setLnAddr, lnOn, setLnOn, ads, setAds, mapsKey, setMapsKey, spatialAudio=false, setSpatialAudio=()=>{} }) {
   const [draft,setDraft]=useState(apiKey);
   const [saved,setSaved]=useState(false);
   const [mapsDraft,setMapsDraft]=useState(mapsKey||"");
@@ -128,7 +129,7 @@ function SettingsScreen({ apiKey, setApiKey, onRefresh, apiLive, isMock, dataSou
       </div>
 
       <div style={{ padding:"14px 14px 0" }}>
-        <div style={{ color:C.muted,fontSize:8,fontFamily:C.fnt,letterSpacing:2,marginBottom:10 }}>🚌 CLÉS API TRANSPORT</div>
+        <div style={{ color:C.muted,fontSize:8,fontFamily:C.fnt,letterSpacing:2,marginBottom:10 }}>🚌 TRANSPORT</div>
         <div style={{ background:"rgba(255,255,255,0.02)",border:`1px solid ${C.border}`,borderRadius:8,padding:"14px",display:"flex",flexDirection:"column",gap:10 }}>
           <div>
             <div style={{ color:C.muted,fontSize:7,fontFamily:C.fnt,letterSpacing:1,marginBottom:6 }}>Google Maps (navigation AR fallback)</div>
@@ -145,13 +146,15 @@ function SettingsScreen({ apiKey, setApiKey, onRefresh, apiLive, isMock, dataSou
           </div>
           <div>
             <div style={{ color:C.muted,fontSize:7,fontFamily:C.fnt,letterSpacing:1,marginBottom:6 }}>
-              HAFAS ATP — bus RGTR temps réel {hafasKey ? "✓ Actif" : "· opendata-api@verkeiersverbond.lu"}
+              Bus + tram — Transitous (MOTIS) · sans clé
             </div>
-            <div style={{ display:"flex",gap:8 }}>
-              <input value={hafasKey||""} onChange={e=>setHafasKey?.(e.target.value.trim())}
-                placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" type="password"
-                style={{ flex:1,background:"rgba(0,0,0,0.4)",border:`1px solid ${hafasKey?C.good:C.border}`,
-                  borderRadius:4,padding:"8px 10px",color:C.text,fontSize:10,fontFamily:C.fnt,outline:"none" }}/>
+            <div style={{ color:C.good,fontSize:9,fontFamily:C.fnt,lineHeight:1.6 }}>
+              ✓ Données officielles ATP Luxembourg, départs et itinéraires intermodaux
+            </div>
+            <div style={{ color:C.muted,fontSize:8,fontFamily:C.fnt,marginTop:4,lineHeight:1.6 }}>
+              Service communautaire —{" "}
+              <a href={TRANSITOUS_SOURCES_URL} target="_blank" rel="noopener noreferrer"
+                style={{ color:C.accent }}>sources des données</a>
             </div>
           </div>
         </div>

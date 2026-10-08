@@ -91,7 +91,6 @@ export default function App() {
   const [ads,setAds]           = useState(()=>localStorage.getItem("velohnav_ads")==="true");
   // BUG-1/BUG-4 fix: mapsKey géré en state React → réactif + exposé dans Settings
   const [mapsKey,setMapsKey]   = useState(()=>localStorage.getItem("velohnav_mapsKey")||"");
-  const [hafasKey,setHafasKey] = useState(()=>localStorage.getItem("velohnav_hafasKey")||"");
   // Spatial Audio HRTF — guidage vocal 3D pendant nav AR
   const [spatialAudio, setSpatialAudio] = useState(()=>localStorage.getItem("velohnav_spatialAudio")==="true");
   const [stations,setStations] = useState(()=>enrich(FALLBACK,null));
@@ -105,8 +104,11 @@ export default function App() {
   // Météo OpenMeteo — hook réactif à la position GPS
   const { weather } = useWeather(gpsPos);
 
-  // Transit RGTR — partagé entre ARScreen (multimodal switch) et AIScreen
-  const { stops: transitStops, departures: transitDepartures } = useTransit(gpsPos, hafasKey);
+  // Transports en commun (Transitous, sans clé) — partagé entre ARScreen
+  // (multimodal switch) et AIScreen. Chargé uniquement quand l'un des deux
+  // est affiché (fair use Transitous : pas de polling en arrière-plan).
+  const { stops: transitStops, departures: transitDepartures } =
+    useTransit(gpsPos, { active: tab==="ar" || tab==="ai" });
 
   // FIX #3 : Système de trajet — départ/arrivée pour Sats Rewards
   const [trip,setTrip] = useState(null); // null | { stationId, name, startAt }
@@ -132,7 +134,8 @@ export default function App() {
   useEffect(()=>{ localStorage.setItem("velohnav_lnOn",     lnOn);      },[lnOn]);
   useEffect(()=>{ localStorage.setItem("velohnav_ads",      ads);       },[ads]);
   useEffect(()=>{ localStorage.setItem("velohnav_mapsKey",  mapsKey);   },[mapsKey]);
-  useEffect(()=>{ localStorage.setItem("velohnav_hafasKey", hafasKey);  },[hafasKey]);
+  // v4 : HAFAS remplacé par Transitous — on purge l'ancienne clé stockée
+  useEffect(()=>{ localStorage.removeItem("velohnav_hafasKey"); },[]);
   useEffect(()=>{ localStorage.setItem("velohnav_spatialAudio", spatialAudio); },[spatialAudio]);
 
   // GPS
@@ -306,7 +309,7 @@ export default function App() {
           aiHistory={aiHistory} setAiHistory={setAiHistory}
           aiDisplay={aiDisplay} setAiDisplay={setAiDisplay}
           gpsPos={gpsPos} mapsKey={mapsKey}
-          hafasKey={hafasKey}
+          transitStops={transitStops} transitDepartures={transitDepartures}
           onLaunchAR={async nav=>{ return await launchNativeArNav(nav.lat,nav.lng,nav.name,nav.mode,mapsKey); }}/>}
         {tab==="settings" &&<SettingsScreen
           apiKey={apiKey}    setApiKey={setApiKey}
@@ -314,7 +317,6 @@ export default function App() {
           lnOn={lnOn}        setLnOn={setLnOn}
           ads={ads}          setAds={setAds}
           mapsKey={mapsKey}  setMapsKey={setMapsKey}
-          hafasKey={hafasKey} setHafasKey={setHafasKey}
           spatialAudio={spatialAudio} setSpatialAudio={setSpatialAudio}
           onRefresh={loadData} apiLive={apiLive} isMock={isMock} dataSource={dataSource} gpsPos={gpsPos}/>}
       </div>
