@@ -23,7 +23,7 @@ class ErrorBoundary extends Component {
   render() {
     if (this.state.error) return (
       <div style={{background:'#080c0f',color:'#F5820D',padding:20,fontFamily:'monospace',minHeight:'100vh',fontSize:11}}>
-        <div style={{fontSize:16,fontWeight:700,marginBottom:12}}>⚠ VelohNav — Erreur au démarrage</div>
+        <div style={{fontSize:16,fontWeight:700,marginBottom:12}}>⚠ VelohNav — Erreur d'affichage</div>
         <pre style={{color:'#fff',whiteSpace:'pre-wrap',fontSize:10,marginBottom:16}}>
           {String(this.state.error && (this.state.error.stack || this.state.error))}
         </pre>

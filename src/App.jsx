@@ -101,8 +101,14 @@ function Shell() {
   // GPS
   useEffect(()=>{
     let stop=()=>{};
-    startWatchingGPS(pos=>setGpsPos(pos)).then(fn=>{ if(fn) stop=fn; });
-    return ()=>stop();
+    let cancelled=false;
+    // Si l'écran est démonté avant que la promesse ne se résolve, `stop` serait encore un
+    // noop et le guet GPS natif resterait actif : on appelle le nettoyage dès qu'il arrive.
+    startWatchingGPS(pos=>setGpsPos(pos)).then(fn=>{
+      if(!fn) return;
+      if(cancelled) fn(); else stop=fn;
+    });
+    return ()=>{ cancelled=true; stop(); };
   },[]);
   useEffect(()=>{ setStations(prev=>enrich(prev,gpsPos)); },[gpsPos]);
   const gpsRef = useRef(null);
