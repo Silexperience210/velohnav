@@ -318,7 +318,7 @@ export default {
   "ui.ai.ans.elec":         "{name} propose {n} vélos électriques (toute la flotte l'est).",
   "ui.ai.ans.bus":          "Départ {line} vers {dir} à {time} ({stop}).",
   "ui.ai.ans.bus_none":     "Aucun départ en temps réel disponible pour l'instant.",
-  "ui.ai.ans.wx":           "{label}, {temp} °C, vent {wind} km/h, score vélo {score}/10. {fc}",
+  "ui.ai.ans.wx":           "{label}, {temp} °C, vent {wind} km/h, score vélo {score}/10.",
   "ui.ai.ans.fc":           "+{h} h : {temp} °C, {rain} mm.",
   "ui.ai.ans.no_wx":        "Météo indisponible pour l'instant.",
   "ui.ai.ans.docks":        "{name} dispose de {docks} bornes libres pour rendre un vélo.",

@@ -98,9 +98,12 @@ function AIScreen({ stations, aiHistory, setAiHistory,
   }, [gpsPos?.lat ? Math.round(gpsPos.lat*100) : null,
       gpsPos?.lng ? Math.round(gpsPos.lng*100) : null]);
 
-  const score  = bikeScore(weather);
-  const advice = getWeatherAdvice(weather);
+  // Mémoïsés : sinon ces objets changent à chaque rendu et invalident les callbacks.
+  const score  = useMemo(()=>bikeScore(weather), [weather]);
+  const advice = useMemo(()=>getWeatherAdvice(weather), [weather]);
   const nearest = useMemo(()=>stations.find(s=>s.bikes>0 && s.status!=="CLOSED") ?? null,[stations]);
+  // Pour rendre un vélo il faut des bornes libres : ce n'est pas forcément la même station.
+  const nearestReturn = useMemo(()=>stations.find(s=>s.docks>0 && s.status!=="CLOSED") ?? null,[stations]);
   const deps = useMemo(()=>upcoming(busStops, busDeps, 3),[busStops, busDeps]);
 
   // ── Modèle : chargé UNIQUEMENT si la conversation libre est activée ──
@@ -111,8 +114,11 @@ function AIScreen({ stations, aiHistory, setAiHistory,
     loadModel((pct)=>{ if(!dead) setModelProgress(pct); })
       .then(()=>{ if(!dead) setModelState("ready"); })
       .catch(()=>{ if(!dead) setModelState("error"); });
-    return ()=>{ dead = true; };
+    return ()=>{ dead = true; };   // les setState sont bloqués ; le téléchargement déjà
+                                   // lancé n'est pas interrompu (loadModel ne sait pas
+                                   // s'annuler) — l'état revient à « arrêté » ci-dessous.
   },[chatOn, loadSeq]);
+  useEffect(()=>{ if (!chatOn) setModelState("off"); },[chatOn]);
 
   // ── Message d'accueil proactif (localisé, sans emoji) ─────────────
   const initMsg = useMemo(()=>{
@@ -131,7 +137,7 @@ function AIScreen({ stations, aiHistory, setAiHistory,
   }, [stations, weather, forecast, gpsPos, lang]);
 
   useEffect(()=>{
-    if (aiDisplay.length === 0)
+    if (aiDisplay.length === 0 && aiHistory.length === 0)
       setAiDisplay([{ role:"ai", text:initMsg, local:true }]);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initMsg]);
@@ -201,9 +207,9 @@ Ne l'utilise pas pour de simples informations ou conseils.`;
 
   // ── Réponses locales : la logique vit dans src/ai/localAnswers.js (module pur, testé) ──
   const answerLocally = useCallback(
-    q => localAnswer(q, { stations, nearest, deps, weather, forecast, advice, score, gpsPos, t }),
+    q => localAnswer(q, { stations, nearest, nearestReturn, deps, weather, forecast, advice, score, gpsPos, t }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [stations, nearest, deps, weather, forecast, advice, score, gpsPos, lang]);
+    [stations, nearest, nearestReturn, deps, weather, forecast, advice, score, gpsPos, lang]);
 
   // ── Envoi : réponse locale d'abord, modèle seulement si activé ────
   const sendText = useCallback(async(text)=>{
@@ -212,9 +218,13 @@ Ne l'utilise pas pour de simples informations ou conseils.`;
     setInput("");
     setAiDisplay(d=>[...d,{role:"user",text:q}]);
 
-    if (!chatOn) {                        // réponse locale : instantanée, exacte
-      const { text: rep, nav } = answerLocally(q);
-      setAiDisplay(d=>[...d,{role:"ai",text:rep,nav,local:true}]);
+    // Réponse locale d'abord, TOUJOURS : un compteur de vélos ou un horaire de bus
+    // ne doit jamais passer par un modèle, même quand la conversation est activée.
+    // Le modèle n'est sollicité que pour une question libre, et seulement s'il est prêt.
+    const local = answerLocally(q);
+    const askModel = chatOn && modelState === "ready" && local.unknown === true;
+    if (!askModel) {
+      setAiDisplay(d=>[...d,{role:"ai",text:local.text,nav:local.nav,local:true}]);
       return;
     }
 
@@ -273,12 +283,16 @@ Ne l'utilise pas pour de simples informations ou conseils.`;
   const canSend = !!input.trim() && !busy;
   const verdictOk = advice.mode !== "transit";
   const maxDocks = nearest ? Math.max(1, (nearest.bikes || 0) + (nearest.docks || 0)) : 1;
-  const nextRain = forecast?.find(f=> f.rainProb > 50);
+  const nextRain = forecast?.find(f=> f.rainProb > 50 || f.rain > 0.5);   // même seuil que l'accueil
 
   // ── Rendu ─────────────────────────────────────────────────────────
   return (
     <div style={{ flex:1, display:"flex", flexDirection:"column", minHeight:0 }}>
       <div className="vn-thread vn-scroll" role="log" aria-live="polite" aria-label={t("ui.screen.ai")}>
+
+        {/* Les cartes se rafraîchissent seules (départs, météo) : hors région live,
+            sinon un lecteur d'écran annonce chaque mise à jour du polling. */}
+        <div className="vn-cards" aria-live="off">
 
         {/* Verdict immédiat — calculé sur l'appareil */}
         <section className={`vn-dcard ${verdictOk ? "vn-dcard--ok" : "vn-dcard--warn"}`}>
@@ -363,6 +377,8 @@ Ne l'utilise pas pour de simples informations ou conseils.`;
           </section>
         ) : null}
 
+        </div>{/* fin des cartes hors région live */}
+
         {/* Conversation : locale d'abord, modèle seulement si activé */}
         {aiDisplay.map((m,i)=>(
           <div key={i} className={`vn-msg vn-msg--${m.role}`} data-error={m.error || undefined}>
@@ -405,7 +421,7 @@ Ne l'utilise pas pour de simples informations ou conseils.`;
         </button>
         <div style={{ flex:1, minWidth:0 }}>
           <div style={{ fontSize:12, fontWeight:600 }}>{t("ui.ai.chat.title")}</div>
-          <div style={{ fontSize:10.5, color:"var(--vn-text3)", lineHeight:1.45 }} role="status">
+          <div style={{ fontSize:10.5, color:"var(--vn-text3)", lineHeight:1.45 }}>
             {!chatOn ? t("ui.ai.chat.note", { mb: CHAT_MODEL_MB })
               : modelState==="loading" ? t("ui.ai.model.loading", { pct:modelProgress })
               : modelState==="error"   ? t("ui.ai.model.error")

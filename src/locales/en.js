@@ -317,7 +317,7 @@ export default {
   "ui.ai.ans.elec":         "{name} has {n} electric bikes (the whole fleet is).",
   "ui.ai.ans.bus":          "{line} to {dir} at {time} ({stop}).",
   "ui.ai.ans.bus_none":     "No real-time departure available right now.",
-  "ui.ai.ans.wx":           "{label}, {temp} °C, wind {wind} km/h, bike score {score}/10. {fc}",
+  "ui.ai.ans.wx":           "{label}, {temp} °C, wind {wind} km/h, bike score {score}/10.",
   "ui.ai.ans.fc":           "+{h} h: {temp} °C, {rain} mm.",
   "ui.ai.ans.no_wx":        "Weather unavailable right now.",
   "ui.ai.ans.docks":        "{name} has {docks} free docks to return a bike.",
