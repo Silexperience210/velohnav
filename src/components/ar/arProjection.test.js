@@ -1,8 +1,8 @@
 // Tests de la géométrie AR — chaque cas correspond à un défaut réel corrigé.
 import { describe, it, expect } from "vitest";
 import {
-  pinX, pinY, compassOffsetPx, compassLabelWidth, detourVia, alternativeRadius,
-  AR_RADIUS, HORIZON_PCT, BAS_PCT, COMPASS_STEP_DEG, PX_PER_DEG,
+  pinX, pinY, compassOffsetPx, compassLabelWidth, compassLabelIndexAtMarker, detourVia, alternativeRadius,
+  AR_RADIUS, HORIZON_PCT, BAS_PCT, COMPASS_STEP_DEG, PX_PER_DEG, COMPASS_VIEW_W,
 } from "./arProjection.js";
 
 describe("pinX — projection horizontale", () => {
@@ -40,23 +40,45 @@ describe("pinY — projection verticale (proche → bas, loin → horizon)", () 
 });
 
 describe("compassOffsetPx — bandeau boussole", () => {
-  it("ne bouge pas sur un multiple du pas", () => {
-    expect(compassOffsetPx(0)).toBe(0);
-    expect(compassOffsetPx(45)).toBe(0);
-    expect(compassOffsetPx(90)).toBe(0);
+  const LABELS = ["N", "NE", "E", "SE", "S", "SO", "O", "NO"];
+  const sous = hdg => LABELS[compassLabelIndexAtMarker(compassOffsetPx(hdg))];
+
+  it("montre sous le repère l'étiquette du cap réel (défaut corrigé : toujours N ou NE)", () => {
+    // Avant : décalage = −(cap % 45) × px sur un bandeau qui commence par N →
+    // cap 180° affichait « N », cap 45° affichait « N » aussi.
+    expect(sous(0)).toBe("N");
+    expect(sous(45)).toBe("NE");
+    expect(sous(90)).toBe("E");
+    expect(sous(180)).toBe("S");
+    expect(sous(270)).toBe("O");
+    expect(sous(315)).toBe("NO");
   });
-  it("avance d'un pas complet entre deux étiquettes", () => {
-    expect(compassOffsetPx(45) - compassOffsetPx(0)).toBe(0);
-    expect(compassOffsetPx(44.9)).toBeCloseTo(-44.9 * PX_PER_DEG, 6);
+  it("centre exactement l'étiquette sur un multiple du pas", () => {
+    const w = compassLabelWidth();
+    for (const h of [0, 45, 180, 315]) {
+      const off = compassOffsetPx(h);
+      const k = Math.round((COMPASS_VIEW_W / 2 - off) / w - 0.5);
+      expect(off + (k + 0.5) * w).toBeCloseTo(COMPASS_VIEW_W / 2, 6);
+    }
   });
-  it("ne saute pas au passage d'un multiple de 60 (défaut corrigé)", () => {
-    const avant = compassOffsetPx(59.9);
-    const apres = compassOffsetPx(60.1);
-    expect(Math.abs(apres - avant)).toBeLessThan(PX_PER_DEG); // était ~168 px
+  it("se déplace de pas × px/° entre deux caps voisins (pas de saut à 60°)", () => {
+    expect(compassOffsetPx(61) - compassOffsetPx(59)).toBeCloseTo(-2 * PX_PER_DEG, 6);
   });
-  it("est continu autour de 360", () => {
-    expect(compassOffsetPx(359.9)).toBeCloseTo(-359.9 % COMPASS_STEP_DEG * PX_PER_DEG, 6);
+  it("le passage 359°→0° ne décale que d'1° à une période près (image continue)", () => {
+    const periode = 8 * compassLabelWidth();
+    // 359,5° → 0,5° : le bandeau saute d'une période (invisible : il est périodique)
+    // moins 1° d'avance — exactement comme entre 10,5° et 11,5°.
+    expect(compassOffsetPx(0.5) - compassOffsetPx(359.5) - periode).toBeCloseTo(-PX_PER_DEG, 6);
+    expect(sous(359.6)).toBe("N");
     expect(compassOffsetPx(360)).toBe(compassOffsetPx(0));
+  });
+  it("garde toujours des étiquettes de part et d'autre du repère", () => {
+    const total = 24 * compassLabelWidth();
+    for (let h = 0; h < 360; h += 7.5) {
+      const off = compassOffsetPx(h);
+      expect(off).toBeLessThanOrEqual(0);                     // le bandeau couvre le bord gauche
+      expect(off + total).toBeGreaterThanOrEqual(COMPASS_VIEW_W); // … et le bord droit
+    }
   });
   it("la largeur d'étiquette correspond au pas géométrique", () => {
     expect(compassLabelWidth()).toBeCloseTo(COMPASS_STEP_DEG * PX_PER_DEG, 6);

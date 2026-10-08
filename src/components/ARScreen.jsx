@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { t } from "../i18n.js";
 import { C, COMPASS_LABELS, FOV, FISCHER_STORES } from "../constants.js";
-import { AR_RADIUS, HORIZON_PCT, BAS_PCT, compassOffsetPx, compassLabelWidth, pinX, pinY } from "./ar/arProjection.js";
+import { AR_RADIUS, COMPASS_VIEW_W, compassOffsetPx, compassLabelWidth, pinX, pinY } from "./ar/arProjection.js";
 import { haversine, getBearing, fDist, fWalk, bCol, bTag, pins } from "../utils.js";
 
 import { useCompass } from "../hooks/useCompass.js";
@@ -483,10 +483,12 @@ function ARScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey=""
 
       {/* Compass strip */}
       <div style={{position:"absolute",top:10,left:"50%",transform:"translateX(-50%)",zIndex:20,pointerEvents:"none"}}>
-        <div style={{background:"rgba(8,12,15,0.82)",border:`1px solid ${C.border}`,borderRadius:3,padding:"3px 14px",width:184,overflow:"hidden"}}>
+        <div style={{background:"rgba(8,12,15,0.82)",border:`1px solid ${C.border}`,borderRadius:3,padding:"3px 0",width:COMPASS_VIEW_W,overflow:"hidden",boxSizing:"content-box"}}>
           {hdg!==null?(
+            // Pas de transition CSS : au passage 359°→0° le décalage saute d'une
+            // période entière (image identique) et une transition le ferait défiler.
             <div style={{display:"flex",whiteSpace:"nowrap",
-              transform:`translateX(${compassOffsetPx(hdg)}px)`,transition:"transform 0.08s linear"}}>
+              transform:`translateX(${compassOffsetPx(hdg)}px)`}}>
               {COMPASS_STRIP.map((label, i)=>(
                 <span key={i} style={{width:LABEL_W,flex:"0 0 auto",textAlign:"center",
                   color:C.accent,fontSize:7,fontFamily:C.fnt,letterSpacing:2}}>{label}</span>

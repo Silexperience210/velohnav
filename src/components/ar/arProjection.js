@@ -9,9 +9,11 @@ export const BAS_PCT     = 70;   // % de hauteur pour un objet à distance nulle
 /** Rayon (m) au-delà duquel un élément n'est plus projeté en AR. */
 export const AR_RADIUS = 800;
 
-/** Boussole : étiquettes tous les 45°, échelle alignée sur le FOV (68° sur la largeur). */
+/** Bandeau boussole : une étiquette tous les 45°, 1,2 px par degré (≈ ±65° visibles). */
 export const COMPASS_STEP_DEG = 45;
-export const PX_PER_DEG       = 2.8;
+export const PX_PER_DEG       = 1.2;
+/** Largeur (px) de la fenêtre visible du bandeau ; le repère ▾ est en son centre. */
+export const COMPASS_VIEW_W   = 160;
 
 /**
  * Position horizontale d'un élément, en % de la largeur d'écran.
@@ -34,20 +36,36 @@ export function pinY(dist, radius = AR_RADIUS) {
 }
 
 /**
- * Décalage du bandeau boussole, en pixels.
- * Les étiquettes sont espacées de COMPASS_STEP_DEG : le décalage doit donc être
- * calculé sur CE pas (et non sur un 60° arbitraire, qui les faisait sauter).
- * @param hdg cap en degrés (0..360)
+ * Décalage (px) du bandeau boussole pour que le cap `hdg` tombe sous le repère.
+ * Le bandeau contient les 8 étiquettes répétées 3 fois (N … NO, N … NO, N … NO) ;
+ * l'étiquette k est centrée à (k + 0,5) × largeur. On vise la copie du milieu,
+ * ce qui laisse toujours une étiquette de part et d'autre du repère.
+ *
+ * (Avant : seul `hdg % pas` était utilisé, sur un bandeau qui commence toujours
+ * par « N » — le repère montrait N ou NE quel que soit le cap, S compris.)
+ * @param hdg     cap en degrés (n'importe quel réel, normalisé ici)
+ * @param viewW   largeur de la fenêtre visible (px)
  */
-export function compassOffsetPx(hdg, pxPerDeg = PX_PER_DEG) {
+export function compassOffsetPx(hdg, viewW = COMPASS_VIEW_W, pxPerDeg = PX_PER_DEG) {
   const a = ((Number(hdg) % 360) + 360) % 360;
-  // `|| 0` : évite de renvoyer -0 sur un multiple exact du pas (et c'est plus propre en CSS)
-  return -(a % COMPASS_STEP_DEG) * pxPerDeg || 0;
+  const labelW = compassLabelWidth(pxPerDeg);
+  const pos = (8 + a / COMPASS_STEP_DEG + 0.5) * labelW; // position du cap dans la copie du milieu
+  return viewW / 2 - pos;
 }
 
 /** Largeur d'une étiquette du bandeau : le pas des étiquettes × l'échelle. */
 export function compassLabelWidth(pxPerDeg = PX_PER_DEG) {
   return COMPASS_STEP_DEG * pxPerDeg;
+}
+
+/**
+ * Indice (0..7) de l'étiquette dont le centre est le plus proche du repère,
+ * pour un décalage donné — sert aux tests et à l'accessibilité.
+ */
+export function compassLabelIndexAtMarker(offsetPx, viewW = COMPASS_VIEW_W, pxPerDeg = PX_PER_DEG) {
+  const labelW = compassLabelWidth(pxPerDeg);
+  const k = Math.round((viewW / 2 - offsetPx) / labelW - 0.5);
+  return ((k % 8) + 8) % 8;
 }
 
 /**
