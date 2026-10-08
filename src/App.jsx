@@ -194,7 +194,9 @@ export default function App() {
       if (prev !== undefined) notifyStation(s, prev);
       prevStationsRef.current[s.id] = s.bikes;
     });
-    setStations(newStations);
+    // Ré-enrichir avec la position COURANTE : le GPS a pu arriver pendant les
+    // fetchs (sinon distances calculées depuis REF jusqu'au prochain tick GPS)
+    setStations(enrich(newStations, gpsRef.current));
   },[apiKey]);
 
   useEffect(()=>{ loadData(); },[loadData]);
