@@ -14,12 +14,13 @@
 // Quand `suggestion` n'est pas null, l'UI peut afficher une bannière
 // "Station saturée → alternative à 340m" + boutons accept/dismiss.
 
+import { detourVia, alternativeRadius } from "../components/ar/arProjection.js";
 import { useState, useEffect, useRef } from "react";
 import { haversine } from "../utils.js";
 import { predictAvailability } from "./useAvailability.js";
 
 // Rayon max de recherche d'alternative (m)
-const ALT_RADIUS_M = 700;
+
 // Détour maximum accepté vs trajet original (facteur)
 const MAX_DETOUR_FACTOR = 1.5;
 // Délai après lequel on peut re-suggérer (ms) — évite spam
@@ -70,13 +71,18 @@ function findBestAlternative({ stations, navStation, gpsPos, intent, dismissedId
       s.id !== navStation.id &&
       !dismissedIds.has(s.id) &&
       isUsable(s, intent) &&
-      haversine(gpsPos.lat, gpsPos.lng, s.lat, s.lng) <= Math.max(distToOriginal * MAX_DETOUR_FACTOR, ALT_RADIUS_M)
+      // Rayon = budget de détour, borné des deux côtés (avant : Math.max élargissait sans limite)
+      haversine(gpsPos.lat, gpsPos.lng, s.lat, s.lng) <= alternativeRadius(distToOriginal, { factor: MAX_DETOUR_FACTOR })
     )
     .map(s => ({
       ...s,
       _score: scoreAlternative(s, intent, gpsPos, navStation),
       _distFromUser: haversine(gpsPos.lat, gpsPos.lng, s.lat, s.lng),
-      _detourMeters: Math.round(haversine(gpsPos.lat, gpsPos.lng, s.lat, s.lng) - distToOriginal),
+      // Détour réel : rejoindre l'alternative PUIS sa destination (voir arProjection.detourVia).
+      _detourMeters: detourVia(
+        haversine(gpsPos.lat, gpsPos.lng, s.lat, s.lng),
+        haversine(s.lat, s.lng, navStation.lat, navStation.lng),
+        distToOriginal),
     }))
     .sort((a, b) => b._score - a._score);
   return candidates[0] ?? null;

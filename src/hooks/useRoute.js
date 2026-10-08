@@ -283,12 +283,14 @@ export function useRoute(gpsPos, station, mode = "cycling", mapsKey = "") {
         setOffRoute(false);
         offRouteSinceRef.current = null;
         lastFetchPosRef.current  = { lat: pos.lat, lng: pos.lng };
-        if (force) lastRerouteAtRef.current = Date.now();
       } else {
         setError("Itinéraire introuvable — vérifiez votre connexion");
       }
+      // Horodaté même en échec : sinon, hors ligne, chaque tick GPS relançait un calcul.
+      if (force) lastRerouteAtRef.current = Date.now();
     } catch (e) {
       if (!ctrl.signal.aborted) setError(e.message);
+      if (force) lastRerouteAtRef.current = Date.now();
     } finally {
       if (!ctrl.signal.aborted) {
         setLoading(false);
@@ -298,7 +300,10 @@ export function useRoute(gpsPos, station, mode = "cycling", mapsKey = "") {
   }, []);
 
   // Déclencheur initial — chaque fois que la station change ou qu'on commence
-  // une nouvelle nav. Ne dépend PAS de gpsPos (sinon refetch tous les 11m).
+  // une nouvelle nav. Ne dépend PAS des coordonnées GPS (sinon refetch tous les
+  // 11 m), mais DOIT dépendre du fait qu'un premier fix soit arrivé : sans cela,
+  // une nav lancée avant le GPS restait sans itinéraire, en silence.
+  const hasFix = gpsPos != null;
   useEffect(() => {
     if (!gpsPos || !station) {
       setRoute(null);
@@ -312,12 +317,15 @@ export function useRoute(gpsPos, station, mode = "cycling", mapsKey = "") {
     loadRoute(gpsPos, station, mode, mapsKey);
     return () => abortRef.current?.abort();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [station?.id, mode]);
+  }, [station?.id, mode, hasFix]);
 
   // Surveillance : off-route + refetch calme tous les 60m.
   // Séparé du déclencheur initial pour ne pas re-fetch à chaque tick GPS.
   useEffect(() => {
     if (!gpsPos || !station || !routeRef.current) return;
+    // Un fix trop imprécis fait croire à une sortie de route : on ne juge pas la
+    // déviation avec une précision pire que le seuil lui-même.
+    if (gpsPos.acc != null && gpsPos.acc > OFF_ROUTE_THRESHOLD_M) return;
 
     const now = Date.now();
     const distFromRoute = distanceToRoute(routeRef.current.coords, gpsPos.lat, gpsPos.lng);

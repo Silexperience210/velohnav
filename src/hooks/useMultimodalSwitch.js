@@ -158,11 +158,18 @@ export function useMultimodalSwitch({
 
   // Polling météo "now" pendant nav active (overrides global useWeather avec
   // une fréquence plus rapide — 90s vs 10min).
+  // La position est lue par référence : la mettre en dépendance recréait
+  // l'intervalle à chaque tick GPS et rappelait la météo toutes les secondes.
+  const gpsRef = useRef(gpsPos);
+  useEffect(() => { gpsRef.current = gpsPos; }, [gpsPos]);
+
   useEffect(() => {
-    if (!active || !gpsPos || navMode !== "cycling") return;
+    if (!active || !gpsRef.current || navMode !== "cycling") return;
     let cancelled = false;
     const tick = async () => {
-      const fresh = await fetchWeather(gpsPos.lat, gpsPos.lng);
+      const pos = gpsRef.current;
+      if (!pos) return;
+      const fresh = await fetchWeather(pos.lat, pos.lng);
       if (cancelled || !fresh) return;
       lastWeatherRef.current = fresh;
       evaluateSwitch(fresh);
@@ -171,7 +178,7 @@ export function useMultimodalSwitch({
     const id = setInterval(tick, POLL_INTERVAL_MS);
     return () => { cancelled = true; clearInterval(id); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active, gpsPos?.lat, gpsPos?.lng, navMode]);
+  }, [active, navMode]);
 
   // Heuristique historique : station pivot proche d'un arrêt avec un départ
   // imminent. Ne connaît pas la direction des lignes → repli uniquement.

@@ -50,6 +50,8 @@ export function speedWeight(speedMs) {
 
 // ── Hook ───────────────────────────────────────────────────────────
 const MIN_MOVE_M    = 4;       // déplacement mini pour calculer une course (anti-jitter)
+const MAX_SPEED_MS  = 30;      // m/s (~108 km/h) : au-delà, c'est un saut GPS, pas un déplacement
+const MAX_ACC_M     = 30;      // m : fix trop imprécis pour en tirer une course
 const MAX_DT_MS     = 15_000;  // gap GPS trop long → repartir de zéro
 const COURSE_TTL_MS = 5_000;   // course périmée après 5s sans mouvement
 const COURSE_EMA    = 0.35;    // lissage de la course (le GPS "saute" un peu)
@@ -73,6 +75,12 @@ export function useFusedHeading(magHeading, gpsPos) {
 
     const dt = now - prev.time;
     if (dt <= 250) return; // ticks GPS trop rapprochés — pas exploitable
+    // Un fix à ±40 m peut déplacer l'ancre de plusieurs dizaines de mètres sans
+    // qu'on ait bougé : on recale l'ancre sans toucher au cap.
+    if (gpsPos.acc != null && gpsPos.acc > MAX_ACC_M) {
+      prevRef.current = { lat: gpsPos.lat, lng: gpsPos.lng, time: now };
+      return;
+    }
     const dist = haversine(prev.lat, prev.lng, gpsPos.lat, gpsPos.lng);
     if (dist < MIN_MOVE_M) {
       // Immobile : on garde prev comme ancre (la course expirera via TTL)
@@ -81,6 +89,12 @@ export function useFusedHeading(magHeading, gpsPos) {
     }
     const raw   = getBearing(prev.lat, prev.lng, gpsPos.lat, gpsPos.lng);
     const speed = dist / (dt / 1000);
+    // Saut de position (tunnel, glitch réseau) : recaler l'ancre sans corriger le
+    // cap, sinon toute la scène AR pivote d'un coup.
+    if (speed > MAX_SPEED_MS) {
+      prevRef.current = { lat: gpsPos.lat, lng: gpsPos.lng, time: now };
+      return;
+    }
     // EMA circulaire — amortit les sauts de course dus au bruit GPS
     courseRef.current = courseRef.current == null
       ? raw

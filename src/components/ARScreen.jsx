@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { t } from "../i18n.js";
 import { C, COMPASS_LABELS, FOV, FISCHER_STORES } from "../constants.js";
+import { AR_RADIUS, HORIZON_PCT, BAS_PCT, compassOffsetPx, compassLabelWidth, pinX, pinY } from "./ar/arProjection.js";
 import { haversine, getBearing, fDist, fWalk, bCol, bTag, pins } from "../utils.js";
 
 import { useCompass } from "../hooks/useCompass.js";
@@ -23,6 +24,10 @@ import ARPin from "./ar/ARPin.jsx";
 import GhostPin from "./ar/GhostPin.jsx";
 import { ObstaclePins, ObstacleReportMenu } from "./ar/ObstaclesAR.jsx";
 import { projectPoint } from "./ar/projection.js";
+
+// ── Projection AR : la géométrie vit dans arProjection.js (pure et testée) ──
+const LABEL_W       = compassLabelWidth();
+const COMPASS_STRIP = [...COMPASS_LABELS, ...COMPASS_LABELS, ...COMPASS_LABELS];
 
 
 // ── BRIDGE CAPACITOR → ArNavigationActivity (Android natif) ──────
@@ -58,12 +63,16 @@ function ARScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey=""
           offRoute, recalculating, manualRecalc } =
     useRoute(gpsPos, navMode ? navStation : null, navMode||"cycling", mapsKey);
 
-  const startNav = useCallback(async(mode)=>{
-    if (!navStation) return;
+  // `stationArg` permet de démarrer la nav sans attendre que `sel` soit reflété
+  // dans le rendu : la closure courante connaît l'ancien `sel`, et un démarrage
+  // différé par timer partait donc sur la mauvaise station — ou sur rien.
+  const startNav = useCallback(async(mode, stationArg)=>{
+    const target = stationArg ?? navStation;
+    if (!target) return;
     const navModeVal = mode === "walking" ? "walking" : "cycling";
     try {
       await launchNativeArNav(
-        navStation.lat, navStation.lng, navStation.name,
+        target.lat, target.lng, target.name,
         mode === "walking" ? "walking" : "bicycling",
         mapsKey
       );
@@ -170,17 +179,15 @@ function ARScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey=""
     const pendingMode = localStorage.getItem("velohnav_pendingNavMode");
     const pendingId   = localStorage.getItem("velohnav_pendingNavId");
     if (pendingMode && pendingId) {
+      // Les clés ne sont consommées QUE si la station est trouvée : sinon une nav
+      // en attente arrivée avant le chargement des stations était perdue.
+      const station = stations.find(s=>String(s.id)===pendingId);
+      if (!station) return;
       localStorage.removeItem("velohnav_pendingNavMode");
       localStorage.removeItem("velohnav_pendingNavId");
-      // Déclencher la navigation (startNav vérifie navStation via sel)
-      // On attend que la caméra soit prête, sinon on démarre la nav silencieusement
-      const station = stations.find(s=>String(s.id)===pendingId);
-      if (station) {
-        setSel(station.id);
-        // Petit délai pour que navStation soit bien à jour
-        const t = setTimeout(()=>startNav(pendingMode === "walking" ? "walking" : "cycling"), 300);
-        return ()=>clearTimeout(t);
-      }
+      setSel(station.id);
+      // Station passée explicitement : plus de closure périmée ni de délai arbitraire.
+      startNav(pendingMode === "walking" ? "walking" : "cycling", station);
     }
   },[stations, startNav, setSel]);
   useEffect(()=>{
@@ -299,7 +306,6 @@ function ARScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey=""
   // ── Projection AR réelle ───────────────────────────────────────
   const arPins=useMemo(()=>{
     if(heading===null||!gpsPos) return null;
-    const AR_RADIUS = 800; // m — uniquement les stations proches en AR
     const AR_MAX    = 5;   // max 5 pins à l'écran
     return stations
       .filter(s=>s.lat&&s.lng&&s.dist<=AR_RADIUS)
@@ -307,10 +313,9 @@ function ARScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey=""
         const bear=getBearing(gpsPos.lat,gpsPos.lng,s.lat,s.lng);
         const rel=((bear-heading+540)%360)-180;
         if(Math.abs(rel)>FOV/2+8) return null;
-        const x=50+(rel/(FOV/2))*50;
-        const dc=Math.min(s.dist,AR_RADIUS);
-        const y=70-(1-dc/AR_RADIUS)*44;
-        const scale=Math.max(0.5,1-dc/(AR_RADIUS*1.5));
+        const x=pinX(rel,FOV);
+        const y=pinY(s.dist,AR_RADIUS);
+        const scale=Math.max(0.5,1-Math.min(s.dist,AR_RADIUS)/(AR_RADIUS*1.5));
         return{...s,x,y,scale,labelRight:rel<0,rel};
       })
       .filter(Boolean)
@@ -334,7 +339,7 @@ function ARScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey=""
     raw.forEach((pin, i) => {
       if (used.has(i)) return;
       // Stations à moins de 200m → toujours individuelles (rayon AR limité à 800m)
-      if (pin.dist < 200) { result.push({ ...pin, cluster: null }); return; }
+      if (pin.dist < 200) { used.add(i); result.push({ ...pin, cluster: null }); return; }
       // Chercher les voisins dans le FOV
       const neighbors = raw.filter((p2, j) => {
         if (j === i || used.has(j)) return false;
@@ -467,9 +472,12 @@ function ARScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey=""
       <div style={{position:"absolute",top:10,left:"50%",transform:"translateX(-50%)",zIndex:20,pointerEvents:"none"}}>
         <div style={{background:"rgba(8,12,15,0.82)",border:`1px solid ${C.border}`,borderRadius:3,padding:"3px 14px",width:184,overflow:"hidden"}}>
           {hdg!==null?(
-            <div style={{color:C.accent,fontSize:7,fontFamily:C.fnt,letterSpacing:2,whiteSpace:"nowrap",
-              transform:`translateX(${-(hdg%60)*2.8}px)`,transition:"transform 0.08s linear"}}>
-              {"N···NE···E···SE···S···SO···O···NO···N···NE···E···SE"}
+            <div style={{display:"flex",whiteSpace:"nowrap",
+              transform:`translateX(${compassOffsetPx(hdg)}px)`,transition:"transform 0.08s linear"}}>
+              {COMPASS_STRIP.map((label, i)=>(
+                <span key={i} style={{width:LABEL_W,flex:"0 0 auto",textAlign:"center",
+                  color:C.accent,fontSize:7,fontFamily:C.fnt,letterSpacing:2}}>{label}</span>
+              ))}
             </div>
           ):(
             <div style={{color:C.muted,fontSize:7,fontFamily:C.fnt,textAlign:"center",letterSpacing:1}}>
@@ -605,10 +613,8 @@ function ARScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey=""
       {/* Pin destination dédié — affiché seulement en mode nav, projeté sur la station cible */}
       {navMode && navStation && navRel !== null && Math.abs(navRel) <= FOV/2 + 10 && (
         (() => {
-          const x = 50 + (navRel / (FOV/2)) * 50;
-          // Distance projection : proche → bas, loin → horizon
-          const dc = Math.min(navStation.dist, 800);
-          const y = Math.max(20, 60 - (1 - dc/800) * 35);
+          const x = pinX(navRel, FOV);
+          const y = pinY(navStation.dist, AR_RADIUS);
           const arriving = navStation.dist < 30;
           return (
             <div style={{
