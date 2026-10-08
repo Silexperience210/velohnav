@@ -809,7 +809,13 @@ function ARScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey=""
               <div>🚲 Vélo → <span style={{color:"#60A5FA",fontWeight:700}}>{mmSuggestion.pivotStation.name}</span> ({Math.round(mmSuggestion.distFromUser)}m)</div>
               <div style={{paddingLeft:14,color:C.muted,fontSize:8}}>déposer ici · {mmSuggestion.pivotStation.docks} docks libres</div>
               <div style={{marginTop:3}}>🚌 <span style={{color:C.warn,fontWeight:700}}>{mmSuggestion.busLine}</span> à <span style={{color:C.good,fontWeight:700}}>{mmSuggestion.busTime}</span> · {mmSuggestion.busDirection}</div>
-              <div style={{paddingLeft:14,color:C.muted,fontSize:8}}>arrêt à {mmSuggestion.stopDistFromStation}m de la station</div>
+              <div style={{paddingLeft:14,color:C.muted,fontSize:8}}>arrêt {mmSuggestion.busStop?.name ? `${mmSuggestion.busStop.name} ` : ""}à {mmSuggestion.stopDistFromStation}m de la station</div>
+              {mmSuggestion.source==="transitous" && mmSuggestion.totalMinutes!=null && (
+                <div style={{marginTop:3,color:C.muted,fontSize:8}}>
+                  ⏱ <span style={{color:C.text,fontWeight:700}}>{mmSuggestion.totalMinutes} min</span> porte-à-porte · {mmSuggestion.lines}
+                  {mmSuggestion.bikeMinutes!=null && ` · vélo direct ${mmSuggestion.bikeMinutes} min`}
+                </div>
+              )}
             </div>
           </div>
           <div style={{display:"flex",gap:6}}>

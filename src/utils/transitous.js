@@ -138,6 +138,7 @@ function parseLeg(l) {
     startTime: l.startTime ?? null,
     endTime:   l.endTime ?? null,
     realTime:  !!l.realTime,
+    cancelled: !!(l.cancelled || l.tripCancelled),
     from:      parsePlace(l.from),
     to:        parsePlace(l.to),
     coords:    g?.points ? decodePolyline(g.points, g.precision ?? 6) : [],
