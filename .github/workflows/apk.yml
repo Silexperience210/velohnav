@@ -64,6 +64,12 @@ jobs:
         # version de production et n'emet AUCUN avertissement (journal vide).
         run: npm run build -- --mode development
 
+      - name: DIAGNOSTIC - instrumenter le bundle (nommer le composant fautif)
+        # React appelle la valeur de retour d'un useEffect sans verifier son type et
+        # n'emet aucun avertissement : on accroche la fonction pour journaliser le
+        # composant concerne. Sortie via console.error -> visible dans logcat et a l'ecran.
+        run: python3 tools/diag-patch-bundle.py dist
+
       - name: Capacitor sync Android
         run: npx cap sync android
 
