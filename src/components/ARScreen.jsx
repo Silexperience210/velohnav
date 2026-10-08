@@ -18,6 +18,9 @@ import { launchNativeArNav } from "../utils.js";
 
 // Composants AR extraits (split ARScreen)
 import RouteOverlay from "./ar/RouteOverlay.jsx";
+import NavHud, { hudFigures } from "./ar/NavHud.jsx";
+import { progressFor } from "./ar/navProgress.js";
+import { Icon } from "../ui/icons.jsx";
 import NavOverlay from "./ar/NavOverlay.jsx";
 import CityBG from "./ar/CityBG.jsx";
 import ARPin from "./ar/ARPin.jsx";
@@ -87,6 +90,16 @@ function ARScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey=""
   },[navStation, mapsKey]);
 
   const stopNav = useCallback(()=>setNavMode(null),[]);
+
+  // ── Progression dans les étapes — partagée par le tracé et le HUD ──
+  // L'étape est liée à l'itinéraire auquel elle se rapporte (navProgress).
+  const [prog, setProg] = useState({ route: null, step: 0 });
+  const step = prog.route === route ? prog.step : 0;
+  useEffect(()=>{
+    if (!route || !gpsPos) return;
+    const next = progressFor(prog, route, gpsPos);
+    if (next.route !== prog.route || next.step !== prog.step) setProg(next);
+  },[gpsPos, route, prog]);
 
   // ── Origin station snapshot — figée au lancement de la nav ─────────
   // Sert de clé "départ" pour le Ghost Trail. On prend la station la plus
@@ -461,6 +474,10 @@ function ARScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey=""
     return relBearing(getBearing(gpsPos.lat,gpsPos.lng,navStation.lat,navStation.lng),heading);
   },[navStation,gpsPos,heading]);
 
+  // Valeurs du HUD (arrivée, restant…) — aussi utilisées par le tracé
+  const navFigures = useMemo(()=>navMode ? hudFigures({ route, step, gpsPos, mode: navMode, weather }) : null,
+    [navMode, route, step, gpsPos, weather]);
+
   // % 360 : 359,7° s'affichait « 360° » au lieu de « 0° »
   const hdg=heading!==null?Math.round(heading)%360:null;
   const cardLabel=hdg!==null?COMPASS_LABELS[Math.round(hdg/45)%8]:"?";
@@ -506,11 +523,19 @@ function ARScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey=""
         <RouteOverlay
           key={`${navStation?.id}-${navMode}`}
           route={route} gpsPos={gpsPos} heading={heading}
-          mode={navMode} onClose={stopNav} weather={weather}
-          spatialAudio={spatialAudio}
-          offRoute={offRoute} recalculating={recalculating}
-          manualRecalc={manualRecalc}
+          mode={navMode} step={step} arriving={!!navFigures?.arriving}
           isNight={isNight} fov={fov}
+        />
+      )}
+      {/* HUD de navigation — design system (src/ui/arHud.jsx) */}
+      {navMode&&navStation&&(
+        <NavHud
+          route={route} step={step} gpsPos={gpsPos} mode={navMode} weather={weather}
+          navStation={navStation} onStop={stopNav} spatialAudio={spatialAudio}
+          offRoute={offRoute} recalculating={recalculating} manualRecalc={manualRecalc}
+          mmSuggestion={mmSuggestion} onMmAccept={acceptMultimodalSwitch} onMmDismiss={mmDismiss}
+          predSuggestion={predSuggestion} navIntent={navIntent}
+          onPredAccept={acceptPredictiveSwitch} onPredDismiss={predDismiss}
         />
       )}
       {/* Chargement itinéraire */}
@@ -624,7 +649,7 @@ function ARScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey=""
       )}
 
       {/* Status bar boussole (cam active) */}
-      {cam==="active"&&(
+      {cam==="active"&&!navMode&&(
         <div style={{position:"absolute",top:44,left:12,zIndex:20,pointerEvents:"none"}}>
           <div style={{background:`rgba(0,0,0,0.55)`,border:`1px solid ${cs.col}30`,
             borderRadius:3,padding:"3px 8px"}}>
@@ -715,7 +740,8 @@ function ARScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey=""
                   marginBottom: 2,
                   fontWeight: 700,
                 }}>
-                  {arriving ? "🎯 ARRIVÉE" : "🏁 DESTINATION"}
+                  <Icon name="flag" size={11} stroke={2.2} style={{verticalAlign:"-2px",marginRight:4}}/>
+                  {arriving ? t("ui.nav.arrive") : t("ui.nav.dest")}
                 </div>
                 <div style={{
                   color: "#fff", fontSize: 11, fontFamily: C.fnt, fontWeight: 700,
@@ -729,7 +755,7 @@ function ARScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey=""
                   fontSize: 9, fontFamily: C.fnt, marginTop: 3,
                 }}>
                   {fDist(navStation.dist)} · {navIntent === "dropoff" ? navStation.docks : navStation.bikes}{" "}
-                  {navIntent === "dropoff" ? "🅿" : "🚲"}
+                  <Icon name={navIntent === "dropoff" ? "dock" : "bike"} size={12} stroke={2} style={{verticalAlign:"-2px"}}/>
                 </div>
               </div>
               {/* Tige descendante vers le sol */}
@@ -845,197 +871,15 @@ function ARScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey=""
         </div>
       ))}
 
-      {/* Bannière multimodal switch — bascule vélo→bus si pluie en cours.
-          Priorité haute, placée au-dessus de la bannière prédictive. */}
-      {mmSuggestion && navMode === "cycling" && (
-        <div style={{
-          position:"absolute", bottom: predSuggestion ? 220 : 84, left:14, right:14,
-          zIndex:26,
-          background:"linear-gradient(135deg, rgba(0,16,40,0.97), rgba(8,12,15,0.97))",
-          border:`2px solid #60A5FA`,
-          borderRadius:10, padding:"11px 13px",
-          boxShadow:`0 0 24px #60A5FA66, 0 4px 16px rgba(0,0,0,0.7)`,
-          animation:"mmSlideUp 0.4s ease-out",
-        }}>
-          <style>{`
-            @keyframes mmSlideUp {
-              from { transform: translateY(20px); opacity: 0; }
-              to   { transform: translateY(0); opacity: 1; }
-            }
-          `}</style>
-          <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:8}}>
-            <span style={{fontSize:18}}>🌧️</span>
-            <div style={{flex:1,minWidth:0}}>
-              <div style={{color:"#60A5FA",fontSize:8,fontFamily:C.fnt,letterSpacing:1.5,fontWeight:700}}>
-                MÉTÉO DÉGRADE · BASCULE BUS RECOMMANDÉE
-              </div>
-              <div style={{color:C.muted,fontSize:8,fontFamily:C.fnt,marginTop:1}}>
-                {mmSuggestion.reason}
-              </div>
-            </div>
-          </div>
-          <div style={{
-            background:"rgba(0,0,0,0.4)", border:`1px solid ${C.border}`,
-            borderRadius:6, padding:"8px 10px", marginBottom:8,
-          }}>
-            <div style={{color:C.muted,fontSize:7,fontFamily:C.fnt,letterSpacing:1.2,marginBottom:4}}>
-              ITINÉRAIRE COMBINÉ:
-            </div>
-            <div style={{color:C.text,fontSize:10,fontFamily:C.fnt,lineHeight:1.6}}>
-              <div>🚲 Vélo → <span style={{color:"#60A5FA",fontWeight:700}}>{mmSuggestion.pivotStation.name}</span> ({Math.round(mmSuggestion.distFromUser)}m)</div>
-              <div style={{paddingLeft:14,color:C.muted,fontSize:8}}>déposer ici · {mmSuggestion.pivotStation.docks} docks libres</div>
-              <div style={{marginTop:3}}>🚌 <span style={{color:C.warn,fontWeight:700}}>{mmSuggestion.busLine}</span> à <span style={{color:C.good,fontWeight:700}}>{mmSuggestion.busTime}</span> · {mmSuggestion.busDirection}</div>
-              <div style={{paddingLeft:14,color:C.muted,fontSize:8}}>arrêt {mmSuggestion.busStop?.name ? `${mmSuggestion.busStop.name} ` : ""}à {mmSuggestion.stopDistFromStation}m de la station</div>
-              {mmSuggestion.source==="transitous" && mmSuggestion.totalMinutes!=null && (
-                <div style={{marginTop:3,color:C.muted,fontSize:8}}>
-                  ⏱ <span style={{color:C.text,fontWeight:700}}>{mmSuggestion.totalMinutes} min</span> porte-à-porte · {mmSuggestion.lines}
-                  {mmSuggestion.bikeMinutes!=null && ` · vélo direct ${mmSuggestion.bikeMinutes} min`}
-                </div>
-              )}
-            </div>
-          </div>
-          <div style={{display:"flex",gap:6}}>
-            <div onPointerDown={acceptMultimodalSwitch}
-              style={{
-                flex:2, textAlign:"center", padding:"8px 0",
-                background:"rgba(96,165,250,0.18)", border:`1px solid #60A5FA`,
-                borderRadius:5, cursor:"pointer",
-              }}>
-              <span style={{color:"#60A5FA",fontSize:9,fontFamily:C.fnt,fontWeight:700,letterSpacing:1.5}}>
-                BASCULER VERS PIVOT
-              </span>
-            </div>
-            <div onPointerDown={mmDismiss}
-              style={{
-                flex:1, textAlign:"center", padding:"8px 0",
-                background:"rgba(255,255,255,0.04)", border:`1px solid ${C.border}`,
-                borderRadius:5, cursor:"pointer",
-              }}>
-              <span style={{color:C.muted,fontSize:9,fontFamily:C.fnt,letterSpacing:1.5}}>
-                CONTINUER
-              </span>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Bannière suggestion prédictive — re-route auto si station saturée */}
-      {predSuggestion && navMode && (
-        <div style={{
-          position:"absolute", bottom:84, left:14, right:14,
-          zIndex:25,
-          background:"linear-gradient(135deg, rgba(20,12,0,0.97), rgba(8,12,15,0.97))",
-          border:`2px solid ${C.warn}`,
-          borderRadius:10, padding:"11px 13px",
-          boxShadow:`0 0 24px ${C.warn}55, 0 4px 16px rgba(0,0,0,0.6)`,
-          animation:"predSlideUp 0.35s ease-out",
-        }}>
-          <style>{`
-            @keyframes predSlideUp {
-              from { transform: translateY(20px); opacity: 0; }
-              to   { transform: translateY(0); opacity: 1; }
-            }
-          `}</style>
-          <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:7}}>
-            <span style={{fontSize:16}}>⚠️</span>
-            <div style={{flex:1,minWidth:0}}>
-              <div style={{color:C.warn,fontSize:8,fontFamily:C.fnt,letterSpacing:1.5,fontWeight:700}}>
-                STATION SATURÉE · ALTERNATIVE TROUVÉE
-              </div>
-              <div style={{color:C.muted,fontSize:8,fontFamily:C.fnt,marginTop:1}}>
-                {predSuggestion.reason}
-              </div>
-            </div>
-          </div>
-          <div style={{
-            background:"rgba(0,0,0,0.35)", border:`1px solid ${C.border}`,
-            borderRadius:6, padding:"7px 10px", marginBottom:7,
-          }}>
-            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-              <div style={{minWidth:0,flex:1}}>
-                <div style={{color:C.text,fontSize:11,fontFamily:C.fnt,fontWeight:700,
-                  whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>
-                  {predSuggestion.station.name}
-                </div>
-                <div style={{color:C.muted,fontSize:8,fontFamily:C.fnt,marginTop:2,letterSpacing:1}}>
-                  {predSuggestion.detourMeters > 0 ? "+" : ""}{predSuggestion.detourMeters}m détour ·
-                  {" "}{predSuggestion.stockAvailable} {navIntent === "dropoff" ? "docks libres" : "vélos"}
-                </div>
-              </div>
-              <div style={{
-                background:`${C.good}22`, border:`1px solid ${C.good}66`,
-                borderRadius:4, padding:"3px 7px",
-                color:C.good, fontSize:11, fontFamily:C.fnt, fontWeight:700,
-              }}>
-                ✓ {predSuggestion.stockAvailable}
-              </div>
-            </div>
-          </div>
-          <div style={{display:"flex",gap:6}}>
-            <div onPointerDown={acceptPredictiveSwitch}
-              style={{
-                flex:2, textAlign:"center", padding:"8px 0",
-                background:`${C.accent}22`, border:`1px solid ${C.accent}`,
-                borderRadius:5, cursor:"pointer",
-              }}>
-              <span style={{color:C.accent,fontSize:9,fontFamily:C.fnt,fontWeight:700,letterSpacing:1.5}}>
-                BASCULER
-              </span>
-            </div>
-            <div onPointerDown={predDismiss}
-              style={{
-                flex:1, textAlign:"center", padding:"8px 0",
-                background:"rgba(255,255,255,0.04)", border:`1px solid ${C.border}`,
-                borderRadius:5, cursor:"pointer",
-              }}>
-              <span style={{color:C.muted,fontSize:9,fontFamily:C.fnt,letterSpacing:1.5}}>
-                IGNORER
-              </span>
-            </div>
-          </div>
-        </div>
-      )}
+      {/* Bascule multimodale et suggestion prédictive : dans le HUD (NavHud) */}
 
       {/* Bottom panel */}
-      <div style={{position:"absolute",bottom:0,left:0,right:0,padding:"0 14px 14px",zIndex:22}}>
+      <div style={{position:"absolute",bottom:0,left:0,right:0,padding:"0 14px 14px",zIndex:22,display:navMode&&navStation?"none":undefined}}>
         {/* Mode NAV ACTIVE — bandeau ultra-compact pour libérer la vue AR.
             Le détail de la station n'est plus affiché : la nav prend toute la place.
             Seul un bouton "ARRÊTER" reste accessible. */}
-        {navMode && navStation ? (
-          <div style={{
-            background:"rgba(8,12,15,0.85)",
-            border:`1px solid ${C.border}`,
-            borderTop:`2px solid ${bCol(navStation)}`,
-            borderRadius:8,
-            padding:"7px 12px",
-            display:"flex", alignItems:"center", justifyContent:"space-between",
-            gap:10,
-            backdropFilter:"blur(4px)",
-          }}>
-            <div style={{display:"flex",flexDirection:"column",minWidth:0,flex:1}}>
-              <div style={{
-                color:C.muted, fontSize:7, fontFamily:C.fnt, letterSpacing:1.5,
-                marginBottom:1,
-              }}>
-                {navMode === "walking" ? "🚶 PIED" : "🚲 VÉLO"} · DEST.
-              </div>
-              <div style={{
-                color:C.text, fontSize:11, fontFamily:C.fnt, fontWeight:700,
-                whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis",
-              }}>{navStation.name}</div>
-            </div>
-            <div onPointerDown={stopNav}
-              style={{
-                padding:"6px 12px",
-                background:`${C.bad}15`, border:`1px solid ${C.bad}66`,
-                borderRadius:5, cursor:"pointer", whiteSpace:"nowrap",
-              }}>
-              <span style={{color:C.bad,fontSize:8,fontFamily:C.fnt,fontWeight:700,letterSpacing:1}}>
-                {t("ar.nav_stop")}
-              </span>
-            </div>
-          </div>
-        ) : navStation ? (
+        {/* Nav active : la destination et « Arrêter » sont dans le HUD (NavHud) */}
+        {navMode && navStation ? null : navStation ? (
           <div style={{background:"rgba(8,12,15,0.97)",borderRadius:8,padding:"13px 15px",
             border:`1px solid ${C.border}`,borderTop:`2px solid ${bCol(navStation)}`,
             boxShadow:"0 -4px 24px rgba(0,0,0,0.85)"}}>
@@ -1056,8 +900,8 @@ function ARScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey=""
             <div style={{display:"flex",borderTop:`1px solid ${C.border}`,paddingTop:11}}>
               {[
                 {l:t("station.bikes"),v:navStation.bikes,col:bCol(navStation)},
-                {l:"⚡ ÉLEC.",v:navStation.elec, col:"#60A5FA"},
-                {l:"🔧 MÉCA.",v:navStation.meca, col:C.text},
+                {l:"ÉLEC.",v:navStation.elec, col:"#60A5FA"},
+                {l:"MÉCA.",v:navStation.meca, col:C.text},
                 {l:t("station.docks"),v:navStation.docks,col:C.good},
                 {l:t("station.capacity"),  v:navStation.cap,  col:C.muted},
               ].map((m,i)=>(
@@ -1073,14 +917,14 @@ function ARScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey=""
                 style={{flex:1,display:"flex",alignItems:"center",justifyContent:"center",gap:5,
                   background:"rgba(59,130,246,0.12)",border:`1px solid #3B82F644`,
                   borderRadius:6,padding:"8px 0",cursor:"pointer"}}>
-                <span style={{fontSize:13}}>🚲</span>
+                <Icon name="bike" size={16} style={{color:"#3B82F6"}}/>
                 <span style={{color:"#3B82F6",fontSize:8,fontFamily:C.fnt,fontWeight:700,letterSpacing:1}}>{t("ar.nav_cycling")}</span>
               </div>
               <div role="button" onClick={()=>{ warmUpAudio?.(); startNav("walking"); }}
                 style={{flex:1,display:"flex",alignItems:"center",justifyContent:"center",gap:5,
                   background:"rgba(167,139,250,0.12)",border:`1px solid #A78BFA44`,
                   borderRadius:6,padding:"8px 0",cursor:"pointer"}}>
-                <span style={{fontSize:13}}>🚶</span>
+                <Icon name="walk" size={16} style={{color:"#A78BFA"}}/>
                 <span style={{color:"#A78BFA",fontSize:8,fontFamily:C.fnt,fontWeight:700,letterSpacing:1}}>{t("ar.nav_walking")}</span>
               </div>
             </div>
