@@ -15,7 +15,7 @@
     "@capacitor/android": "^8.3.0",
     "@capacitor/core": "^8.3.0",
     "@capacitor/geolocation": "^8.2.0",
-    "@huggingface/transformers": "^3.4.0",
+    "@huggingface/transformers": "^4.3.1",
     "@noble/hashes": "^1.8.0",
     "@noble/secp256k1": "^3.1.0",
     "@sentry/react": "^10.49.0",
