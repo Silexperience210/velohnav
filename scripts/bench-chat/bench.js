@@ -6,9 +6,10 @@ import { VARIANTS } from "../../src/ai/modelPolicy.js";
 import { TOOLS } from "../../src/ai/tools.js";
 import { systemPrompt, resolveModelOutput } from "../../src/ai/assistant.js";
 import { answerLocally } from "../../src/ai/localAnswers.js";
-import { cleanReply } from "../../src/ai/localModel.js";
+import { cleanReply, generationOptions } from "../../src/ai/localModel.js";
+import { readModelOutput } from "../../src/ai/tools.js";
 import fr from "../../src/locales/fr.js";
-import { QUESTIONS, CONFIGS } from "./cases.js";
+import { QUESTIONS, CONFIGS, CONVERSATION } from "./cases.js";
 
 const t = (k, p = {}) => String(fr[k] ?? k).replace(/\{(\w+)\}/g, (_, n) => p[n] ?? "");
 const params = new URLSearchParams(location.search);
@@ -41,6 +42,33 @@ try {
   await send({ type: "meta", device: variant.device, dtype: variant.dtype, probe: p, ua: navigator.userAgent });
   // Contexte vide : un outil appelé retombe sur l'assistant déterministe, ce n'est pas l'objet du banc.
   const ctx = { stations: [], t, now: new Date() };
+  if (params.get("mode") === "conversation") {
+    // Conversation réelle (cases.CONVERSATION), comme AIScreen.sendText : historique de
+    // CHAT_TURNS messages où n'entrent que les réponses libres montrées, options de
+    // l'application. Une erreur du worker est rapportée telle quelle (l'application,
+    // elle, la rattrapait sans rien dire).
+    let aiHistory = [];
+    for (const q of CONVERSATION) {
+      const local = answerLocally(q, { t, stations: [] });
+      const hist = [...aiHistory, { role: "user", content: q }].slice(-6);
+      const messages = [{ role: "system", content: systemPrompt(t) }, ...hist];
+      const t0 = performance.now();
+      const out = await generate(messages, generationOptions({ maxNewTokens: Number(params.get("max")) || 96 }));
+      const ms = Math.round(performance.now() - t0);
+      const raw = out.text ?? "";
+      const cleaned = cleanReply(raw);
+      const read = out.error ? null : readModelOutput(cleaned);
+      const shown = out.error ? { source: "fallback", reason: "generate", text: local.text }
+        : resolveModelOutput(cleaned, ctx, local);
+      await send({ type: "row", cfg: "conversation", q, reachesModel: local.unknown === true, raw, error: out.error, ms,
+                   cleaned, read: read && (read.kind === "invalid" ? `invalid:${read.reason}` : read.kind),
+                   source: shown.source, reason: shown.reason, shown: shown.text });
+      if (shown.source === "model") aiHistory = [...hist, { role: "assistant", content: shown.text }];
+      log(`${q} → ${out.error ? "ERREUR " + out.error : raw}`);
+    }
+    await send({ type: "done" });
+    throw null;
+  }
   for (const cfg of CONFIGS.filter((c) => !only || only.includes(c.id))) {
     for (const q of QUESTIONS) {
       const local = answerLocally(q, { t, stations: [] });
@@ -56,6 +84,6 @@ try {
     }
   }
 } catch (e) {
-  await send({ type: "fatal", message: String(e?.message || e) });
+  if (e !== null) await send({ type: "fatal", message: String(e?.message || e) });
 }
 await send({ type: "done" });

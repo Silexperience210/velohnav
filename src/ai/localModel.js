@@ -247,6 +247,17 @@ export function cleanReply(text) {
 }
 
 /**
+ * Options de génération transmises au worker. Exportées pour que les bancs
+ * (scripts/bench-chat) mesurent exactement ce que fait l'application.
+ */
+export function generationOptions(opts = {}) {
+  return {
+    max_new_tokens: opts.maxNewTokens ?? 256,
+    do_sample: false, // greedy = déterministe, fiable pour les appels d'outils
+  };
+}
+
+/**
  * Génère une réponse à partir du system prompt + historique de conversation.
  * Bornée dans le temps : au-delà de LIMITS.generateMs, le worker est arrêté (il sera
  * recréé, depuis le cache, à la prochaine demande).
@@ -272,10 +283,7 @@ export async function generate(system, history, opts = {}) {
         id,
         messages,
         tools: opts.tools,
-        options: {
-          max_new_tokens: opts.maxNewTokens ?? 256,
-          do_sample: false, // greedy = déterministe, fiable pour les appels d'outils
-        },
+        options: generationOptions(opts),
       });
     }),
     LIMITS.generateMs,

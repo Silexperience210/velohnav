@@ -2,22 +2,28 @@
 // Banc « conversation libre » dans un vrai navigateur (Chrome headless, WebGPU ou WASM),
 // avec le worker et le chemin d'affichage de l'application.
 //
-//   [HEADLESS=0] node scripts/bench-chat/run.mjs [webgpu|wasm] [config,config…] [dossier-modèle]
+//   [HEADLESS=0] node scripts/bench-chat/run.mjs [webgpu|wasm] [config,config…|conversation] [dossier-modèle]
+//
+// « conversation » : la conversation réelle de cases.CONVERSATION, sur plusieurs tours,
+// avec les options de l'application (voir bench.js).
 //
 // Le modèle est lu en local (aucun téléchargement) : dossier contenant
 // LFM2.5-350M-ONNX/ (config.json, tokenizer*, chat_template.jinja, onnx/…),
 // par défaut ~/.cache/vn-models/onnx-community. Les résultats (JSON) vont dans
-// /tmp/vn-bench-<device>.json et un résumé s'affiche.
+// $TMPDIR/vn-bench-<device>.json et un résumé s'affiche.
 import { build } from "vite";
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
+import os from "node:os";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const [device = "webgpu", configs = "", modelsDir = `${process.env.HOME}/.cache/vn-models/onnx-community`] = process.argv.slice(2);
-const out = `/tmp/vn-bench-dist`;
+// Dossier temporaire du système (TMPDIR) : /tmp peut être un tmpfs plein.
+const tmp = os.tmpdir();
+const out = path.join(tmp, "vn-bench-dist");
 await build({ root: here, base: "./", logLevel: "warn", configFile: false,
   worker: { format: "es" }, build: { outDir: out, emptyOutDir: true, target: "es2022" } });
 
@@ -33,7 +39,13 @@ const server = http.createServer((req, res) => {
     req.on("end", () => {
       const m = JSON.parse(body);
       if (m.type === "meta") { meta = m; console.log(`[banc] ${m.device}/${m.dtype}`, JSON.stringify(m.probe)); }
-      else if (m.type === "row") { rows.push(m); console.log(`[${m.cfg}] ${m.q}\n   brut : ${JSON.stringify(m.raw)}\n   affiché (${m.source}${m.reason ? ":" + m.reason : ""}) : ${JSON.stringify(m.shown)}  ${m.ms} ms`); }
+      else if (m.type === "row") {
+        rows.push(m);
+        console.log(`[${m.cfg}] ${m.q}${m.reachesModel ? "" : "  (reconnu sans modèle)"}\n   brut : ${JSON.stringify(m.raw)}`
+          + (m.error ? `\n   ERREUR du worker : ${m.error}` : "")
+          + (m.read ? `\n   nettoyé : ${JSON.stringify(m.cleaned)}  → lecture ${m.read}` : "")
+          + `\n   affiché (${m.source}${m.reason ? ":" + m.reason : ""}) : ${JSON.stringify(m.shown)}  ${m.ms} ms`);
+      }
       else if (m.type === "fatal") { console.error("[banc] échec :", m.message); }
       else if (m.type === "done") finish();
       res.end("ok");
@@ -51,19 +63,21 @@ const server = http.createServer((req, res) => {
 });
 await new Promise((r) => server.listen(0, "127.0.0.1", r));
 const port = server.address().port;
-const profile = fs.mkdtempSync("/tmp/vn-bench-chrome-");
+const profile = fs.mkdtempSync(path.join(tmp, "vn-bench-chrome-"));
 const chrome = spawn(process.env.CHROME || "google-chrome", [
   // Sans écran, Chrome n'a que SwiftShader (pas de shader-f16) : HEADLESS=0 ouvre une
   // fenêtre pour atteindre le vrai GPU.
   ...(process.env.HEADLESS === "0" ? ["--ozone-platform-hint=auto"] : ["--headless=new"]), `--user-data-dir=${profile}`, "--no-first-run", "--enable-unsafe-webgpu",
   "--enable-features=Vulkan", "--ignore-gpu-blocklist",
   ...(process.env.CHROME_FLAGS ? process.env.CHROME_FLAGS.split(" ") : []),
-  `http://127.0.0.1:${port}/index.html?device=${device}${configs ? `&configs=${configs}` : ""}`,
+  `http://127.0.0.1:${port}/index.html?device=${device}${configs === "conversation" ? "&mode=conversation" : configs ? `&configs=${configs}` : ""}`,
 ], { stdio: "ignore" });
 await finished;
 chrome.kill();
 server.close();
-fs.writeFileSync(`/tmp/vn-bench-${device}.json`, JSON.stringify({ meta, rows }, null, 1));
+// Profil jetable : il contient une copie du modèle (cache), des centaines de Mo.
+setTimeout(() => fs.rmSync(profile, { recursive: true, force: true }), 1000);
+fs.writeFileSync(path.join(tmp, `vn-bench-${device}.json`), JSON.stringify({ meta, rows }, null, 1));
 const by = Object.groupBy(rows, (r) => r.cfg);
 console.log("\nRésumé (" + device + ") : configuration → montrées / repli (raisons)");
 for (const [cfg, list] of Object.entries(by)) {

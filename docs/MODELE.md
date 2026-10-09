@@ -126,6 +126,38 @@ Ce que les modèles ratent :
 | Hammer 2.1 0.5B | **CC-BY-NC-4.0** | **Usage commercial interdit**, ce qui l'exclut pour une application distribuée |
 | Qwen3-0.6B, Qwen2.5-0.5B, SmolLM2 | Apache-2.0 | Joindre la licence et les notices |
 
+## Conversation libre : le cas « Je suis Silex », mesuré
+
+Symptôme rapporté : modèle « prêt », question libre, et la bulle affiche le texte de repli
+(« Sans modèle, je réponds… ») sans aucune erreur.
+
+**Méthode :** `node scripts/bench-chat/repro-conversation.mjs <dtype> <device>` (Node) et
+`node scripts/bench-chat/run.mjs <webgpu|wasm> conversation` (Chrome, worker de
+l'application). Même conversation sur six tours (`cases.CONVERSATION`), même historique,
+mêmes options (`generationOptions`, 96 jetons, glouton), même chemin `cleanReply` →
+`resolveModelOutput`.
+
+| Chemin | Chargement | « Je suis Silex » : sortie brute | Affiché |
+|---|---|---|---|
+| Node, q4, CPU | oui | `"Comment puis-je vous aider aujourd'hui ?<\|im_end\|>"` (10 jetons, fin de tour) | réponse du modèle, 6/6 tours |
+| Node, q4f16, WebGPU natif (Dawn, vrai GPU) | oui | identique | réponse du modèle, 6/6 tours |
+| Chrome, q4, WASM | **non** : `GatherBlockQuantized` sans implémentation, la session ne se crée pas | — | — |
+| Chrome, q4f16, WebGPU sans `shader-f16` (forcé) | **oui** | **vide** : erreur `OrtRun` à chaque génération (`Sub requires f16`) | repli `generate`, 0/6, **aucune erreur montrée** |
+
+Ce qui est établi :
+- la sortie du modèle n'est ni tronquée ni réduite à du balisage : 10 à 51 jetons sur 96,
+  toujours terminée par `<|im_end|>`, acceptée par `checkFreeText` ;
+- dans le navigateur, seule la variante q4f16 sur WebGPU peut être « prête » : le téléphone
+  qui affiche « prêt » est sur ce chemin ;
+- **une session peut se charger et échouer à chaque génération.** L'application rattrapait
+  alors l'erreur (`ModelError` « generate ») et affichait le repli sans rien dire : seul
+  `generate_timeout` était signalé. « Aucune erreur affichée » ne prouvait donc pas que le
+  modèle avait répondu.
+
+Ce qui reste supposé (aucune mesure sur téléphone) : la cause exacte sur l'appareil du
+propriétaire — une erreur de génération WebGPU propre à son GPU (cas le plus cohérent avec
+les mesures) ou une réponse rejetée par `checkFreeText`. L'interface dit désormais laquelle.
+
 ## Ce qui n'a pas été mesuré
 
 - Aucune mesure sur téléphone (mémoire, vitesse, WebGPU). Toutes les mesures RSS viennent de

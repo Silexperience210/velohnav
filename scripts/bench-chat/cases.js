@@ -20,3 +20,14 @@ export const CONFIGS = [
   { id: "liquid", label: "carte Liquid : T 0.1, top_k 50, rp 1.05", options: { do_sample: true, temperature: 0.1, top_k: 50, repetition_penalty: 1.05 } },
   { id: "T0.7", label: "T 0.7, top_p 0.9 (température haute)", options: { do_sample: true, temperature: 0.7, top_p: 0.9 } },
 ];
+
+// Conversation réelle rapportée sur téléphone (repro-conversation.mjs) : plusieurs tours
+// libres enchaînés, dont la présentation « Je suis Silex ».
+export const CONVERSATION = [
+  "Bonjour",
+  "Je suis Silex",
+  "Tu te souviens de mon prénom ?",
+  "Qui es-tu ?",
+  "Merci beaucoup pour ton aide !",
+  "Raconte-moi une blague sur le vélo.",
+];
