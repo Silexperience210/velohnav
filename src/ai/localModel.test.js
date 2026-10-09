@@ -3,9 +3,9 @@ import { chooseVariant } from "./localModel.js";
 
 // Le choix de quantification est fait sur l'appareil.
 //
-// Mesuré : q4 = 1,7 Go, q4f16 = 1,17 Go sur le dépôt du modèle. Et vérifié à
-// l'exécution : dans un navigateur sans adaptateur WebGPU, demander q4f16 fait
-// échouer le chargement du modèle — la variante q4, elle, fonctionne sur WASM.
+// Mesuré sur le dépôt du modèle (Qwen2.5-0.5B) : q4f16 = 483 Mo, q8 = 512 Mo. Et
+// vérifié à l'exécution (sur le 1.5B) : dans un navigateur sans adaptateur WebGPU,
+// demander q4f16 fait échouer le chargement — une variante WASM, elle, fonctionne.
 // D'où cette décision : la plus légère quand l'appareil a un vrai GPU, la
 // compatible sinon. Aucun appareil ne se retrouve avec un modèle qui ne charge pas.
 describe("choix de la quantification selon l'appareil", () => {
@@ -13,14 +13,14 @@ describe("choix de la quantification selon l'appareil", () => {
     const v = chooseVariant(true);
     expect(v.dtype).toBe("q4f16");
     expect(v.device).toBe("webgpu");
-    expect(v.mb).toBe(1165);
+    expect(v.mb).toBe(483);
   });
 
-  it("sans adaptateur : q4 sur WASM, la seule qui fonctionne", () => {
+  it("sans adaptateur : q8 sur WASM, la seule qui fonctionne", () => {
     const v = chooseVariant(false);
-    expect(v.dtype).toBe("q4");
+    expect(v.dtype).toBe("q8");
     expect(v.device).toBe("wasm");
-    expect(v.mb).toBe(1704);
+    expect(v.mb).toBe(512);
   });
 
   it("la variante légère est réservée au WebGPU, jamais choisie sur WASM", () => {
@@ -51,7 +51,9 @@ const GOOD_PROBE = {
   adapter: true, isFallbackAdapter: false, features: ["shader-f16"],
   limits: { maxBufferSize: 2 ** 31, maxStorageBufferBindingSize: 2 ** 31 }, device: { ok: true },
 };
-const MB = 1_165_000_000;
+const MB = 483_000_000;
+// Le contrôle mémoire précède la création du worker (asynchrone)
+const flush = () => vi.advanceTimersByTimeAsync(0);
 const progress = (file, loaded, total) => ({ type: "progress", ev: { status: "progress", file, loaded, total } });
 
 describe("façade : un chargement ne peut plus rester figé", () => {
@@ -73,6 +75,7 @@ describe("façade : un chargement ne peut plus rester figé", () => {
     const pcts = [], phases = [];
     const p = mod.loadModel((x) => pcts.push(x), (x) => phases.push(x));
     const outcome = p.then(() => "resolved", (e) => e);
+    await flush();
     const w = FakeWorker.all[0];
     expect(w.sent[0]).toEqual({ type: "probe" });
     w.emit({ type: "probe", probe: GOOD_PROBE });
@@ -87,18 +90,19 @@ describe("façade : un chargement ne peut plus rester figé", () => {
 
     await vi.advanceTimersByTimeAsync(3_000);
     const e = await outcome;
-    expect(e).toMatchObject({ name: "ModelError", code: "webgpu_init_timeout", seconds: 180, mb: 1704 });
+    expect(e).toMatchObject({ name: "ModelError", code: "webgpu_init_timeout", seconds: 180, mb: 512 });
     expect(w.terminated).toBe(true);
     expect(store.get("velohnav_ai_webgpu_ko")).toBeTruthy();
-    expect(mod.chatModelMB()).toBe(1704); // l'interface annonce la taille du repli
+    expect(mod.chatModelMB()).toBe(512); // l'interface annonce la taille du repli
     expect(mod.isModelReady()).toBe(false);
 
-    // « Réessayer » : worker neuf, plus de sonde, directement WASM / q4.
+    // « Réessayer » : worker neuf, plus de sonde, directement WASM / q8.
     const retry = mod.loadModel();
+    await flush();
     const w2 = FakeWorker.all[1];
     expect(w2).not.toBe(w);
-    expect(w2.sent).toEqual([{ type: "load", variant: expect.objectContaining({ dtype: "q4", device: "wasm" }) }]);
-    w2.emit(progress("onnx/model_q4.onnx", 10, 10));
+    expect(w2.sent).toEqual([{ type: "load", variant: expect.objectContaining({ dtype: "q8", device: "wasm" }) }]);
+    w2.emit(progress("onnx/model_quantized.onnx", 10, 10));
     w2.emit({ type: "ready" });
     await expect(retry).resolves.toBeUndefined();
     expect(mod.isModelReady()).toBe(true);
@@ -106,15 +110,17 @@ describe("façade : un chargement ne peut plus rester figé", () => {
 
   it("sonde défavorable : WASM d'emblée, un seul téléchargement", async () => {
     mod.loadModel().catch(() => {});
+    await flush();
     const w = FakeWorker.all[0];
     w.emit({ type: "probe", probe: { ...GOOD_PROBE, limits: { maxBufferSize: 2 ** 28, maxStorageBufferBindingSize: 2 ** 27 } } });
     const loads = w.sent.filter((m) => m.type === "load");
     expect(loads).toHaveLength(1);
-    expect(loads[0].variant.dtype).toBe("q4");
+    expect(loads[0].variant.dtype).toBe("q8");
   });
 
   it("coupure réseau pendant le téléchargement : échec explicite, GPU non condamné", async () => {
     const outcome = mod.loadModel().then(() => "resolved", (e) => e);
+    await flush();
     const w = FakeWorker.all[0];
     w.emit({ type: "probe", probe: GOOD_PROBE });
     w.emit(progress("onnx/model_q4f16.onnx", 1000, MB));
@@ -127,8 +133,9 @@ describe("façade : un chargement ne peut plus rester figé", () => {
   it("erreur remontée par le worker : rapportée avec sa raison, pas avalée", async () => {
     store.set("velohnav_ai_webgpu_ko", "1");
     const outcome = mod.loadModel().then(() => "resolved", (e) => e);
+    await flush();
     const w = FakeWorker.all[0];
-    w.emit(progress("onnx/model_q4.onnx", 5, 5));
+    w.emit(progress("onnx/model_quantized.onnx", 5, 5));
     w.emit({ type: "error", message: "RangeError: Array buffer allocation failed" });
     expect(await outcome).toMatchObject({ code: "wasm_init", detail: "RangeError: Array buffer allocation failed" });
     expect(w.terminated).toBe(true);
@@ -137,6 +144,7 @@ describe("façade : un chargement ne peut plus rester figé", () => {
   it("une réponse qui ne vient jamais : délai, worker arrêté, erreur generate_timeout", async () => {
     store.set("velohnav_ai_webgpu_ko", "1");
     const loading = mod.loadModel();
+    await flush();
     const w = FakeWorker.all[0];
     w.emit({ type: "ready" });
     await loading;
@@ -152,6 +160,7 @@ describe("façade : un chargement ne peut plus rester figé", () => {
   it("une réponse normale traverse le worker et est nettoyée", async () => {
     store.set("velohnav_ai_webgpu_ko", "1");
     const loading = mod.loadModel();
+    await flush();
     const w = FakeWorker.all[0];
     w.emit({ type: "ready" });
     await loading;

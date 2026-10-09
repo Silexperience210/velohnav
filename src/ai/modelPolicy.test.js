@@ -15,8 +15,8 @@ const goodProbe = (over = {}) => ({
 });
 
 describe("sonde WebGPU : la présence d'un adaptateur ne suffit pas", () => {
-  it("le plus gros tenseur q4f16 est la table d'embeddings fp16 (≈ 445 Mio)", () => {
-    expect(LARGEST_TENSOR_BYTES).toBe(466_747_392);
+  it("le plus gros tenseur q4f16 est la table d'embeddings fp16 (≈ 260 Mio pour le 0.5B)", () => {
+    expect(LARGEST_TENSOR_BYTES).toBe(272_269_312);
   });
 
   it("GPU complet : q4f16 autorisé", () => {

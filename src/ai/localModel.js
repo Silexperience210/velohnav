@@ -12,7 +12,9 @@
 import {
   VARIANTS, chooseVariant, assessWebGPU, planLoad, LIMITS, watchdog,
   initialProgress, progressReducer, decideAfterFailure, withTimeout,
+  memoryVerdict, heaviestVariant, LEGACY_MODEL_DIRS,
 } from "./modelPolicy.js";
+import { readMemoryInfo } from "./deviceMemory.js";
 
 export { chooseVariant };
 
@@ -29,13 +31,15 @@ function markWebGPUBroken(reason) {
 
 /** Échec de chargement ou de génération, avec un code traduisible côté interface. */
 export class ModelError extends Error {
-  constructor(code, { detail = "", seconds = 0, mb = 0 } = {}) {
+  constructor(code, { detail = "", seconds = 0, mb = 0, needMB = 0, availMB = 0 } = {}) {
     super(detail ? `${code}: ${detail}` : code);
     this.name = "ModelError";
     this.code = code;
     this.detail = detail;
     this.seconds = seconds;
     this.mb = mb;
+    this.needMB = needMB;     // code "memory" : mémoire libre exigée…
+    this.availMB = availMB;   // … et mémoire libre constatée
   }
 }
 
@@ -47,6 +51,8 @@ export const chatModelMB = () => (chosen ? chosen.mb : VARIANTS.wasm.mb);
 let worker = null;
 let ready = false;
 let loadPromise = null;
+let abortLoad = null;   // interrompt le chargement en cours (unloadModel)
+let generation = 0;     // incrémenté par unloadModel : invalide un chargement pas encore parti
 let seq = 0;
 const pending = new Map(); // id de génération → { resolve, reject }
 
@@ -64,15 +70,23 @@ function killWorker(err) {
   pending.clear();
 }
 
-// Après un échec WebGPU, le fichier q4f16 (1,17 Go) ne servira plus sur cet appareil :
+// Après un échec WebGPU, le fichier q4f16 (483 Mo) ne servira plus sur cet appareil :
 // on le retire du cache de transformers.js pour laisser la place à la variante WASM.
-async function purgeCachedVariant(dtype) {
+async function purgeCache(match) {
   try {
     if (typeof caches === "undefined") return;
     const cache = await withTimeout(caches.open("transformers-cache"), 5000, "cache");
     const keys = await withTimeout(cache.keys(), 5000, "cache");
-    await Promise.all(keys.filter((r) => r.url.includes(`model_${dtype}.onnx`)).map((r) => cache.delete(r)));
+    await Promise.all(keys.filter((r) => match(r.url)).map((r) => cache.delete(r)));
   } catch { /* au pire l'espace n'est pas libéré */ }
+}
+const purgeCachedVariant = (dtype) => purgeCache((u) => u.includes(`model_${dtype}.onnx`));
+// L'ancien modèle 1.5B (1,2 à 1,8 Go de stockage) ne sert plus : une seule fois par session.
+let legacyPurged = false;
+function purgeLegacyModels() {
+  if (legacyPurged) return;
+  legacyPurged = true;
+  purgeCache((u) => LEGACY_MODEL_DIRS.some((d) => u.includes(`/${d}/`)));
 }
 
 function onRuntimeMessage({ data }) {
@@ -95,10 +109,13 @@ function runLoad(onProgress, onPhase) {
     const done = (err) => {
       if (settled) return;
       settled = true;
+      abortLoad = null;
       clearInterval(tick);
       if (err) reject(err);
       else resolve();
     };
+    // Désactivation pendant le chargement : le worker meurt avec tout ce qu'il tenait
+    abortLoad = () => { killWorker(); done(new ModelError("cancelled")); };
 
     const fail = (phase, { timedOut = false, seconds = 0, detail = "" } = {}) => {
       if (settled) return;
@@ -164,10 +181,41 @@ function runLoad(onProgress, onPhase) {
 export function loadModel(onProgress, onPhase) {
   if (ready && worker) return Promise.resolve();
   if (loadPromise) return loadPromise;
-  loadPromise = runLoad(onProgress, onPhase).finally(() => {
+  const gen = generation;
+  loadPromise = checkMemory().then(() => {
+    // Désactivé pendant le contrôle mémoire : ne rien démarrer
+    if (gen !== generation) throw new ModelError("cancelled");
+    return runLoad(onProgress, onPhase);
+  }).finally(() => {
     loadPromise = null; // succès : `ready` prend le relais ; échec : retry possible
   });
   return loadPromise;
+}
+
+/**
+ * Contrôle AVANT tout engagement (aucun worker créé, rien téléchargé) : si
+ * l'appareil n'a pas la mémoire libre pour le pic de chargement, refus avec un
+ * code traduisible plutôt qu'un WebView tué par le système.
+ */
+async function checkMemory() {
+  purgeLegacyModels();
+  const info = await readMemoryInfo();
+  const v = memoryVerdict(info, heaviestVariant());
+  console.info(`[IA] mémoire : ${v.reason} (besoin ≈ ${v.needMB} Mo, disponible ${v.availMB ?? "?"} Mo)`);
+  if (!v.ok) throw new ModelError("memory", { detail: v.reason, needMB: v.needMB, availMB: v.availMB ?? 0 });
+}
+
+/**
+ * Arrête le modèle et rend la mémoire : le worker est terminé (son tas WASM, ses
+ * tampons GPU et le fichier lu partent avec lui), un chargement en cours est
+ * interrompu. Appelé quand l'utilisateur désactive la conversation libre ou
+ * quitte l'écran. Avant : le worker restait en vie pour la durée de l'application
+ * — plus d'1 Go résident pendant la carte et la caméra AR.
+ */
+export function unloadModel() {
+  generation++;
+  if (abortLoad) abortLoad();
+  else if (worker) killWorker(new ModelError("cancelled"));
 }
 
 // ── Template de chat Qwen2.5 Instruct ────────────────────────────

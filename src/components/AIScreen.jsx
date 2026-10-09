@@ -4,7 +4,7 @@ import { TRAM, nextDepartures, shortStopName } from "../utils/tram.js";
 import { fDist, bTag, getHistory, launchNativeArNav } from "../utils.js";
 import { fetchWeather, getWeatherAdvice } from "../hooks/useWeather.js";
 import { formatDeparturesForAI } from "../hooks/useTransit.js";
-import { loadModel, generate, chatModelMB } from "../ai/localModel.js";
+import { loadModel, unloadModel, generate, chatModelMB } from "../ai/localModel.js";
 import { Icon } from "../ui/icons.jsx";
 import { IconButton, ProgressBar, Spinner, Button } from "../ui/primitives.jsx";
 import { wmo, bikeScore, scoreTone, reasonLabel } from "../ui/weather.js";
@@ -31,14 +31,16 @@ function stripNavTag(text) {
 // Échec du modèle → phrase explicite (cause + quoi faire), suivie du détail technique.
 function describeModelError(e) {
   if (!e?.code) return e?.message || String(e);
-  const msg = t(`ui.ai.model.fail.${e.code}`, { s: e.seconds, mb: e.mb });
+  const msg = t(`ui.ai.model.fail.${e.code}`, { s: e.seconds, mb: e.mb, need: e.needMB, avail: e.availMB });
+  // Refus mémoire : la phrase dit tout, le code interne (insufficient…) n'aide personne
+  if (e.code === "memory") return msg;
   return e.detail && !/^timeout /.test(e.detail) ? `${msg} (${e.detail})` : msg;
 }
 
 // Taille réelle du modèle conversationnel, annoncée AVANT tout téléchargement :
 // rien ne part sans que l'utilisateur l'ait décidé.
 // Taille annoncée : celle de la variante que l'appareil sait réellement faire tourner
-// (1,17 Go avec WebGPU, 1,7 Go sinon) — voir chatModelMB().
+// (483 Mo avec WebGPU, 512 Mo sinon) — voir chatModelMB().
 
 // ── Composant principal ────────────────────────────────────────────
 function AIScreen({ stations, aiHistory, setAiHistory,
@@ -130,14 +132,16 @@ function AIScreen({ stations, aiHistory, setAiHistory,
               (p)=>{ if(!dead) setModelPhase(p); })
       .then(()=>{ if(!dead) setModelState("ready"); })
       .catch((e)=>{
-        if(!dead){
+        if(!dead && e?.code !== "cancelled"){
           setModelState("error");
           setModelError(describeModelError(e));   // sinon l'utilisateur ne peut que constater l'échec
         }
       });
-    return ()=>{ dead = true; };   // les setState sont bloqués ; le téléchargement déjà
-                                   // lancé n'est pas interrompu (loadModel ne sait pas
-                                   // s'annuler) — l'état revient à « arrêté » ci-dessous.
+    // Conversation désactivée, « Réessayer » ou écran quitté : le worker est
+    // arrêté et la mémoire rendue (chargement en cours compris). Avant, il
+    // survivait à tout — y compris au retour de l'interrupteur sur « arrêté » au
+    // remontage de l'écran — avec plus d'1 Go résident.
+    return ()=>{ dead = true; unloadModel(); };
   },[chatOn, loadSeq]);
   useEffect(()=>{ if (!chatOn) setModelState("off"); },[chatOn]);
 

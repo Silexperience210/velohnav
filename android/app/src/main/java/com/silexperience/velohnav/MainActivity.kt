@@ -7,6 +7,7 @@ import com.silexperience.velohnav.ar.ArNavigationPlugin
 class MainActivity : BridgeActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         registerPlugin(ArNavigationPlugin::class.java)
+        registerPlugin(DeviceMemoryPlugin::class.java)
         super.onCreate(savedInstanceState)
     }
 }

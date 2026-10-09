@@ -4,17 +4,43 @@
 //
 // Pourquoi ce module existe : sur un vrai téléphone, la progression atteignait 100 %
 // puis se figeait. 100 % ne marque que la fin du TÉLÉCHARGEMENT ; viennent ensuite
-// l'écriture en cache (1,17 Go), l'initialisation d'onnxruntime-web et la création de
+// l'écriture en cache (1,17 Go pour le 1.5B d'alors), l'initialisation d'onnxruntime-web et la création de
 // la session WebGPU — et aucune de ces étapes n'a de délai d'expiration, ni dans
 // transformers.js (3.8.1), ni dans onnxruntime-web (env.wasm.initTimeout = 0 par
 // défaut). Une attente GPU qui ne se résout jamais n'est pas une exception : seul un
 // chien de garde la voit.
 
-/** Variantes du modèle, tailles mesurées sur le dépôt HF (onnx/model_q4f16.onnx, onnx/model_q4.onnx). */
-export const VARIANTS = Object.freeze({
-  webgpu: Object.freeze({ dtype: "q4f16", device: "webgpu", mb: 1165 }),
-  wasm:   Object.freeze({ dtype: "q4",    device: "wasm",   mb: 1704 }),
+/**
+ * Modèle conversationnel : Qwen2.5-0.5B-Instruct (et non plus 1.5B).
+ *
+ * Pourquoi : l'application MOURAIT au chargement (WebView tué par le système, puis
+ * redémarrage). Tailles relevées sur le dépôt HF (API /tree, octets) :
+ *   1.5B : q4f16 1 221,9 Mo · q4 1 787,6 Mo
+ *   0.5B : q4f16   483,0 Mo · q8 (model_quantized) 512,1 Mo · q4 786,2 Mo
+ * et le pic mémoire vaut environ 3 fois le fichier (estimatePeakBytes) : ≈ 3,7 Go
+ * pour le 1.5B en GPU, ≈ 1,45 Go pour le 0.5B. Pour de la discussion libre — les
+ * réponses factuelles sont calculées en code — le 0.5B suffit ; Qwen3-0.6B
+ * (q4f16 569,8 Mo) a été écarté : plus lourd et un gabarit de « réflexion » à
+ * neutraliser.
+ */
+export const MODEL = Object.freeze({
+  id: "onnx-community/Qwen2.5-0.5B-Instruct",
+  localDir: "Qwen2.5-0.5B-Instruct",       // copie embarquée éventuelle (scripts/fetch-model.sh)
 });
+/** Anciens modèles dont les fichiers en cache (1,2 à 1,8 Go de stockage) sont à purger. */
+export const LEGACY_MODEL_DIRS = Object.freeze(["Qwen2.5-1.5B-Instruct"]);
+
+/** Variantes du modèle, tailles mesurées sur le dépôt HF (Mo décimaux arrondis). */
+export const VARIANTS = Object.freeze({
+  webgpu: Object.freeze({ dtype: "q4f16", device: "webgpu", mb: 483, file: "onnx/model_q4f16.onnx" }),
+  // q8 (int8) plutôt que q4 sur WASM : 512 Mo au lieu de 786, et meilleure qualité
+  wasm:   Object.freeze({ dtype: "q8",    device: "wasm",   mb: 512, file: "onnx/model_quantized.onnx" }),
+});
+
+/** URL d'un fichier du modèle sur le Hub — c'est aussi la clé du cache de transformers.js. */
+export function hubFileUrl(file, model = MODEL.id) {
+  return `https://huggingface.co/${model}/resolve/main/${file}`;
+}
 
 /**
  * Choix de la quantification, décidé sur l'appareil.
@@ -28,13 +54,13 @@ export function chooseVariant(webgpuUsable) {
 }
 
 // Plus gros tenseur de la variante q4f16 : la table d'embeddings, NON quantifiée,
-// 151 936 jetons × 1 536 dimensions en fp16. Déduit des tailles du dépôt : q4 (fp32)
-// et q4f16 (fp16) diffèrent de 540 Mo, dont 467 Mo pour cette seule table. Sur WebGPU,
+// 151 936 jetons × 896 dimensions (0.5B) en fp16. Déduit des tailles du dépôt : q4
+// (fp32) et q4f16 (fp16) diffèrent de 303 Mo, dont 272 Mo pour cette seule table. Sur WebGPU,
 // onnxruntime la place dans UN tampon lié en stockage : l'appareil doit accepter un
 // tampon et une liaison de cette taille. Beaucoup de GPU mobiles plafonnent à 128 ou
 // 256 Mio ; onnxruntime ne lève alors pas d'exception (les erreurs de validation
 // WebGPU partent dans `onuncapturederror`, simple console.error) — d'où le blocage.
-export const LARGEST_TENSOR_BYTES = 151936 * 1536 * 2; // 466 747 392 o ≈ 445 Mio
+export const LARGEST_TENSOR_BYTES = 151936 * 896 * 2; // 272 269 312 o ≈ 260 Mio
 
 /**
  * Le GPU peut-il réellement porter la variante q4f16 ?
@@ -82,8 +108,61 @@ export function planLoad({ webgpuKnownBroken, assessment }) {
   return { variant: VARIANTS.wasm, reason: assessment?.reason || "no-probe" };
 }
 
+// ── Mémoire : refuser proprement plutôt que faire tuer l'application ─────────
+//
+// Copies simultanées pendant le chargement (lecture de transformers.js 3.8.1 et
+// onnxruntime-web) :
+//   1. le fichier entier lu en JS (Uint8Array, readResponse / arrayBuffer) ;
+//   2. sa copie dans le tas WASM d'onnxruntime (InferenceSession.create(buffer)) —
+//      un tas WASM ne rétrécit jamais ;
+//   3. les poids de travail : tas WASM (CPU) ou tampons GPU (mémoire unifiée sur
+//      téléphone, donc la même RAM).
+// Premier téléchargement : transformers.js garde EN PLUS une copie pour cache.put
+// (new Response(buffer)) — 4 copies. Le worker pré-remplit désormais le cache en
+// flux (prefetch, sans copie JS), ce qui ramène le premier lancement à 3.
+// Facteur 3 = estimation, À MESURER sur l'appareil (chrome://inspect → mémoire).
+export const MEMORY = Object.freeze({
+  peakFactor: 3,
+  marginBytes: 300 * 2 ** 20,   // le reste de l'application (carte, caméra, JS)
+});
+
+export const estimatePeakBytes = (variant) => Math.round(variant.mb * 1e6 * MEMORY.peakFactor + MEMORY.marginBytes);
+
+/**
+ * Peut-on charger `variant` sans risquer la mort du processus ?
+ * @param {null | {
+ *   availBytes?: number, totalBytes?: number, thresholdBytes?: number, lowMemory?: boolean,  // Android (ActivityManager.MemoryInfo)
+ *   deviceMemoryGB?: number,                                                                   // navigateur (navigator.deviceMemory, arrondi, plafonné à 8)
+ * }} info
+ * @returns {{ ok: boolean, reason: string, needMB: number, availMB: number|null }}
+ */
+export function memoryVerdict(info, variant) {
+  const need = estimatePeakBytes(variant);
+  const needMB = Math.round(need / 1e6);
+  if (!info) return { ok: true, reason: "unknown", needMB, availMB: null };
+  if (info.lowMemory) {
+    return { ok: false, reason: "low-memory", needMB, availMB: info.availBytes ? Math.round(info.availBytes / 1e6) : null };
+  }
+  if (Number.isFinite(info.availBytes)) {
+    // Sous le seuil système, Android commence à tuer des processus : il ne compte pas.
+    const usable = info.availBytes - (Number.isFinite(info.thresholdBytes) ? info.thresholdBytes : 0);
+    const availMB = Math.round(usable / 1e6);
+    return usable >= need ? { ok: true, reason: "ok", needMB, availMB } : { ok: false, reason: "insufficient", needMB, availMB };
+  }
+  if (Number.isFinite(info.deviceMemoryGB)) {
+    // Seule la RAM totale est connue : on exige qu'elle fasse au moins deux fois le pic.
+    const total = info.deviceMemoryGB * 2 ** 30;
+    const availMB = Math.round(total / 2 / 1e6);
+    return total >= 2 * need ? { ok: true, reason: "ok-total", needMB, availMB } : { ok: false, reason: "small-device", needMB, availMB };
+  }
+  return { ok: true, reason: "unknown", needMB, availMB: null };
+}
+
+/** Variante la plus exigeante en mémoire : le contrôle préalable vaut pour les deux. */
+export const heaviestVariant = () => (VARIANTS.wasm.mb >= VARIANTS.webgpu.mb ? VARIANTS.wasm : VARIANTS.webgpu);
+
 // ── Délais ────────────────────────────────────────────────────────
-// Le téléchargement n'a PAS de durée maximale (1,7 Go en 4G lente peut prendre une
+// Le téléchargement n'a PAS de durée maximale (un modèle de plusieurs centaines de Mo en 4G lente peut prendre une
 // demi-heure) : on surveille l'absence de données. L'initialisation, elle, est bornée.
 export const LIMITS = Object.freeze({
   setupMs: 60_000,          // worker + sonde GPU + premier octet
@@ -160,7 +239,7 @@ export function decideAfterFailure({ device, phase, timedOut = false }) {
     return {
       code: `webgpu_init${sfx}`,
       markWebGPUBroken: true,
-      purgeDtype: VARIANTS.webgpu.dtype, // libère 1,17 Go devenu inutile sur cet appareil
+      purgeDtype: VARIANTS.webgpu.dtype, // libère le fichier GPU devenu inutile sur cet appareil
       next: VARIANTS.wasm,
       autoRetry: false,
     };
