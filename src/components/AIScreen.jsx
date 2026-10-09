@@ -107,9 +107,18 @@ function AIScreen({ stations, aiHistory, setAiHistory,
   // Mémoïsés : sinon ces objets changent à chaque rendu et invalident les callbacks.
   const score  = useMemo(()=>bikeScore(weather), [weather]);
   const advice = useMemo(()=>getWeatherAdvice(weather), [weather]);
-  const nearest = useMemo(()=>stations.find(s=>s.bikes>0 && s.status!=="CLOSED") ?? null,[stations]);
+  // Le tri se fait sur la distance : `find` renvoyait la première station de la liste ayant
+  // un vélo, donc n'importe laquelle (une station à 19 km au lieu de celle à 150 m).
+  const nearest = useMemo(()=>{
+    const ok = stations.filter(s=>s.bikes>0 && s.status!=="CLOSED");
+    return ok.length ? ok.reduce((a,b)=>((a.dist ?? Infinity)<=(b.dist ?? Infinity)?a:b)) : null;
+  },[stations]);
   // Pour rendre un vélo il faut des bornes libres : ce n'est pas forcément la même station.
-  const nearestReturn = useMemo(()=>stations.find(s=>s.docks>0 && s.status!=="CLOSED") ?? null,[stations]);
+  // Même correction que `nearest` : la plus proche ayant des bornes libres, pas la première venue.
+  const nearestReturn = useMemo(()=>{
+    const ok = stations.filter(s=>s.docks>0 && s.status!=="CLOSED");
+    return ok.length ? ok.reduce((a,b)=>((a.dist ?? Infinity)<=(b.dist ?? Infinity)?a:b)) : null;
+  },[stations]);
   const deps = useMemo(()=>upcoming(busStops, busDeps, 3),[busStops, busDeps]);
 
   // ── Modèle : chargé UNIQUEMENT si la conversation libre est activée ──
