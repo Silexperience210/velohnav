@@ -49,6 +49,14 @@ class ArNavigationActivity : ComponentActivity() {
     private var pendingDestName: String = "Destination"
     private var pendingTravelMode: String = "bicycling"
     private var pendingMapsKey: String = ""
+    // Langue de l'interface web (fr/en) et guidage web actif derrière l'activité
+    private var lang: String = "fr"
+    private var webGuidance: Boolean = false
+    private val s: ArStrings get() = ArStrings.of(lang)
+    // Installation d'ARCore demandée : reprise au retour (onResume)
+    private var installRequested = false
+    private var afterInstall: (() -> Unit)? = null
+    private var availabilityTries = 0
 
     private val permLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -56,7 +64,7 @@ class ArNavigationActivity : ComponentActivity() {
         if (results.all { it.value }) {
             checkArCoreAvailability { startNavigation() }
         } else {
-            Toast.makeText(this, "Caméra et localisation requis pour AR", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, s.permissionsRequired, Toast.LENGTH_LONG).show()
             finish()
         }
     }
@@ -69,17 +77,21 @@ class ArNavigationActivity : ComponentActivity() {
         pendingDestName   = savedInstanceState?.getString("dest_name")   ?: intent.getStringExtra("dest_name")   ?: "Destination"
         pendingTravelMode = savedInstanceState?.getString("travel_mode") ?: intent.getStringExtra("travel_mode") ?: "bicycling"
         pendingMapsKey    = savedInstanceState?.getString("maps_key")    ?: intent.getStringExtra("maps_key")    ?: ""
+        lang              = intent.getStringExtra("lang") ?: "fr"
+        webGuidance       = intent.getBooleanExtra("web_guidance", false)
 
-        // FIX BUG-4 : diagnostic clé API au démarrage. Si la clé est vide ou
-        // manifestement invalide, on bascule directement en mode GPS sans
-        // attendre le timeout 25s d'ARCore (qui produit le message d'erreur
-        // "Clé API ARCore non disponible" récurrent).
-        // On loggue la longueur (jamais la clé en clair) pour debug.
+        // Diagnostic clé API au démarrage : on loggue la longueur (jamais la clé
+        // en clair). La bascule GPS se décide sur la réponse d'ARCore
+        // (ERROR_NOT_AUTHORIZED), dès la première image — voir permanentEarthError ;
+        // la longueur ne sert qu'à choisir l'explication (clé absente / refusée).
         val nativeKeyLen = try {
             com.silexperience.velohnav.BuildConfig.MAPS_API_KEY.length
         } catch (_: Exception) { 0 }
         val intentKeyLen = pendingMapsKey.length
         Log.d(TAG, "API key diag: native=${nativeKeyLen}c · intent=${intentKeyLen}c")
+        // ARCore lit la clé du manifest (= BuildConfig), jamais celle de l'intent
+        // (qui ne sert qu'au calcul d'itinéraire Google).
+        viewModel.apiKeyPresent = nativeKeyLen > 10
 
         if (pendingDestLat == 0.0) {
             Toast.makeText(this, "Destination invalide", Toast.LENGTH_SHORT).show()
@@ -137,7 +149,7 @@ class ArNavigationActivity : ComponentActivity() {
                                         Log.e(TAG, "ARCore session failed", e)
                                         Toast.makeText(
                                             this@ArNavigationActivity,
-                                            "ARCore indisponible : ${e.message}",
+                                            s.sessionFailed(e.message ?: ""),
                                             Toast.LENGTH_LONG
                                         ).show()
                                         finish()
@@ -152,6 +164,8 @@ class ArNavigationActivity : ComponentActivity() {
                     )
                     NavigationHud(
                         state           = state,
+                        strings         = s,
+                        webGuidance     = webGuidance,
                         onClose         = { finish() },
                         onFallbackToGps = { viewModel.fallbackToGps() }
                     )
@@ -168,12 +182,8 @@ class ArNavigationActivity : ComponentActivity() {
             val count = sessionUpdateCount.get()
             if (count == 0) {
                 Log.e(TAG, "Aucun onSessionUpdated reçu après 8s — ARCore ne démarre pas")
-                Toast.makeText(
-                    this@ArNavigationActivity,
-                    "ARCore ne répond pas — vérifiez clé API + extérieur",
-                    Toast.LENGTH_LONG
-                ).show()
-                viewModel.fallbackToGps()
+                // Pas de toast : le HUD affiche la cause et quoi faire (FallbackReason.NO_FRAMES)
+                viewModel.onArCoreSilent()
             } else {
                 Log.d(TAG, "Watchdog OK : $count frames ARCore reçus en 8s")
             }
@@ -199,22 +209,22 @@ class ArNavigationActivity : ComponentActivity() {
         })
     }
 
-    // Vérifier qu'ARCore est installé et à jour avant de lancer la navigation
+    // Vérifier qu'ARCore est installé et à jour avant de lancer la navigation.
+    // Avant : UNKNOWN_CHECKING (réponse transitoire, fréquente au premier appel)
+    // tombait dans « non supporté » et fermait l'activité ; après une demande
+    // d'installation, rien ne relançait la nav au retour → écran figé.
     private fun checkArCoreAvailability(onAvailable: () -> Unit) {
         try {
-            when (val av = ArCoreApk.getInstance().checkAvailability(this)) {
-                ArCoreApk.Availability.SUPPORTED_INSTALLED -> onAvailable()
-                ArCoreApk.Availability.SUPPORTED_APK_TOO_OLD,
-                ArCoreApk.Availability.SUPPORTED_NOT_INSTALLED -> {
-                    try {
-                        ArCoreApk.getInstance().requestInstall(this, true)
-                    } catch (e: Exception) {
-                        Log.e(TAG, "ARCore install request failed", e)
-                        finish()
-                    }
-                }
+            val av = ArCoreApk.getInstance().checkAvailability(this)
+            when {
+                av == ArCoreApk.Availability.SUPPORTED_INSTALLED -> onAvailable()
+                av == ArCoreApk.Availability.SUPPORTED_APK_TOO_OLD ||
+                av == ArCoreApk.Availability.SUPPORTED_NOT_INSTALLED -> requestArCoreInstall(onAvailable)
+                av.isTransient && availabilityTries++ < 25 ->
+                    mainHandler.postDelayed({ checkArCoreAvailability(onAvailable) }, 200)
+                av.isTransient -> onAvailable()   // toujours indéterminé après 5 s : on tente
                 else -> {
-                    Toast.makeText(this, "ARCore non supporté ($av)", Toast.LENGTH_LONG).show()
+                    Toast.makeText(this, s.arcoreUnsupported(av.toString()), Toast.LENGTH_LONG).show()
                     finish()
                 }
             }
@@ -224,6 +234,31 @@ class ArNavigationActivity : ComponentActivity() {
             // mais supportent quand même ARCore
             onAvailable()
         }
+    }
+
+    private fun requestArCoreInstall(onAvailable: () -> Unit) {
+        try {
+            when (ArCoreApk.getInstance().requestInstall(this, !installRequested)) {
+                ArCoreApk.InstallStatus.INSTALLED -> {
+                    installRequested = false; afterInstall = null
+                    onAvailable()
+                }
+                ArCoreApk.InstallStatus.INSTALL_REQUESTED -> {
+                    // Le Play Store s'ouvre ; la suite se fait dans onResume
+                    installRequested = true; afterInstall = onAvailable
+                }
+            }
+        } catch (e: Exception) {
+            // Installation refusée par l'utilisateur ou impossible
+            Log.e(TAG, "ARCore install request failed", e)
+            Toast.makeText(this, s.arcoreMissing, Toast.LENGTH_LONG).show()
+            finish()
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (installRequested) afterInstall?.let { requestArCoreInstall(it) }
     }
 
     private fun checkPermissions(onGranted: () -> Unit) {

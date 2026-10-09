@@ -31,6 +31,23 @@ enum class NavStatus { IDLE, LOCATING, ROUTING, LOCALIZING, NAVIGATING, ARRIVED,
 // Mode de tracking : VPS (haute précision) ou GPS dégradé (fallback)
 enum class TrackingMode { VPS, GPS_FALLBACK }
 
+/**
+ * Pourquoi la nav est passée en mode GPS. Les quatre premières causes ne se
+ * résolvent pas en attendant : la bascule est immédiate et le HUD explique quoi
+ * faire. TIMEOUT / MANUAL : VPS simplement lent (zone mal couverte) ou choix de
+ * l'utilisateur.
+ */
+enum class FallbackReason { NO_API_KEY, NOT_AUTHORIZED, APK_TOO_OLD, QUOTA, NO_FRAMES, TIMEOUT, MANUAL }
+
+/** Erreur Earth qui ne se corrigera pas d'elle-même pendant la session (null sinon). */
+fun permanentEarthError(state: Earth.EarthState?, apiKeyPresent: Boolean): FallbackReason? = when (state) {
+    Earth.EarthState.ERROR_NOT_AUTHORIZED ->
+        if (apiKeyPresent) FallbackReason.NOT_AUTHORIZED else FallbackReason.NO_API_KEY
+    Earth.EarthState.ERROR_APK_VERSION_TOO_OLD -> FallbackReason.APK_TOO_OLD
+    Earth.EarthState.ERROR_RESOURCE_EXHAUSTED  -> FallbackReason.QUOTA
+    else -> null
+}
+
 data class NavState(
     val status: NavStatus        = NavStatus.IDLE,
     val currentStep: NavigationStep? = null,
@@ -49,7 +66,9 @@ data class NavState(
     // Meilleure précision VPS observée — pour debug/UX
     val bestHorizontalAccuracy: Double = Double.MAX_VALUE,
     // Diagnostic Earth — affiché dans le HUD si bloqué
-    val earthDiagnostic: EarthDiagnostic? = null
+    val earthDiagnostic: EarthDiagnostic? = null,
+    // Cause de la bascule GPS (null tant qu'on est en VPS)
+    val fallbackReason: FallbackReason? = null
 )
 
 class ArNavigationViewModel(application: Application) : AndroidViewModel(application) {
@@ -104,6 +123,13 @@ class ArNavigationViewModel(application: Application) : AndroidViewModel(applica
     // Ancres posées avant la fin du chargement du modèle GLB : elles restaient
     // vides (flèches invisibles) — complétées dès que le modèle arrive.
     private val arrowsWithoutModel = java.util.concurrent.ConcurrentHashMap.newKeySet<Int>()
+    // Clé API présente dans le build (manifest) : distingue « clé absente » de
+    // « clé refusée » dans l'explication affichée.
+    var apiKeyPresent: Boolean = true
+    // Cause de bascule constatée AVANT que l'itinéraire soit prêt (ARCore répond
+    // en quelques images, le GPS + l'itinéraire en plusieurs secondes) : appliquée
+    // dès l'entrée en LOCALIZING au lieu d'attendre le compte à rebours de 25 s.
+    @Volatile private var pendingFallback: FallbackReason? = null
 
     // ── Initialisation ─────────────────────────────────────────────
     fun initializeNavigation(
@@ -123,6 +149,7 @@ class ArNavigationViewModel(application: Application) : AndroidViewModel(applica
         arrowNodes.clear()
         arrowsWithoutModel.clear()
         lastEarth = null
+        pendingFallback = null
 
         _state.value = NavState(status = NavStatus.LOCATING, destName = destName)
 
@@ -182,9 +209,13 @@ class ArNavigationViewModel(application: Application) : AndroidViewModel(applica
                             vpsTimeoutSecondsLeft = VPS_TIMEOUT_SECONDS
                         )
                         Log.i(TAG, "Route: ${r.steps.size} étapes, ${r.totalDistanceMeters}m")
-                        // Démarrer le timeout VPS et le watcher GPS de fallback
-                        startVpsTimeout(dLat, dLng, mode)
                         startGpsWatcher()
+                        // ARCore a déjà dit non (clé refusée, aucune image…) : pas de
+                        // compte à rebours de 25 s devant une erreur qui ne passera pas.
+                        val early = pendingFallback
+                            ?: permanentEarthError(geo.diagnostic.value?.state, apiKeyPresent)
+                        if (early != null) fallbackToGps(early)
+                        else startVpsTimeout(dLat, dLng, mode)
                         return
                     }
                     .onFailure { lastError = it }
@@ -210,18 +241,26 @@ class ArNavigationViewModel(application: Application) : AndroidViewModel(applica
             if (!vpsReady) {
                 val best = _state.value.bestHorizontalAccuracy
                 Log.w(TAG, "VPS timeout après ${VPS_TIMEOUT_SECONDS}s — best=${best}m → fallback GPS")
-                fallbackToGps()
+                fallbackToGps(FallbackReason.TIMEOUT)
             }
         }
     }
 
-    // Bascule manuelle (bouton "passer en GPS") ou auto sur timeout.
-    // Tolérant : ne fait rien si l'état n'est pas LOCALIZING (déjà en nav,
-    // pas encore en route, en erreur, etc.) — évite les transitions bizarres.
-    fun fallbackToGps() {
+    /** Watchdog de l'activité : aucune image ARCore reçue. */
+    fun onArCoreSilent() = fallbackToGps(FallbackReason.NO_FRAMES)
+
+    // Bascule manuelle (bouton "passer en GPS"), auto sur timeout ou sur erreur
+    // ARCore définitive. Avant LOCALIZING (itinéraire pas encore prêt), la cause
+    // est mémorisée et appliquée dès que l'itinéraire arrive : avant, elle était
+    // ignorée et l'utilisateur attendait 25 s devant « API non autorisée ».
+    fun fallbackToGps(reason: FallbackReason = FallbackReason.MANUAL) {
         if (vpsReady) return  // déjà en nav, rien à faire
         val st = _state.value.status
-        // Pas en LOCALIZING → on ne peut pas bypass (route pas encore prête, etc.)
+        if (st == NavStatus.LOCATING || st == NavStatus.ROUTING) {
+            if (reason != FallbackReason.MANUAL && pendingFallback == null) pendingFallback = reason
+            Log.d(TAG, "fallbackToGps($reason) différé (état=$st)")
+            return
+        }
         if (st != NavStatus.LOCALIZING) {
             Log.d(TAG, "fallbackToGps ignoré (état=$st, pas LOCALIZING)")
             return
@@ -231,15 +270,18 @@ class ArNavigationViewModel(application: Application) : AndroidViewModel(applica
             Log.w(TAG, "fallbackToGps: route null en LOCALIZING (cas anormal)")
             return
         }
-        Log.i(TAG, "Fallback GPS — démarrage navigation dégradée")
+        Log.i(TAG, "Fallback GPS ($reason) — démarrage navigation dégradée")
         vpsReady = true  // débloque updateProgress
         vpsTimeoutJob?.cancel()
         _state.value = _state.value.copy(
             status = NavStatus.NAVIGATING,
             trackingMode = TrackingMode.GPS_FALLBACK,
+            fallbackReason = reason,
             vpsTimeoutSecondsLeft = 0,
             currentStep = r.steps.firstOrNull()
         )
+        // Distance et étape affichées tout de suite, sans attendre le prochain fix
+        updateProgressGps()
     }
 
     // Watcher GPS — alimente lastGpsLat/Lng en continu pour le mode fallback
@@ -284,19 +326,23 @@ class ArNavigationViewModel(application: Application) : AndroidViewModel(applica
         val diag = geo.diagnostic.value
         if (diag != null && _state.value.earthDiagnostic != diag) {
             _state.value = _state.value.copy(earthDiagnostic = diag)
-
-            // Si Earth est en erreur permanente (clé API, version trop vieille, etc.),
-            // bascule immédiatement en mode GPS sans attendre le timeout 25s.
-            val isPermanentError = diag.state in setOf(
-                Earth.EarthState.ERROR_NOT_AUTHORIZED,
-                Earth.EarthState.ERROR_APK_VERSION_TOO_OLD,
-                Earth.EarthState.ERROR_RESOURCE_EXHAUSTED
-            )
-            if (isPermanentError && !vpsReady && _state.value.status == NavStatus.LOCALIZING) {
-                Log.w(TAG, "Earth en erreur permanente (${diag.state}) — fallback GPS immédiat")
-                fallbackToGps()
-                return
+        }
+        // Erreur Earth définitive (clé API refusée, ARCore trop ancien, quota) :
+        // bascule GPS sans attendre le timeout de 25 s. Évaluée à CHAQUE image et
+        // non plus seulement quand le diagnostic change : le diagnostic arrive
+        // pendant le calcul d'itinéraire, l'ancien test (status == LOCALIZING) était
+        // faux à ce moment-là, et il ne se représentait jamais — d'où l'encart
+        // « API non autorisée » avec « Bascule GPS dans 18s » (capture du propriétaire).
+        val permanent = permanentEarthError(diag?.state, apiKeyPresent)
+        if (permanent != null && !vpsReady) {
+            val st = _state.value.status
+            // Une seule fois par état (sinon 30 appels et journaux par seconde)
+            if (st == NavStatus.LOCALIZING ||
+                ((st == NavStatus.LOCATING || st == NavStatus.ROUTING) && pendingFallback == null)) {
+                Log.w(TAG, "Earth en erreur permanente (${diag?.state}) — fallback GPS immédiat")
+                fallbackToGps(permanent)
             }
+            return
         }
 
         val acc = geo.accuracy.value ?: return
@@ -460,11 +506,13 @@ class ArNavigationViewModel(application: Application) : AndroidViewModel(applica
         vpsTimeoutJob?.cancel()
         gpsWatchJob?.cancel()
         vpsReady = false
+        pendingFallback = null
         cleanupView = arView
         _state.value = _state.value.copy(
             status = NavStatus.LOCATING,
             errorMessage = null,
             trackingMode = TrackingMode.VPS,
+            fallbackReason = null,
             bestHorizontalAccuracy = Double.MAX_VALUE,
             vpsTimeoutSecondsLeft = 0
         )

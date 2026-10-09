@@ -50,6 +50,8 @@ fun VelohNavArTheme(content: @Composable () -> Unit) =
 @Composable
 fun NavigationHud(
     state: NavState,
+    strings: ArStrings = ArStrings.of("fr"),
+    webGuidance: Boolean = false,
     onClose: () -> Unit,
     onFallbackToGps: () -> Unit = {}
 ) {
@@ -57,6 +59,25 @@ fun NavigationHud(
 
         // Barre supérieure
         TopBar(state, onClose, Modifier.align(Alignment.TopStart))
+
+        // Encart « AR précise indisponible » : cause + quoi faire, sans bloquer la
+        // nav GPS qui tourne déjà dessous. Fermable ; réapparaît à la prochaine nav.
+        val body = if (state.trackingMode == TrackingMode.GPS_FALLBACK) strings.fallbackBody(state.fallbackReason) else null
+        var dismissed by remember(state.fallbackReason) { mutableStateOf(false) }
+        AnimatedVisibility(
+            visible = body != null && !dismissed && state.status == NavStatus.NAVIGATING,
+            enter = fadeIn() + slideInVertically { -it / 3 },
+            exit = fadeOut(),
+            modifier = Modifier.align(Alignment.TopCenter).padding(top = 64.dp)
+        ) {
+            FallbackNotice(
+                body = body ?: "",
+                strings = strings,
+                webGuidance = webGuidance,
+                onWebAr = onClose,
+                onDismiss = { dismissed = true }
+            )
+        }
 
         // Badge précision VPS
         state.vpsAccuracy?.let {
@@ -161,6 +182,53 @@ private fun TopBar(state: NavState, onClose: () -> Unit, modifier: Modifier) {
                     fontWeight = FontWeight.Bold
                 )
             }
+    }
+}
+
+// ── Encart bascule GPS sur erreur ARCore ──────────────────────────
+@Composable
+private fun FallbackNotice(
+    body: String,
+    strings: ArStrings,
+    webGuidance: Boolean,
+    onWebAr: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp)
+            .background(DarkCard, RoundedCornerShape(16.dp))
+            .border(1.dp, WarnYellow.copy(alpha = 0.6f), RoundedCornerShape(16.dp))
+            .padding(14.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(Icons.Filled.Warning, null, tint = WarnYellow, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.width(8.dp))
+            Text(
+                strings.fallbackTitle,
+                color = WarnYellow, fontSize = 11.sp, letterSpacing = 1.sp,
+                fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold
+            )
+        }
+        Spacer(Modifier.height(6.dp))
+        Text("$body ${strings.fallbackGpsActive}", color = Color.White, fontSize = 12.sp, lineHeight = 16.sp)
+        Spacer(Modifier.height(10.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (webGuidance) {
+                OutlinedButton(
+                    onClick = onWebAr,
+                    border = androidx.compose.foundation.BorderStroke(1.dp, Orange),
+                    shape = RoundedCornerShape(8.dp)
+                ) {
+                    Text(strings.actionWebAr, color = Orange, fontSize = 12.sp,
+                        fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold)
+                }
+            }
+            TextButton(onClick = onDismiss) {
+                Text(strings.actionDismiss, color = GrayText, fontSize = 12.sp, fontFamily = FontFamily.Monospace)
+            }
+        }
     }
 }
 

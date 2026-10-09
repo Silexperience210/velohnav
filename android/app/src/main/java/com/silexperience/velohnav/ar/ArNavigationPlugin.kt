@@ -33,6 +33,8 @@ class ArNavigationPlugin : Plugin() {
         val webMapsKey = call.getString("mapsKey")?.takeIf { it.isNotBlank() && it != "null" && it.length > 10 }
         val nativeKey  = BuildConfig.MAPS_API_KEY.takeIf { it.isNotBlank() && it != "null" && it.length > 10 }
         val finalKey   = webMapsKey ?: nativeKey ?: ""
+        val lang        = call.getString("lang") ?: "fr"
+        val webGuidance = call.getBoolean("webGuidance") ?: false
 
         android.util.Log.d("ArNavPlugin", "  → startActivity ArNavigationActivity")
 
@@ -43,6 +45,8 @@ class ArNavigationPlugin : Plugin() {
             putExtra("dest_name",   destName)
             putExtra("travel_mode", travelMode)
             putExtra("maps_key",    finalKey)
+            putExtra("lang",        lang)
+            putExtra("web_guidance", webGuidance)
         }
 
         // Lancer l'Activity sur le main thread (UI thread obligatoire).

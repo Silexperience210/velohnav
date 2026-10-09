@@ -70,6 +70,20 @@ jobs:
       - name: Make gradlew executable
         run: chmod +x android/gradlew
 
+      # Keystore de debug FIXE (optionnel). Sans lui, le runner en génère un neuf
+      # à chaque exécution : le SHA-1 de l'APK debug change à chaque build et ne
+      # peut pas être autorisé pour ARCore (voir docs/ARCORE.md).
+      - name: Debug keystore stable (optionnel)
+        env:
+          DEBUG_KEYSTORE_B64: ${{ secrets.DEBUG_KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "$DEBUG_KEYSTORE_B64" ]; then
+            mkdir -p ~/.android
+            echo "$DEBUG_KEYSTORE_B64" | base64 --decode > ~/.android/debug.keystore
+          else
+            echo "DEBUG_KEYSTORE_BASE64 non configuré — keystore de debug éphémère"
+          fi
+
       - name: Build debug APK
         working-directory: android
         run: ./gradlew assembleDebug --no-daemon
@@ -118,6 +132,13 @@ jobs:
           echo "=== Debug ===" && du -h android/app/build/outputs/apk/debug/app-debug.apk
           [ -f android/app/build/outputs/apk/release/app-release.apk ] && \
             echo "=== Release ===" && du -h android/app/build/outputs/apk/release/app-release.apk || true
+
+      # SHA-1 à déclarer dans la restriction de la clé ARCore (docs/ARCORE.md)
+      - name: Empreintes SHA-1
+        run: |
+          for apk in android/app/build/outputs/apk/debug/app-debug.apk android/app/build/outputs/apk/release/app-release.apk; do
+            [ -f "$apk" ] && echo "=== $apk" && keytool -printcert -jarfile "$apk" | grep -E "SHA1|SHA-1" || true
+          done
 
       # Attacher l'APK à la GitHub Release — uniquement sur tag v*
       # FIX 1: permissions contents:write en haut du fichier

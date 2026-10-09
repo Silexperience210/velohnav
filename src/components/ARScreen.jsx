@@ -80,7 +80,8 @@ function ARScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey=""
     const native = await launchNativeArNav(
       target.lat, target.lng, target.name,
       mode === "walking" ? "walking" : "bicycling",
-      mapsKey
+      mapsKey,
+      { webGuidance: true }   // setNavMode ci-dessous : le tracé WebView tourne derrière
     );
     if (native) releaseCamForNative();
     // Dans les deux cas, le tracé WebView tourne (en arrière-plan si natif :

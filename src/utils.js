@@ -1,6 +1,7 @@
 // VelohNav — fonctions utilitaires pures (math, formatage, données)
 import { REF, FALLBACK } from "./constants.js";
 import { logSentry } from "./sentry.js"; // lazy : noop tant que DSN absent
+import { getCurrentLang } from "./i18n.js";
 
 // ── Géodésie ───────────────────────────────────────────────────────
 export function haversine(la1,ln1,la2,ln2) {
@@ -171,7 +172,9 @@ if (typeof window !== "undefined" && import.meta.hot) {
   import.meta.hot.dispose(() => { _ArNav = null; });
 }
 
-export async function launchNativeArNav(destLat, destLng, destName, mode="bicycling", mapsKey="") {
+// `webGuidance` : le guidage AR du WebView (ARScreen) tourne derrière l'activité
+// native ; si ARCore est refusé, l'encart natif propose alors d'y revenir.
+export async function launchNativeArNav(destLat, destLng, destName, mode="bicycling", mapsKey="", { webGuidance = false } = {}) {
   try {
     if (!_ArNav) {
       const { registerPlugin } = await import("@capacitor/core");
@@ -185,6 +188,8 @@ export async function launchNativeArNav(destLat, destLng, destName, mode="bicycl
       destName:   String(destName),
       travelMode: String(mode),
       mapsKey:    String(mapsKey || ""),
+      lang:       getCurrentLang(),
+      webGuidance: !!webGuidance,
     });
     console.log("[ArNav] startNavigation OK");
     return true;

@@ -16,7 +16,14 @@ android {
         versionName "3.2.3"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
 
-        def mapsKey = project.findProperty("MAPS_API_KEY") ?: ""
+        // La CI écrit la clé dans local.properties, que project.findProperty()
+        // ne lit PAS (seuls gradle.properties, -P et ORG_GRADLE_PROJECT_* le sont) :
+        // l'APK partait avec une clé vide → ARCore Geospatial « non autorisé ».
+        def localProps = new Properties()
+        def localPropsFile = rootProject.file("local.properties")
+        if (localPropsFile.exists()) localPropsFile.withInputStream { localProps.load(it) }
+        def mapsKey = project.findProperty("MAPS_API_KEY") ?: localProps.getProperty("MAPS_API_KEY") ?: System.getenv("MAPS_API_KEY") ?: ""
+        if (!mapsKey) logger.warn("MAPS_API_KEY absente : ARCore Geospatial sera refusé (voir docs/ARCORE.md)")
         buildConfigField "String", "MAPS_API_KEY", "\"${mapsKey}\""
         manifestPlaceholders = [MAPS_API_KEY: mapsKey]
 
