@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { chooseVariant } from "./localModel.js";
+import { chooseVariant, cleanReply } from "./localModel.js";
 
 // Le choix de quantification est fait sur l'appareil.
 //
@@ -34,6 +34,23 @@ describe("choix de la quantification selon l'appareil", () => {
     expect(gpu.device).toBe("webgpu");
     expect(cpu.device).toBe("wasm");
     expect(gpu.dtype).not.toBe(cpu.dtype);
+  });
+});
+
+// Sorties brutes du banc (scripts/bench-chat, LFM2.5-350M q4) : la réponse s'arrête à la
+// fin de tour, et une génération coupée par max_new_tokens n'est jamais montrée coupée.
+describe("nettoyage de la sortie brute", () => {
+  it.each([
+    ["fin de tour : jeton retiré", "Bonjour !<|im_end|>", "Bonjour !"],
+    ["rien après la fin de tour", "Bonjour !<|im_end|><|im_start|>user\nbuck", "Bonjour !"],
+    ["coupée : ramenée à la dernière phrase complète",
+      "Voici une blague :\nLes vélos sont trop lourds pour le trottinage ! 😄\n\n(Bonus : on pourrait aussi dire : \"Pourquoi les vélos portent-ils des sacs",
+      "Voici une blague :\nLes vélos sont trop lourds pour le trottinage !"],
+    ["coupée sans phrase complète : rien", "地黎 talk\"talk\" buck", ""],
+    ["appel d'outil complet conservé", "<|tool_call_start|>[weather()]<|tool_call_end|><|im_end|>", "<|tool_call_start|>[weather()]<|tool_call_end|>"],
+    ["appel d'outil coupé laissé à la validation", '<|tool_call_start|>[route(destination="Ga', '<|tool_call_start|>[route(destination="Ga'],
+  ])("%s", (_, raw, out) => {
+    expect(cleanReply(raw)).toBe(out);
   });
 });
 

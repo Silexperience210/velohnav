@@ -182,7 +182,8 @@ export const MAX_FREE_TEXT = 500;
 
 /**
  * Le texte du modèle peut-il être montré ? Non s'il contient une valeur (il n'en a
- * obtenu d'aucun outil), du balisage, une boucle ou rien du tout.
+ * obtenu d'aucun outil), du balisage, une autre écriture que la latine, un fragment,
+ * une boucle ou rien du tout.
  * @returns {{ ok: boolean, reason: string }}
  */
 export function checkFreeText(text) {
@@ -192,6 +193,12 @@ export function checkFreeText(text) {
   if (/<\|?|\|>|[[\]{}]|\w+\s*\(\s*\w+\s*=/.test(s)) return { ok: false, reason: "markup" };
   if (/\d/.test(s) || NUMBER_WORDS.test(norm(s))) return { ok: false, reason: "number" };
   if (UNITS.test(s)) return { ok: false, reason: "unit" };
+  // Sorties dégénérées relevées sur téléphone : « 地黎 », « talk"talk" », « buck ».
+  // La consigne demande du français (ou de l'anglais) : une lettre d'une autre écriture
+  // trahit une génération qui a dérivé.
+  if (/(?=\p{L})\P{Script=Latin}/u.test(s)) return { ok: false, reason: "script" };
+  // Fragment : moins de deux mots, ou des guillemets collés entre deux lettres.
+  if ((s.match(/\p{L}{2,}/gu) || []).length < 2 || /\p{L}["“”]\p{L}/u.test(s)) return { ok: false, reason: "fragment" };
   // Boucle : la même suite de quatre mots trois fois ou plus.
   const w = norm(s).split(/\s+/);
   const seen = new Map();

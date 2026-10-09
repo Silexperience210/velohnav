@@ -225,11 +225,25 @@ export function unloadModel() {
 // Le gabarit de conversation n'est plus écrit ici à la main (il était propre à Qwen) :
 // le worker applique celui du tokenizer du modèle (apply_chat_template), seul à
 // connaître ses jetons de rôle et sa façon de présenter les outils.
-// Jetons de structure résiduels (fin de tour, début de texte) retirés de la réponse.
-function cleanReply(text) {
-  return String(text ?? "")
-    .replace(/<\|(im_end|im_start|startoftext|endoftext)\|>/g, "")
+//
+// Réponse = ce qui précède la fin de tour (<|im_end|>, jeton d'arrêt du modèle) ; rien de
+// ce qui suivrait n'est une réponse. Sans fin de tour, la génération a été coupée par
+// max_new_tokens : mesuré au banc (scripts/bench-chat), 2 réponses libres sur 10 l'étaient,
+// et la bulle montrait une phrase interrompue (« …des sacs »). Un texte libre coupé est
+// ramené à sa dernière phrase complète ; sans phrase complète, il ne reste rien et
+// l'assistant déterministe répond. Un appel d'outil coupé est laissé tel quel : sa
+// validation (tools.js) le rejette.
+export function cleanReply(text) {
+  const s = String(text ?? "");
+  const end = s.indexOf("<|im_end|>");
+  let body = (end >= 0 ? s.slice(0, end) : s)
+    .replace(/<\|(im_start|startoftext|endoftext)\|>/g, "")
     .trim();
+  if (end < 0 && !/<\|tool_call_start\|>|<tool_call>|^\[\s*[A-Za-z_]\w*\s*\(/.test(body)) {
+    const m = /^[\s\S]*[.!?…](?=\s|$)/.exec(body);
+    body = m ? m[0].trim() : "";
+  }
+  return body;
 }
 
 /**

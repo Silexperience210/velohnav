@@ -163,6 +163,13 @@ describe("texte libre : jamais une valeur que le modèle n'a pas obtenue d'un ou
     ["find_station(name=\"Gare\") voilà", false],
     ["ok ok ok ok ok ok ok ok ok ok ok ok ok ok", false],
     ["a".repeat(600), false],
+    // Sorties dégénérées observées sur téléphone (APK du 9 octobre)
+    ["地黎", false],
+    ['talk"talk"', false],
+    ["buck", false],
+    ["Bonjour 地黎 !", false],
+    ["Oui.", false],
+    ["Voici une blague : « Pourquoi le vélo tombe-t-il ? Parce qu'il est crevé ! » 😄", true],
   ])("%j → montré : %s", (text, shown) => {
     expect(checkFreeText(text).ok).toBe(shown);
   });
@@ -192,6 +199,13 @@ describe("repli : l'assistant déterministe répond dès que le modèle flanche"
   it("Markdown du modèle retiré avant affichage (sortie réelle)", () => {
     expect(resolve("**Pourquoi les chiens portent-ils des lunettes ?**  \n*Pour mieux voir !*").text)
       .toBe("Pourquoi les chiens portent-ils des lunettes ?\nPour mieux voir !");
+  });
+  it.each([
+    ["autre écriture", "地黎", "script"],
+    ["fragment", 'talk"talk"', "fragment"],
+    ["mot isolé", "buck", "fragment"],
+  ])("%s (sortie du téléphone) → réponse de l'assistant local", (_, raw, reason) => {
+    expect(resolve(raw)).toMatchObject({ source: "fallback", text: help.text, reason });
   });
   it("aucune valeur numérique sans outil : « EDELECK (19 km) » écrit par le modèle n'est jamais montré", () => {
     expect(resolve("La station la plus proche est EDELECK (19 km), 3 vélos, 12 bornes.")).toMatchObject({ source: "fallback", reason: "number" });
