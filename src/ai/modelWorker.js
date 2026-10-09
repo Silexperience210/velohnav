@@ -90,7 +90,7 @@ async function probeWebGPU() {
 }
 
 /**
- * Premier téléchargement du gros fichier .onnx : écrit EN FLUX dans le cache de
+ * Premier téléchargement des fichiers de poids : écrits EN FLUX dans le cache de
  * transformers.js, sous la clé qu'il cherchera ensuite.
  *
  * Sans cela, transformers.js lit le fichier entier en mémoire (Uint8Array), en
@@ -133,8 +133,10 @@ async function load({ variant, modelId }) {
     env.allowLocalModels = true;
     env.localModelPath = LOCAL_PATH;
     ref = LOCAL_DIR;
-  } else if (!modelId && variant.file) {
-    await prefetchToCache(variant.file);
+  } else if (!modelId) {
+    // Graphe puis poids (.onnx_data, le gros), l'un après l'autre : jamais deux flux
+    // de plusieurs centaines de Mo en même temps.
+    for (const file of variant.files || [variant.file]) await prefetchToCache(file);
   }
   generator = await pipeline("text-generation", ref, {
     dtype: variant.dtype,
@@ -164,11 +166,27 @@ self.onmessage = async ({ data }) => {
   if (msg.type === "generate") {
     try {
       if (!generator) throw new Error("model not loaded");
-      const out = await generator(msg.prompt, msg.options);
-      const text = Array.isArray(out) ? out[0]?.generated_text ?? "" : out?.generated_text ?? "";
-      post({ type: "result", id: msg.id, text });
+      post({ type: "result", id: msg.id, text: await complete(msg) });
     } catch (e) {
       post({ type: "result", id: msg.id, error: String(e?.message || e) });
     }
   }
 };
+
+/**
+ * Gabarit de conversation DU MODÈLE (tokenizer_config / chat_template.jinja), outils
+ * compris : c'est ainsi que LFM2.5 a été entraîné à les voir. Rend seulement le texte
+ * produit après le prompt, jetons spéciaux conservés — <|tool_call_start|> marque un
+ * appel d'outil, il ne faut pas le perdre au décodage.
+ */
+async function complete({ messages, tools, options }) {
+  const tok = generator.tokenizer;
+  const inputs = tok.apply_chat_template(messages, {
+    ...(tools?.length ? { tools } : {}),
+    add_generation_prompt: true,
+    return_dict: true,
+  });
+  const out = await generator.model.generate({ ...inputs, ...options });
+  const n = inputs.input_ids.dims.at(-1);
+  return tok.decode(out.slice(null, [n, null])[0], { skip_special_tokens: false });
+}

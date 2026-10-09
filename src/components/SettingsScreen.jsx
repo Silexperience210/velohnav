@@ -180,7 +180,7 @@ function SettingsScreen({ apiKey, setApiKey, onRefresh, refreshing = false, apiL
           <div style={{ padding: "12px 14px 14px", borderTop: "1px solid var(--vn-border)" }}>
             <div className="vn-eyebrow" style={{ marginBottom: 8 }}>{t("ui.set.licenses")}</div>
             <ul style={{ listStyle: "none", display: "flex", flexDirection: "column", gap: 6 }}>
-              {["osm", "ofm", "maplibre", "transitous", "meteo", "qwen", "veloh"].map(k => (
+              {["osm", "ofm", "maplibre", "transitous", "meteo", "lfm", "veloh"].map(k => (
                 <li key={k} style={{ display: "flex", gap: 8, fontSize: 12, color: "var(--vn-text2)", lineHeight: 1.45 }}>
                   <span style={{ color: "var(--vn-text3)", marginTop: 1 }}><Icon name="chevronRight" size={12} stroke={2}/></span>
                   {t(`ui.lic.${k}`)}

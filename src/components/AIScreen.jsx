@@ -40,7 +40,7 @@ function describeModelError(e) {
 // Taille réelle du modèle conversationnel, annoncée AVANT tout téléchargement :
 // rien ne part sans que l'utilisateur l'ait décidé.
 // Taille annoncée : celle de la variante que l'appareil sait réellement faire tourner
-// (483 Mo avec WebGPU, 512 Mo sinon) — voir chatModelMB().
+// (255 Mo avec WebGPU, 294 Mo sinon) — voir chatModelMB().
 
 // ── Composant principal ────────────────────────────────────────────
 function AIScreen({ stations, aiHistory, setAiHistory,
@@ -60,7 +60,7 @@ function AIScreen({ stations, aiHistory, setAiHistory,
   const [modelError, setModelError] = useState("");   // message réel, affiché en cas d'échec
   const [modelPhase, setModelPhase] = useState(null);  // { phase: download|init, device }
   const [loadSeq, setLoadSeq] = useState(0);             // incrémenté par « Réessayer »
-  // La conversation libre est DÉSACTIVÉE par défaut : le modèle pèse près d'1 Go,
+  // La conversation libre est DÉSACTIVÉE par défaut : le modèle pèse ~300 Mo,
   // il n'est téléchargé que sur demande explicite. Sans lui, l'écran reste utile :
   // tout ce qui est factuel est calculé sur l'appareil, exactement.
   const [chatOn, setChatOn] = useState(false);

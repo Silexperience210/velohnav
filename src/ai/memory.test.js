@@ -15,12 +15,12 @@ vi.mock("@capacitor/core", () => ({ registerPlugin: () => ({ info: () => memInfo
 describe("empreinte : pourquoi le 1.5B tuait l'application", () => {
   // Tailles relevées sur le Hub (API /tree) pour les fichiers q4f16
   const ancien = { mb: 1222, dtype: "q4f16", device: "webgpu" };   // Qwen2.5-1.5B
-  it("pic estimé : ≈ 4,0 Go pour le 1.5B, ≈ 1,75 Go pour le 0.5B", () => {
+  it("pic estimé : ≈ 4,0 Go pour le 1.5B, ≈ 1,08 Go (GPU) et 1,2 Go (CPU) pour LFM2.5-350M", () => {
     expect(estimatePeakBytes(ancien) / GB).toBeCloseTo(3.98, 1);
-    expect(estimatePeakBytes(VARIANTS.webgpu) / GB).toBeCloseTo(1.76, 1);
-    expect(estimatePeakBytes(VARIANTS.wasm) / GB).toBeCloseTo(1.85, 1);
+    expect(estimatePeakBytes(VARIANTS.webgpu) / GB).toBeCloseTo(1.08, 1);
+    expect(estimatePeakBytes(VARIANTS.wasm) / GB).toBeCloseTo(1.2, 1);
   });
-  it("téléphone à 3 Go libres (8 Go de RAM, appli carte ouverte) : 1.5B refusé, 0.5B accepté", () => {
+  it("téléphone à 3 Go libres (8 Go de RAM, appli carte ouverte) : 1.5B refusé, LFM2.5 accepté", () => {
     const info = { availBytes: 3.0 * GB, thresholdBytes: 0.25 * GB, lowMemory: false };
     expect(memoryVerdict(info, ancien).ok).toBe(false);
     expect(memoryVerdict(info, heaviestVariant()).ok).toBe(true);
@@ -37,8 +37,8 @@ describe("memoryVerdict — refuser avant de s'engager", () => {
       .toMatchObject({ ok: false, reason: "low-memory" });
   });
   it("mémoire libre au-dessus du seuil système insuffisante : refus, chiffres pour le message", () => {
-    const r = memoryVerdict({ availBytes: 1.9 * GB, thresholdBytes: 0.3 * GB }, v);
-    expect(r).toMatchObject({ ok: false, reason: "insufficient", availMB: 1600 });
+    const r = memoryVerdict({ availBytes: 1.2 * GB, thresholdBytes: 0.3 * GB }, v);
+    expect(r).toMatchObject({ ok: false, reason: "insufficient", availMB: 900 });
     expect(r.needMB).toBe(Math.round(estimatePeakBytes(v) / 1e6));
   });
   it("assez de mémoire : accepté", () => {
@@ -55,13 +55,16 @@ describe("memoryVerdict — refuser avant de s'engager", () => {
 
 describe("fichiers du modèle — même nom et même clé de cache que transformers.js", () => {
   it("le fichier de chaque variante suit la table de suffixes de transformers.js", () => {
-    for (const x of Object.values(VARIANTS))
+    for (const x of Object.values(VARIANTS)) {
       expect(x.file).toBe(`onnx/model${DEFAULT_DTYPE_SUFFIX_MAPPING[x.dtype]}.onnx`);
+      // + le fichier de poids séparé, nommé comme getExternalDataChunkNames (1 bloc)
+      expect(x.files).toEqual([x.file, `${x.file}_data`]);
+    }
   });
   it("URL = remoteHost + « {model}/resolve/main/ » + fichier (clé du cache transformers-cache)", () => {
     expect(hubFileUrl(VARIANTS.webgpu.file))
-      .toBe("https://huggingface.co/onnx-community/Qwen2.5-0.5B-Instruct/resolve/main/onnx/model_q4f16.onnx");
-    expect(MODEL.id).toBe("onnx-community/Qwen2.5-0.5B-Instruct");
+      .toBe("https://huggingface.co/onnx-community/LFM2.5-350M-ONNX/resolve/main/onnx/model_q4f16.onnx");
+    expect(MODEL.id).toBe("onnx-community/LFM2.5-350M-ONNX");
   });
 });
 
@@ -106,7 +109,7 @@ describe("façade : la mémoire est contrôlée avant, et rendue après", () => 
     await flush();
     const e = await outcome;
     expect(e).toMatchObject({ name: "ModelError", code: "memory", availMB: 980 });
-    expect(e.needMB).toBeGreaterThan(1500);
+    expect(e.needMB).toBe(1197);   // 294 Mo × 3 + 300 Mio de marge
     expect(FakeWorker.all).toHaveLength(0);
   });
 
@@ -117,7 +120,7 @@ describe("façade : la mémoire est contrôlée avant, et rendue après", () => 
     expect(memInfo).toHaveBeenCalledTimes(1);   // la source native a bien été lue
     expect(console.info).toHaveBeenCalledWith(expect.stringMatching(/mémoire : ok \(/));
     expect(FakeWorker.all).toHaveLength(1);
-    expect(FakeWorker.all[0].sent[0]).toMatchObject({ type: "load", variant: { dtype: "q8" } });
+    expect(FakeWorker.all[0].sent[0]).toMatchObject({ type: "load", variant: { dtype: "q4" } });
   });
 
   it("navigateur à 2 Go de RAM : refus", async () => {
@@ -143,7 +146,7 @@ describe("façade : la mémoire est contrôlée avant, et rendue après", () => 
     const outcome = mod.loadModel().then(() => "resolved", (e) => e);
     await flush();
     const w = FakeWorker.all[0];
-    w.emit({ type: "progress", ev: { status: "progress", file: "onnx/model_quantized.onnx", loaded: 1e6, total: 5e8 } });
+    w.emit({ type: "progress", ev: { status: "progress", file: "onnx/model_q4.onnx_data", loaded: 1e6, total: 3e8 } });
     mod.unloadModel();
     expect(await outcome).toMatchObject({ code: "cancelled" });
     expect(w.terminated).toBe(true);

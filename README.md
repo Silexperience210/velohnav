@@ -16,7 +16,7 @@
 
 VelohNav est une app de navigation AR pour le réseau Vel'OH! Luxembourg combinant :
 - **AR temps réel** avec ARCore Geospatial VPS (précision ~1m) ou tracé canvas en fallback
-- **IA embarquée** (Qwen 2.5 1.5B on-device) pour répondre en contexte (météo, dispo, distance, transport en commun)
+- **IA embarquée** (LFM2.5-350M on-device, désactivée par défaut) pour répondre en contexte (météo, dispo, distance, transport en commun)
 - **Crypto-natif** : signalements décentralisés Nostr + récompenses Bitcoin Lightning
 - **Multimodal** : vélo, marche, bus RGTR — avec bascule auto si météo dégrade
 - **Audio HRTF 3D** pour guidage casque mains-libres
@@ -147,7 +147,7 @@ VelohNav est une app de navigation AR pour le réseau Vel'OH! Luxembourg combina
 
 ### ◎ AI — Assistant IA
 
-- **Modèle** : Qwen 2.5 1.5B on-device (transformers.js) — ~256 tokens max, zéro clé API
+- **Modèle** : LFM2.5-350M on-device (transformers.js v4) — ~256 tokens max, zéro clé API
 - **Contexte injecté** : stations triées par distance, vélos dispo, conditions météo, mode de recommandation, départs bus RGTR temps réel
 - **Lancement nav AR depuis l'IA** — l'assistant peut déclencher directement la navigation vers une station via réponse structurée
 - **Historique** de conversation dans la session
@@ -157,7 +157,7 @@ VelohNav est une app de navigation AR pour le réseau Vel'OH! Luxembourg combina
 | Réglage | Description |
 |---------|-------------|
 | Clé JCDecaux | API Vel'OH! temps réel |
-| IA embarquée | Qwen 2.5 1.5B local — aucune clé requise |
+| IA embarquée | LFM2.5-350M local — aucune clé requise |
 | Clé Google Maps | Optionnel — fallback si OSRM indisponible |
 | Clé HAFAS ATP | Optionnel — bus RGTR temps réel (`opendata-api@verkeiersverbond.lu`) |
 | Lightning Address | `user@provider.com` pour Sats Rewards |
@@ -203,7 +203,7 @@ VelohNav est une app de navigation AR pour le réseau Vel'OH! Luxembourg combina
 | Build | AGP 8.9.1 · Java 21 · compileSdk 36 · minSdk 24 |
 | CI | GitHub Actions — debug APK automatique, release auto sur tag `v*` |
 
-> **IA on-device** : Qwen 2.5 1.5B embarqué via transformers.js (WebGPU, fallback WASM). Zéro clé API, zéro serveur, réponses hors-ligne.
+> **IA on-device** : LFM2.5-350M embarqué via transformers.js v4 (WebGPU, fallback WASM). Zéro clé API, zéro serveur, réponses hors-ligne.
 
 ---
 

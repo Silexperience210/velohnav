@@ -3,9 +3,10 @@ import { chooseVariant } from "./localModel.js";
 
 // Le choix de quantification est fait sur l'appareil.
 //
-// Mesuré sur le dépôt du modèle (Qwen2.5-0.5B) : q4f16 = 483 Mo, q8 = 512 Mo. Et
-// vérifié à l'exécution (sur le 1.5B) : dans un navigateur sans adaptateur WebGPU,
-// demander q4f16 fait échouer le chargement — une variante WASM, elle, fonctionne.
+// Mesuré sur le dépôt du modèle (LFM2.5-350M, graphe + poids .onnx_data) : q4f16 =
+// 255 Mo, q4 = 294 Mo. Et vérifié à l'exécution (sur Qwen) : dans un navigateur sans
+// adaptateur WebGPU, demander q4f16 fait échouer le chargement — une variante WASM, elle,
+// fonctionne.
 // D'où cette décision : la plus légère quand l'appareil a un vrai GPU, la
 // compatible sinon. Aucun appareil ne se retrouve avec un modèle qui ne charge pas.
 describe("choix de la quantification selon l'appareil", () => {
@@ -13,14 +14,14 @@ describe("choix de la quantification selon l'appareil", () => {
     const v = chooseVariant(true);
     expect(v.dtype).toBe("q4f16");
     expect(v.device).toBe("webgpu");
-    expect(v.mb).toBe(483);
+    expect(v.mb).toBe(255);
   });
 
-  it("sans adaptateur : q8 sur WASM, la seule qui fonctionne", () => {
+  it("sans adaptateur : q4 sur WASM, la seule qui fonctionne", () => {
     const v = chooseVariant(false);
-    expect(v.dtype).toBe("q8");
+    expect(v.dtype).toBe("q4");
     expect(v.device).toBe("wasm");
-    expect(v.mb).toBe(512);
+    expect(v.mb).toBe(294);
   });
 
   it("la variante légère est réservée au WebGPU, jamais choisie sur WASM", () => {
@@ -51,7 +52,8 @@ const GOOD_PROBE = {
   adapter: true, isFallbackAdapter: false, features: ["shader-f16"],
   limits: { maxBufferSize: 2 ** 31, maxStorageBufferBindingSize: 2 ** 31 }, device: { ok: true },
 };
-const MB = 483_000_000;
+const MB = 254_965_760;   // model_q4f16.onnx_data
+const GRAPH = 182_827;    // model_q4f16.onnx
 // Le contrôle mémoire précède la création du worker (asynchrone)
 const flush = () => vi.advanceTimersByTimeAsync(0);
 const progress = (file, loaded, total) => ({ type: "progress", ev: { status: "progress", file, loaded, total } });
@@ -80,8 +82,11 @@ describe("façade : un chargement ne peut plus rester figé", () => {
     expect(w.sent[0]).toEqual({ type: "probe" });
     w.emit({ type: "probe", probe: GOOD_PROBE });
     expect(w.sent[1].variant).toMatchObject({ dtype: "q4f16", device: "webgpu" });
-    w.emit(progress("onnx/model_q4f16.onnx", MB / 2, MB));
-    w.emit(progress("onnx/model_q4f16.onnx", MB, MB));
+    // Le graphe arrive d'abord : à 100 %, ce n'est PAS la fin (les poids suivent).
+    w.emit(progress("onnx/model_q4f16.onnx", GRAPH, GRAPH));
+    expect(phases.at(-1)).toEqual({ phase: "download", device: "webgpu" });
+    w.emit(progress("onnx/model_q4f16.onnx_data", MB / 2, MB));
+    w.emit(progress("onnx/model_q4f16.onnx_data", MB, MB));
     expect(pcts.at(-1)).toBe(100);
     expect(phases.at(-1)).toEqual({ phase: "init", device: "webgpu" });
 
@@ -90,19 +95,20 @@ describe("façade : un chargement ne peut plus rester figé", () => {
 
     await vi.advanceTimersByTimeAsync(3_000);
     const e = await outcome;
-    expect(e).toMatchObject({ name: "ModelError", code: "webgpu_init_timeout", seconds: 180, mb: 512 });
+    expect(e).toMatchObject({ name: "ModelError", code: "webgpu_init_timeout", seconds: 180, mb: 294 });
     expect(w.terminated).toBe(true);
     expect(store.get("velohnav_ai_webgpu_ko")).toBeTruthy();
-    expect(mod.chatModelMB()).toBe(512); // l'interface annonce la taille du repli
+    expect(mod.chatModelMB()).toBe(294); // l'interface annonce la taille du repli
     expect(mod.isModelReady()).toBe(false);
 
-    // « Réessayer » : worker neuf, plus de sonde, directement WASM / q8.
+    // « Réessayer » : worker neuf, plus de sonde, directement WASM / q4.
     const retry = mod.loadModel();
     await flush();
     const w2 = FakeWorker.all[1];
     expect(w2).not.toBe(w);
-    expect(w2.sent).toEqual([{ type: "load", variant: expect.objectContaining({ dtype: "q8", device: "wasm" }) }]);
-    w2.emit(progress("onnx/model_quantized.onnx", 10, 10));
+    expect(w2.sent).toEqual([{ type: "load", variant: expect.objectContaining({ dtype: "q4", device: "wasm" }) }]);
+    w2.emit(progress("onnx/model_q4.onnx", 10, 10));
+    w2.emit(progress("onnx/model_q4.onnx_data", 10, 10));
     w2.emit({ type: "ready" });
     await expect(retry).resolves.toBeUndefined();
     expect(mod.isModelReady()).toBe(true);
@@ -112,10 +118,10 @@ describe("façade : un chargement ne peut plus rester figé", () => {
     mod.loadModel().catch(() => {});
     await flush();
     const w = FakeWorker.all[0];
-    w.emit({ type: "probe", probe: { ...GOOD_PROBE, limits: { maxBufferSize: 2 ** 28, maxStorageBufferBindingSize: 2 ** 27 } } });
+    w.emit({ type: "probe", probe: { ...GOOD_PROBE, features: [] } });   // pas de shader-f16
     const loads = w.sent.filter((m) => m.type === "load");
     expect(loads).toHaveLength(1);
-    expect(loads[0].variant.dtype).toBe("q8");
+    expect(loads[0].variant.dtype).toBe("q4");
   });
 
   it("coupure réseau pendant le téléchargement : échec explicite, GPU non condamné", async () => {
@@ -123,7 +129,7 @@ describe("façade : un chargement ne peut plus rester figé", () => {
     await flush();
     const w = FakeWorker.all[0];
     w.emit({ type: "probe", probe: GOOD_PROBE });
-    w.emit(progress("onnx/model_q4f16.onnx", 1000, MB));
+    w.emit(progress("onnx/model_q4f16.onnx_data", 1000, MB));
     await vi.advanceTimersByTimeAsync(92_000);
     expect(await outcome).toMatchObject({ code: "download_timeout", seconds: 90 });
     expect(w.terminated).toBe(true);
@@ -135,7 +141,8 @@ describe("façade : un chargement ne peut plus rester figé", () => {
     const outcome = mod.loadModel().then(() => "resolved", (e) => e);
     await flush();
     const w = FakeWorker.all[0];
-    w.emit(progress("onnx/model_quantized.onnx", 5, 5));
+    w.emit(progress("onnx/model_q4.onnx", 5, 5));
+    w.emit(progress("onnx/model_q4.onnx_data", 5, 5));
     w.emit({ type: "error", message: "RangeError: Array buffer allocation failed" });
     expect(await outcome).toMatchObject({ code: "wasm_init", detail: "RangeError: Array buffer allocation failed" });
     expect(w.terminated).toBe(true);
@@ -167,7 +174,9 @@ describe("façade : un chargement ne peut plus rester figé", () => {
     const reply = mod.generate("sys", [{ role: "user", content: "salut" }]);
     await vi.advanceTimersByTimeAsync(0);
     const req = w.sent.at(-1);
-    w.emit({ type: "result", id: req.id, text: `${req.prompt}Bonjour !<|im_end|>` });
+    // Messages bruts : c'est le worker qui applique le gabarit du modèle
+    expect(req.messages).toEqual([{ role: "system", content: "sys" }, { role: "user", content: "salut" }]);
+    w.emit({ type: "result", id: req.id, text: "Bonjour !<|im_end|>" });
     await expect(reply).resolves.toBe("Bonjour !");
   });
 });

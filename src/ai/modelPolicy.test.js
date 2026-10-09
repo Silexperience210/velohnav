@@ -15,8 +15,8 @@ const goodProbe = (over = {}) => ({
 });
 
 describe("sonde WebGPU : la présence d'un adaptateur ne suffit pas", () => {
-  it("le plus gros tenseur q4f16 est la table d'embeddings fp16 (≈ 260 Mio pour le 0.5B)", () => {
-    expect(LARGEST_TENSOR_BYTES).toBe(272_269_312);
+  it("le plus gros tenseur q4f16 est la table d'embeddings 4 bits (32 Mio pour LFM2.5-350M)", () => {
+    expect(LARGEST_TENSOR_BYTES).toBe(33_554_432);
   });
 
   it("GPU complet : q4f16 autorisé", () => {
@@ -36,14 +36,18 @@ describe("sonde WebGPU : la présence d'un adaptateur ne suffit pas", () => {
     expect(assessWebGPU(goodProbe({ features: ["subgroups"] })).reason).toBe("no-shader-f16");
   });
 
-  it("limites mobiles courantes (256 Mio de tampon, 128 Mio de liaison) : refusé", () => {
-    const r = assessWebGPU(goodProbe({ limits: { maxBufferSize: 256 * 2 ** 20, maxStorageBufferBindingSize: 128 * 2 ** 20 } }));
+  it("limites mobiles courantes (256 Mio de tampon, 128 Mio de liaison) : accepté — elles recalaient Qwen", () => {
+    expect(assessWebGPU(goodProbe({ limits: { maxBufferSize: 256 * 2 ** 20, maxStorageBufferBindingSize: 128 * 2 ** 20 } })).ok).toBe(true);
+  });
+
+  it("tampon trop petit (16 Mio) : refusé", () => {
+    const r = assessWebGPU(goodProbe({ limits: { maxBufferSize: 16 * 2 ** 20, maxStorageBufferBindingSize: 16 * 2 ** 20 } }));
     expect(r.ok).toBe(false);
-    expect(r.reason).toMatch(/maxBufferSize 256 MiB/);
+    expect(r.reason).toMatch(/maxBufferSize 16 MiB/);
   });
 
   it("tampon assez grand mais liaison trop petite : refusé", () => {
-    const r = assessWebGPU(goodProbe({ limits: { maxBufferSize: 2 ** 31, maxStorageBufferBindingSize: 128 * 2 ** 20 } }));
+    const r = assessWebGPU(goodProbe({ limits: { maxBufferSize: 2 ** 31, maxStorageBufferBindingSize: 16 * 2 ** 20 } }));
     expect(r.ok).toBe(false);
     expect(r.reason).toMatch(/maxStorageBufferBindingSize/);
   });
@@ -142,6 +146,25 @@ describe("progression : 100 % n'est que la fin du téléchargement", () => {
     // Ensuite plus rien ne la fait bouger : le délai d'init court depuis 100 %.
     const later = progressReducer(s, { status: "done", file: "onnx/model_q4f16.onnx" }, T0 + 99);
     expect(later.since).toBe(T0 + 50);
+  });
+
+  it("poids séparés (.onnx_data) : le graphe à 100 % ne suffit pas, il faut les poids", () => {
+    let s = initialProgress(T0, ["onnx/model_q4f16.onnx", "onnx/model_q4f16.onnx_data"]);
+    s = progressReducer(s, ev("onnx/model_q4f16.onnx", 183, 183), T0 + 1);
+    expect(s.phase).toBe("download");
+    expect(s.pct).toBe(99);   // pas de « 100 % » trompeur
+    s = progressReducer(s, ev("onnx/model_q4f16.onnx_data", 100, 1000), T0 + 2);
+    expect(s.phase).toBe("download");
+    s = progressReducer(s, ev("onnx/model_q4f16.onnx_data", 1000, 1000), T0 + 3);
+    expect(s).toMatchObject({ phase: "init", pct: 100, since: T0 + 3 });
+  });
+
+  it("depuis le cache, deux « done » : initialisation au second seulement", () => {
+    let s = initialProgress(T0, ["onnx/model_q4.onnx", "onnx/model_q4.onnx_data"]);
+    s = progressReducer(s, { status: "done", file: "/onnx/model_q4.onnx" }, T0 + 1);
+    expect(s.phase).toBe("download");
+    s = progressReducer(s, { status: "done", file: "/onnx/model_q4.onnx_data" }, T0 + 2);
+    expect(s.phase).toBe("init");
   });
 
   it("« done » du .onnx sans progression (lecture depuis le cache) : initialisation aussi", () => {

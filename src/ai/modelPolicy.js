@@ -11,30 +11,40 @@
 // chien de garde la voit.
 
 /**
- * Modèle conversationnel : Qwen2.5-0.5B-Instruct (et non plus 1.5B).
+ * Modèle conversationnel : LFM2.5-350M (Liquid AI), et non plus Qwen2.5-0.5B.
  *
- * Pourquoi : l'application MOURAIT au chargement (WebView tué par le système, puis
- * redémarrage). Tailles relevées sur le dépôt HF (API /tree, octets) :
- *   1.5B : q4f16 1 221,9 Mo · q4 1 787,6 Mo
- *   0.5B : q4f16   483,0 Mo · q8 (model_quantized) 512,1 Mo · q4 786,2 Mo
- * et le pic mémoire vaut environ 3 fois le fichier (estimatePeakBytes) : ≈ 3,7 Go
- * pour le 1.5B en GPU, ≈ 1,45 Go pour le 0.5B. Pour de la discussion libre — les
- * réponses factuelles sont calculées en code — le 0.5B suffit ; Qwen3-0.6B
- * (q4f16 569,8 Mo) a été écarté : plus lourd et un gabarit de « réflexion » à
- * neutraliser.
+ * Pourquoi (mesures et banc dans docs/MODELE.md) : à runtime identique, pic de mémoire
+ * résidente 821 Mo contre 2 934 (−72 %), fichier WebGPU 255 Mo contre 483, et un
+ * modèle entraîné à l'appel d'outils (6/12 au banc contre 5/12). Il exige
+ * @huggingface/transformers v4 : son export ONNX (GatherBlockQuantized « bits ») ne se
+ * charge pas en 3.x.
+ *
+ * Tailles relevées sur le dépôt HF (API /tree, octets, révision 7dd49995) :
+ *   q4f16 : model_q4f16.onnx 182 827 + model_q4f16.onnx_data 254 965 760 = 255,1 Mo
+ *   q4    : model_q4.onnx    183 442 + model_q4.onnx_data    293 629 952 = 293,8 Mo
+ * Les poids sont dans un fichier séparé (.onnx_data, config « use_external_data_format ») :
+ * chaque variante compte DEUX fichiers, et c'est le second qui pèse.
  */
 export const MODEL = Object.freeze({
-  id: "onnx-community/Qwen2.5-0.5B-Instruct",
-  localDir: "Qwen2.5-0.5B-Instruct",       // copie embarquée éventuelle (scripts/fetch-model.sh)
+  id: "onnx-community/LFM2.5-350M-ONNX",
+  localDir: "LFM2.5-350M-ONNX",            // copie embarquée éventuelle (scripts/fetch-model.sh)
 });
 /** Anciens modèles dont les fichiers en cache (1,2 à 1,8 Go de stockage) sont à purger. */
 export const LEGACY_MODEL_DIRS = Object.freeze(["Qwen2.5-1.5B-Instruct"]);
 
+const variant = (dtype, device, mb, suffix) => Object.freeze({
+  dtype, device, mb,
+  file: `onnx/model${suffix}.onnx`,
+  // Tous les fichiers de poids, le graphe d'abord : le dernier est le gros.
+  files: Object.freeze([`onnx/model${suffix}.onnx`, `onnx/model${suffix}.onnx_data`]),
+});
+
 /** Variantes du modèle, tailles mesurées sur le dépôt HF (Mo décimaux arrondis). */
 export const VARIANTS = Object.freeze({
-  webgpu: Object.freeze({ dtype: "q4f16", device: "webgpu", mb: 483, file: "onnx/model_q4f16.onnx" }),
-  // q8 (int8) plutôt que q4 sur WASM : 512 Mo au lieu de 786, et meilleure qualité
-  wasm:   Object.freeze({ dtype: "q8",    device: "wasm",   mb: 512, file: "onnx/model_quantized.onnx" }),
+  webgpu: variant("q4f16", "webgpu", 255, "_q4f16"),
+  // q4 sur WASM : q4f16 calcule en fp16, que le moteur processeur ne sait pas faire ;
+  // q8 (model_quantized) pèserait 510 Mo.
+  wasm:   variant("q4",    "wasm",   294, "_q4"),
 });
 
 /** URL d'un fichier du modèle sur le Hub — c'est aussi la clé du cache de transformers.js. */
@@ -53,14 +63,17 @@ export function chooseVariant(webgpuUsable) {
   return webgpuUsable ? VARIANTS.webgpu : VARIANTS.wasm;
 }
 
-// Plus gros tenseur de la variante q4f16 : la table d'embeddings, NON quantifiée,
-// 151 936 jetons × 896 dimensions (0.5B) en fp16. Déduit des tailles du dépôt : q4
-// (fp32) et q4f16 (fp16) diffèrent de 303 Mo, dont 272 Mo pour cette seule table. Sur WebGPU,
-// onnxruntime la place dans UN tampon lié en stockage : l'appareil doit accepter un
-// tampon et une liaison de cette taille. Beaucoup de GPU mobiles plafonnent à 128 ou
-// 256 Mio ; onnxruntime ne lève alors pas d'exception (les erreurs de validation
-// WebGPU partent dans `onuncapturederror`, simple console.error) — d'où le blocage.
-export const LARGEST_TENSOR_BYTES = 151936 * 896 * 2; // 272 269 312 o ≈ 260 Mio
+// Plus gros tenseur de la variante q4f16 : la table d'embeddings quantifiée en 4 bits,
+// 65 536 jetons × 1 024 dimensions / 2 = 32 Mio (deux copies de cette taille, l'une pour
+// la recherche d'embeddings, l'autre pour la tête de sortie liée). Relevé en lisant les
+// initialiseurs du graphe model_q4f16.onnx (champ « length » des données externes).
+// Sur WebGPU, onnxruntime place chaque tenseur dans UN tampon lié en stockage :
+// l'appareil doit accepter un tampon et une liaison de cette taille. Les GPU mobiles
+// plafonnent souvent à 128 ou 256 Mio — limite qui recalait Qwen (260 Mio d'embeddings
+// fp16) et que LFM2.5 respecte. onnxruntime ne lève pas d'exception en cas de
+// dépassement (les erreurs de validation WebGPU partent dans `onuncapturederror`,
+// simple console.error) : d'où l'intérêt de le vérifier avant.
+export const LARGEST_TENSOR_BYTES = 65536 * 512; // 33 554 432 o = 32 Mio
 
 /**
  * Le GPU peut-il réellement porter la variante q4f16 ?
@@ -197,13 +210,21 @@ export function watchdog(s, now, limits = LIMITS) {
 
 /**
  * Suivi de progression. Les événements viennent du progress_callback de transformers.js
- * ({status, file, loaded, total}). La phase passe à « init » dès que le fichier .onnx
- * atteint 100 % : ce qui suit (écriture en cache, moteur, session) n'émet plus aucun
- * événement et relève du délai d'initialisation, pas de la détection de coupure réseau.
+ * ({status, file, loaded, total}). La phase passe à « init » quand les fichiers de poids
+ * attendus (`expect`, ceux de la variante) sont tous à 100 % : ce qui suit (écriture en
+ * cache, moteur, session) n'émet plus aucun événement et relève du délai
+ * d'initialisation, pas de la détection de coupure réseau.
+ *
+ * Pourquoi `expect` : les poids de LFM2.5 sont dans un .onnx_data séparé. Le graphe
+ * (183 Ko) arrive à 100 % bien avant les 255 Mo de poids ; sans cette liste, le délai
+ * d'initialisation partait en plein téléchargement et l'interrompait sur réseau lent.
+ * Sans liste (variante pas encore choisie), le premier fichier .onnx(_data) terminé fait foi.
  */
-export function initialProgress(now) {
-  return { phase: "setup", since: now, lastActivity: now, files: {}, pct: 0 };
+export function initialProgress(now, expect = null) {
+  return { phase: "setup", since: now, lastActivity: now, files: {}, finished: [], expect, pct: 0 };
 }
+
+const baseName = (f) => String(f || "").replace(/^.*\//, "");
 
 export function progressReducer(state, ev, now) {
   if (!ev || state.phase === "init") return state;
@@ -216,13 +237,20 @@ export function progressReducer(state, ev, now) {
   const known = Object.values(files).filter((f) => f.total > 0);
   const total = known.reduce((a, f) => a + f.total, 0);
   const loaded = known.reduce((a, f) => a + Math.min(f.loaded, f.total), 0);
-  const pct = total > 0 ? Math.min(100, Math.round((loaded / total) * 100)) : state.pct;
-  const modelFinished =
+  let pct = total > 0 ? Math.min(100, Math.round((loaded / total) * 100)) : state.pct;
+  const fileFinished =
     isModel && (ev.status === "done" || (ev.status === "progress" && ev.total > 0 && ev.loaded >= ev.total));
-  if (modelFinished) return { ...state, files, pct: 100, phase: "init", since: now, lastActivity: now };
+  const finished = fileFinished && !state.finished.includes(baseName(file))
+    ? [...state.finished, baseName(file)] : state.finished;
+  const allFinished = state.expect?.length
+    ? state.expect.every((f) => finished.includes(baseName(f)))
+    : fileFinished;
+  if (allFinished) return { ...state, files, finished, pct: 100, phase: "init", since: now, lastActivity: now };
+  // Le graphe seul est à 100 % : on n'annonce pas 100 % tant que les poids manquent.
+  if (pct >= 100 && state.expect?.length) pct = 99;
   // Tout événement du hub (initiate, download, progress, done) prouve que le réseau
   // répond : on quitte « setup » pour la surveillance de coupure.
-  return { ...state, files, pct, phase: "download", lastActivity: now };
+  return { ...state, files, finished, pct, phase: "download", lastActivity: now };
 }
 
 /**

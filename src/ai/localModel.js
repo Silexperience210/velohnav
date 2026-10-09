@@ -1,6 +1,6 @@
 // IA embarquée 100% locale (zéro clé API, zéro requête réseau après le
 // téléchargement initial du modèle, données 100% sur l'appareil).
-// Basé sur @huggingface/transformers (transformers.js v3), exécuté dans un worker
+// Basé sur @huggingface/transformers (transformers.js v4), exécuté dans un worker
 // dédié (modelWorker.js) que cette façade surveille.
 //
 // Défaut corrigé : sur téléphone, « Chargement du modèle · 100 % » restait affiché
@@ -70,7 +70,7 @@ function killWorker(err) {
   pending.clear();
 }
 
-// Après un échec WebGPU, le fichier q4f16 (483 Mo) ne servira plus sur cet appareil :
+// Après un échec WebGPU, les fichiers q4f16 (255 Mo) ne serviront plus sur cet appareil :
 // on le retire du cache de transformers.js pour laisser la place à la variante WASM.
 async function purgeCache(match) {
   try {
@@ -80,6 +80,7 @@ async function purgeCache(match) {
     await Promise.all(keys.filter((r) => match(r.url)).map((r) => cache.delete(r)));
   } catch { /* au pire l'espace n'est pas libéré */ }
 }
+// `model_q4f16.onnx` couvre aussi `model_q4f16.onnx_data`, où sont les poids.
 const purgeCachedVariant = (dtype) => purgeCache((u) => u.includes(`model_${dtype}.onnx`));
 // L'ancien modèle 1.5B (1,2 à 1,8 Go de stockage) ne sert plus : une seule fois par session.
 let legacyPurged = false;
@@ -135,6 +136,7 @@ function runLoad(onProgress, onPhase) {
       const plan = planLoad({ webgpuKnownBroken: known, assessment: known ? null : assessWebGPU(probe) });
       chosen = plan.variant;
       device = plan.variant.device;
+      st = { ...st, expect: plan.variant.files };   // init seulement quand les POIDS sont là
       console.info(`[IA] variante ${plan.variant.dtype}/${device} (${plan.reason})`);
       onPhase?.({ phase: "download", device });
       w.postMessage({ type: "load", variant: plan.variant });
@@ -218,26 +220,13 @@ export function unloadModel() {
   else if (worker) killWorker(new ModelError("cancelled"));
 }
 
-// ── Template de chat Qwen2.5 Instruct ────────────────────────────
-const IM_START = "<|im_start|>";
-const IM_END = "<|im_end|>";
-
-function buildPrompt(system, history) {
-  const parts = [];
-  if (system) parts.push(`${IM_START}system\n${system}${IM_END}\n`);
-  for (const m of history) {
-    if (m.role === "user") parts.push(`${IM_START}user\n${m.content}${IM_END}\n`);
-    else if (m.role === "assistant") parts.push(`${IM_START}assistant\n${m.content}${IM_END}\n`);
-  }
-  parts.push(`${IM_START}assistant\n`);
-  return parts.join("");
-}
-
-// Nettoie les éventuels tokens spéciaux résiduels en fin de réponse.
+// Le gabarit de conversation n'est plus écrit ici à la main (il était propre à Qwen) :
+// le worker applique celui du tokenizer du modèle (apply_chat_template), seul à
+// connaître ses jetons de rôle et sa façon de présenter les outils.
+// Jetons de structure résiduels (fin de tour, début de texte) retirés de la réponse.
 function cleanReply(text) {
-  return text
-    .replace(/<\|im_end\|>/g, "")
-    .replace(/<\|im_start\|>/g, "")
+  return String(text ?? "")
+    .replace(/<\|(im_end|im_start|startoftext|endoftext)\|>/g, "")
     .trim();
 }
 
@@ -247,12 +236,16 @@ function cleanReply(text) {
  * recréé, depuis le cache, à la prochaine demande).
  * @param {string} system
  * @param {Array<{role:string, content:string}>} history
- * @param {{maxNewTokens?: number, temperature?: number}} [opts]
- * @returns {Promise<string>}
+ * @param {{maxNewTokens?: number, tools?: object[]}} [opts] `tools` : schémas d'outils
+ *   transmis au gabarit du modèle (voir tools.js)
+ * @returns {Promise<string>} texte produit après le prompt, jetons d'appel d'outil compris
  */
 export async function generate(system, history, opts = {}) {
   await loadModel();
-  const prompt = buildPrompt(system, history);
+  const messages = [
+    ...(system ? [{ role: "system", content: system }] : []),
+    ...history.filter((m) => m.role === "user" || m.role === "assistant" || m.role === "tool"),
+  ];
   const id = ++seq;
   const seconds = Math.round(LIMITS.generateMs / 1000);
   const full = await withTimeout(
@@ -261,12 +254,11 @@ export async function generate(system, history, opts = {}) {
       worker.postMessage({
         type: "generate",
         id,
-        prompt,
+        messages,
+        tools: opts.tools,
         options: {
           max_new_tokens: opts.maxNewTokens ?? 256,
-          temperature: opts.temperature ?? 0.2,
-          top_p: 0.9,
-          do_sample: false, // greedy = déterministe, fiable pour la balise [NAV:…]
+          do_sample: false, // greedy = déterministe, fiable pour les appels d'outils
         },
       });
     }),
@@ -274,5 +266,5 @@ export async function generate(system, history, opts = {}) {
     "generate",
     () => killWorker(new ModelError("generate_timeout", { seconds })),
   );
-  return cleanReply(full.slice(prompt.length));
+  return cleanReply(full);
 }
