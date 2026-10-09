@@ -1,0 +1,135 @@
+# Modèle local : le plus léger qui sait appeler des outils
+
+Mesures du 2026-10-09. `@huggingface/transformers` installé : **3.8.1**
+(onnxruntime-web 1.22.0-dev.20250409 dans l'application, onnxruntime-node 1.21.0 pour les essais).
+
+## Verdict
+
+**Aucun candidat n'est à la fois compatible avec la 3.8.1, plus léger que Qwen2.5-0.5B et
+fiable pour appeler les outils.** Le meilleur score mesuré est 6/12, ce qui reste insuffisant
+pour s'en remettre au modèle seul.
+
+**Recommandation : LFM2.5-350M (`onnx-community/LFM2.5-350M-ONNX`, q4).** C'est le plus petit
+modèle qui produit des appels d'outils exploitables, et il fait légèrement mieux que la référence
+(6/12 contre 5/12) avec environ 3,6 fois moins de mémoire. **Condition bloquante :** il faut passer à
+`@huggingface/transformers` v4, car son export ONNX ne se charge pas avec la 3.8.1 (voir plus bas).
+Cette montée de version n'est pas faite ici.
+
+| | Qwen2.5-0.5B (actuel) | LFM2.5-350M | Écart |
+|---|---|---|---|
+| Fichier WebGPU (q4f16) | 483,0 Mo | 255,1 Mo | −47 % |
+| Fichier WASM (actuel q8 / LFM2.5 q4) | 512,1 Mo | 293,8 Mo | −43 % |
+| Pic RSS mesuré, Node CPU, q4, transformers.js 4.3.1 | 2 934 Mo | 821 Mo | **−72 %** |
+| Score outils (banc ci-dessous) | 5/12 | 6/12 | +1 |
+
+Le pic RSS a été mesuré sur PC (Node, CPU) et non sur le téléphone. Il sert à comparer les
+modèles entre eux, à runtime identique ; il ne prédit pas la consommation absolue sur Android.
+
+Si la montée en v4 est refusée, rester sur Qwen2.5-0.5B : aucun autre candidat compatible avec la
+3.8.1 ne fait mieux à poids inférieur (voir tableau).
+
+## Tailles mesurées
+
+**Méthode :** `node scripts/measure-models.mjs`. Le script lit l'API du Hub
+(`/api/models/<id>/tree/<rév>/onnx`), sans rien télécharger, puis additionne
+`model<suffixe>.onnx` et ses `.onnx_data`. Les suffixes sont ceux de transformers.js 3.x :
+q4 → `_q4`, q4f16 → `_q4f16`, q8 → `_quantized`. Les tailles sont en Mo (10⁶ octets).
+
+| Modèle (dépôt ONNX) | q4 | q4f16 | q8 | Charge en 3.8.1 ? | Score outils | Pic RSS q4* |
+|---|---|---|---|---|---|---|
+| FunctionGemma-270M (`onnx-community/functiongemma-270m-it-ONNX`) | 801,5 | 426,2 | — | oui | 2/12 | 2 577 Mo |
+| LFM2-350M (`onnx-community/LFM2-350M-ONNX`, `main`) | 293,8 | 255,1 | 510,1 | **non** | 2/12 (v4) | 871 Mo (v4) |
+| LFM2-350M, révision `5bc4b3e8cf` (export 3.x) | 481,2 | 312,5 | — | oui | 2/12 | 1 487 Mo |
+| **LFM2.5-350M** (`onnx-community/LFM2.5-350M-ONNX`) | **293,8** | **255,1** | 510,1 | **non** | **6/12 (v4)** | **821 Mo (v4)** |
+| Hammer 2.1 0.5B (`keisuke-miyako/Hammer2.1-0.5b-onnx-int4`) | — | — | — | non (format ORT GenAI, 864 Mo) | non testé | — |
+| Qwen3-0.6B (`onnx-community/Qwen3-0.6B-ONNX`) | 919,1 | 569,8 | 617,7 | oui | 1/12 | 3 847 Mo |
+| SmolLM2-135M (`onnx-community/SmolLM2-135M-Instruct-ONNX`) | 180,6 | 117,3 | 135,7 | oui | non testé** | — |
+| SmolLM2-360M (`onnx-community/SmolLM2-360M-Instruct-ONNX`) | 386,5 | 272,4 | 363,1 | oui | 1/12 | 1 263 Mo |
+| *Qwen2.5-0.5B (`onnx-community/Qwen2.5-0.5B-Instruct`), référence* | 786,2 | 483,0 | 512,1 | oui | 5/12 | 3 422 Mo (2 934 en v4) |
+
+\* Pic de mémoire résidente du processus Node pendant le banc, en q4 sur CPU, avec
+transformers.js 3.8.1 sauf mention « (v4) » (4.3.1). Les chiffres d'une même colonne ne sont
+comparables qu'à runtime identique.
+\** Même famille et même gabarit que SmolLM2-360M (voir « Appel d'outils »).
+
+FunctionGemma pèse plus lourd que la référence en q4, malgré ses 270 M paramètres. En cause, son
+vocabulaire de 262 144 jetons : la table d'embeddings domine le fichier.
+
+## Portage ONNX et compatibilité 3.8.1
+
+**Méthode :** chargement réel avec `AutoModelForCausalLM.from_pretrained` (3.8.1, Node). En cas
+d'échec, j'ai fait une seconde tentative avec l'`InferenceSession` d'onnxruntime-web 1.22-dev
+(WASM), le runtime de l'application.
+
+- **LFM2 / LFM2.5 (`main`)** : les deux runtimes refusent le chargement. Erreur Node :
+  `Unrecognized attribute: bits for operator GatherBlockQuantized`. Les dépôts ont été ré-exportés
+  pour « Transformers.js v4 » (LFM2 le 2026-03-24 ; LFM2.5, publié le 2026-03-31, n'existe que dans
+  ce format). La révision `5bb751bafe` de LFM2.5 échoue de la même façon. Seule la révision
+  `5bc4b3e8cf` de LFM2 charge en 3.8.1, mais ses embeddings ne sont pas quantifiés, d'où un q4
+  de 481 Mo. Avec transformers.js 4.3.1 et onnxruntime-node 1.30, les deux modèles de `main`
+  chargent et tournent.
+- **Hammer 2.1 0.5B** : le seul portage ONNX trouvé sur le Hub vise onnxruntime-genai
+  (`genai_config.json`, `model.onnx.data` de 864 Mo, pas de dossier `onnx/`). Transformers.js ne
+  le charge pas ; il faudrait faire un export soi-même.
+- **FunctionGemma, Qwen3, SmolLM2, Qwen2.5** : chargement OK en 3.8.1 (architectures
+  `gemma3_text`, `qwen3`, `llama`, `qwen2`, toutes présentes dans `models.js`).
+
+## Appel d'outils : banc mesuré
+
+**Méthode :** `node scripts/bench-tools.mjs <dépôt> q4 <révision> <cache>`.
+
+- Les 6 outils de l'application (copie figée de `src/ai/tools.js`) sont passés via
+  `apply_chat_template({ tools })`.
+- 12 questions en français : 11 appellent un outil, 1 n'en appelle aucun.
+- Décodage glouton, 48 jetons maximum, `enable_thinking: false`.
+- Une réponse compte « OK » si elle contient **exactement un appel**, au bon outil, avec les
+  valeurs d'arguments attendues (ex. `Hamilius` et `dock`). Un nom d'outil simplement cité dans une
+  phrase ne compte pas.
+
+Le banc est petit : un point vaut 8 %. Il départage les modèles, mais ne mesure pas un taux
+d'erreur précis. Les sorties brutes s'affichent en relançant le script.
+
+Ce que les modèles ratent :
+- **LFM2.5-350M (6/12)** : il respecte toujours le format. Les erreurs portent sur le choix
+  d'outil ou d'argument : `route` remplacé par `find_station` ou `start_navigation`, `need="dock"`
+  pour un vélo électrique, `mode` absent pour le bus.
+- **Qwen2.5-0.5B (5/12)** : il répond souvent en texte au lieu d'appeler l'outil (« Could you
+  please tell me your current location? »). Il lui arrive aussi d'appeler `weather` pour un bus.
+- **LFM2-350M (2/12)** : il invente des noms d'outils (`next_departure_time`) et des arguments
+  (`location=`). En v4, il refuse souvent de répondre.
+- **FunctionGemma (2/12)** : il remplit les arguments avec le texte des descriptions
+  (`need: "bike to take a bike for a ride…"`). Il a aussi produit une boucle de
+  `<start_function_call>` mêlée de jetons parasites.
+- **Qwen3-0.6B (1/12, sans réflexion)** : il répond presque toujours lui-même et **invente des
+  données** (« Le prochain tram est à 10 minutes »). Le mode réflexion n'a pas été testé : il
+  consomme des centaines de jetons avant l'appel.
+- **SmolLM2-360M (1/12)** : son gabarit ignore les outils. Le prompt ne fait que 44 à 56 jetons,
+  contre plus de 650 pour les autres, donc le modèle ne les voit jamais.
+
+## Entraînement à l'appel de fonctions : ce que disent les sources
+
+| Modèle | Entraîné pour les outils ? | Source |
+|---|---|---|
+| FunctionGemma-270M | Oui, c'est sa fonction. Mais il est « intended to be fine-tuned for your specific function-calling task » et n'est performant « after further fine-tuning » | carte `google/functiongemma-270m-it` |
+| LFM2-350M | Oui : format d'appel pythonique entre `<\|tool_call_start\|>` et `<\|tool_call_end\|>`. Fine-tuning recommandé « on narrow use cases » | carte `LiquidAI/LFM2-350M`, section *Tool use* |
+| LFM2.5-350M | Oui : « We recommend using it for data extraction, structured outputs, and tool use » | carte `LiquidAI/LFM2.5-350M` |
+| Hammer 2.1 0.5B | Oui : fine-tuning « function calling » (xlam-function-calling-60k, function masking), évalué sur BFCL-v3 | carte `MadeAgents/Hammer2.1-0.5b` |
+| Qwen3-0.6B | Affirmé pour la famille : « Qwen3 excels in tool calling capabilities ». Pas de chiffre propre au 0.6B | carte `Qwen/Qwen3-0.6B` |
+| SmolLM2-135M / 360M | **Non** : « function calling (for the 1.7B) ». Seul le 1.7B est concerné | cartes `HuggingFaceTB/SmolLM2-*-Instruct` |
+
+## Licences (application distribuée)
+
+| Modèle | Licence | Conditions à respecter |
+|---|---|---|
+| LFM2 / LFM2.5 | LFM Open License v1.0 | Redistribution libre, avec licence et notices à joindre. **Usage commercial permis seulement si l'entité reste sous 10 M$ de chiffre d'affaires annuel** (section 5) |
+| FunctionGemma | Gemma Terms of Use (dépôt à accès contrôlé) | Transmettre les conditions et la Prohibited Use Policy aux utilisateurs |
+| Hammer 2.1 0.5B | **CC-BY-NC-4.0** | **Usage commercial interdit**, ce qui l'exclut pour une application distribuée |
+| Qwen3-0.6B, Qwen2.5-0.5B, SmolLM2 | Apache-2.0 | Joindre la licence et les notices |
+
+## Ce qui n'a pas été mesuré
+
+- Aucune mesure sur téléphone (mémoire, vitesse, WebGPU). Toutes les mesures RSS viennent de
+  Node sur CPU.
+- Le banc en v4 a tourné dans un dossier jetable (`~/.cache/velohnav-v4`) : le dépôt reste en 3.8.1.
+- Pas de q4f16 ni de WebGPU au banc. Les scores valent pour la variante q4.
+- Pas de prompt optimisé par modèle : même consigne système pour tous.
