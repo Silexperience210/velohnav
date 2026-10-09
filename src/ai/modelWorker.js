@@ -8,7 +8,7 @@
 // tentative suivante dans la même page. Un worker, lui, se termine : la façade
 // (localModel.js) le tue à l'expiration du délai et en recrée un neuf.
 import { pipeline, env } from "@huggingface/transformers";
-import { LIMITS, MODEL, hubFileUrl, cacheHeaders, withTimeout } from "./modelPolicy.js";
+import { LIMITS, MODEL, SELF_TEST, hubFileUrl, cacheHeaders, withTimeout } from "./modelPolicy.js";
 
 const MODEL_ID = MODEL.id;
 // Copie embarquée éventuelle (public/models/ via scripts/fetch-model.sh).
@@ -48,8 +48,10 @@ async function hasLocalModel() {
 
 /**
  * Sonde WebGPU : pas seulement « un adaptateur existe », mais « un device a été obtenu
- * avec les limites et la fonction shader-f16 qu'exige q4f16 ». Chaque appel est borné.
- * Le verdict est rendu par assessWebGPU (modelPolicy.js), côté façade.
+ * avec les limites (et la fonction shader-f16 si l'adaptateur l'offre) ». Chaque appel
+ * est borné. Sans shader-f16, le device est tout de même demandé : la variante q4 (calcul
+ * fp32) peut tourner sur ce GPU. Le verdict est rendu par assessWebGPU (modelPolicy.js),
+ * côté façade.
  */
 async function probeWebGPU() {
   if (typeof navigator === "undefined" || !navigator.gpu) return null;
@@ -75,10 +77,10 @@ async function probeWebGPU() {
     limits,
     device: { ok: false, error: "not-requested" },
   };
-  if (!features.includes("shader-f16")) return out;
+  const requiredFeatures = features.includes("shader-f16") ? ["shader-f16"] : [];
   try {
     const device = await withTimeout(
-      adapter.requestDevice({ requiredFeatures: ["shader-f16"], requiredLimits: limits }),
+      adapter.requestDevice({ requiredFeatures, requiredLimits: limits }),
       LIMITS.probeMs, "requestDevice",
     );
     device.destroy();
@@ -158,7 +160,7 @@ self.onmessage = async ({ data }) => {
   if (msg.type === "load") {
     try {
       await load(msg);
-      post({ type: "ready" });
+      post({ type: "ready", selfTest: await selfTest() });
     } catch (e) {
       post({ type: "error", message: String(e?.message || e) });
     }
@@ -173,6 +175,20 @@ self.onmessage = async ({ data }) => {
     }
   }
 };
+
+/**
+ * Essai à vide : quelques jetons générés juste après le chargement. Une session créée ne
+ * prouve pas que le modèle sait générer — mesuré au banc : q4f16 sur un GPU sans fp16 se
+ * charge, puis chaque génération échoue. Une erreur ici remonte comme un échec de
+ * chargement ; le texte produit est jugé par la façade (selfTestVerdict).
+ */
+async function selfTest() {
+  const raw = await complete({
+    messages: SELF_TEST.messages,
+    options: { max_new_tokens: SELF_TEST.maxNewTokens, do_sample: false },
+  });
+  return raw.replace(/<\|[a-z_]+\|>/g, "").trim();
+}
 
 /**
  * Gabarit de conversation DU MODÈLE (tokenizer_config / chat_template.jinja), outils

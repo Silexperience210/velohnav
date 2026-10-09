@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import {
   VARIANTS, LARGEST_TENSOR_BYTES, LIMITS, assessWebGPU, planLoad, watchdog,
-  initialProgress, progressReducer, decideAfterFailure, withTimeout,
+  initialProgress, progressReducer, decideAfterFailure, withTimeout, selfTestVerdict, variantFor,
 } from "./modelPolicy.js";
 
 // Sonde d'un GPU capable de porter q4f16, modifiée cas par cas.
@@ -66,6 +66,15 @@ describe("sonde WebGPU : la présence d'un adaptateur ne suffit pas", () => {
   it("limites absentes : refusé (jamais d'engagement à l'aveugle)", () => {
     expect(assessWebGPU(goodProbe({ limits: undefined })).ok).toBe(false);
   });
+
+  it("variante q4 (calcul fp32) : un vrai GPU sans shader-f16 suffit", () => {
+    expect(assessWebGPU(goodProbe({ features: ["subgroups"] }), { f16: false })).toEqual({ ok: true, reason: "ok" });
+  });
+
+  it("variante q4 : adaptateur logiciel toujours refusé (mesuré ~200 s par réponse), device toujours exigé", () => {
+    expect(assessWebGPU(goodProbe({ isFallbackAdapter: true, features: [] }), { f16: false }).reason).toBe("software-adapter");
+    expect(assessWebGPU(goodProbe({ features: [], device: { ok: false, error: "not-requested" } }), { f16: false }).ok).toBe(false);
+  });
 });
 
 describe("plan de chargement", () => {
@@ -86,6 +95,44 @@ describe("plan de chargement", () => {
 
   it("pas de sonde du tout : WASM", () => {
     expect(planLoad({ webgpuKnownBroken: false, assessment: null }).variant).toBe(VARIANTS.wasm);
+  });
+
+  it("vrai GPU sans shader-f16 : q4 sur le GPU, pas WASM (où le modèle ne se charge pas, banc)", () => {
+    const p = planLoad({ webgpuKnownBroken: false, assessment: { ok: false, reason: "no-shader-f16" }, assessmentQ4: { ok: true, reason: "ok" } });
+    expect(p.variant).toBe(VARIANTS.webgpuQ4);
+    expect(p.variant).toMatchObject({ dtype: "q4", device: "webgpu", mb: 294 });
+    expect(p.reason).toBe("no-shader-f16");
+  });
+
+  it("fp16 déjà en échec sur cet appareil : q4 sur le GPU même si la sonde accepte q4f16", () => {
+    const p = planLoad({ webgpuKnownBroken: false, f16KnownBroken: true, assessment: { ok: true, reason: "ok" }, assessmentQ4: { ok: true, reason: "ok" } });
+    expect(p).toEqual({ variant: VARIANTS.webgpuQ4, reason: "f16-failed-before" });
+  });
+
+  it("GPU condamné : WASM, quelle que soit la sonde", () => {
+    const p = planLoad({ webgpuKnownBroken: true, f16KnownBroken: true, assessment: { ok: true, reason: "ok" }, assessmentQ4: { ok: true, reason: "ok" } });
+    expect(p.variant).toBe(VARIANTS.wasm);
+  });
+
+  it("q4 sur le GPU et sur WASM partagent les mêmes fichiers (aucun second téléchargement)", () => {
+    expect(VARIANTS.webgpuQ4.files).toEqual(VARIANTS.wasm.files);
+    expect(variantFor("webgpu", "q4")).toBe(VARIANTS.webgpuQ4);
+    expect(variantFor("webgpu")).toBe(VARIANTS.webgpu);
+    expect(variantFor("wasm", "q4")).toBe(VARIANTS.wasm);
+  });
+});
+
+describe("essai à vide : « prêt » seulement si le modèle a généré", () => {
+  it("texte lisible : accepté (sortie mesurée au banc)", () => {
+    expect(selfTestVerdict("Bonjour ! Comment puis-je")).toEqual({ ok: true, reason: "ok" });
+  });
+  it("rien, ou pas un mot : refusé", () => {
+    expect(selfTestVerdict(undefined).ok).toBe(false);
+    expect(selfTestVerdict("").reason).toBe("no-word");
+    expect(selfTestVerdict("!!! ...").reason).toBe("no-word");
+  });
+  it("charabia d'une autre écriture (« 地黎 », relevé sur téléphone) : refusé", () => {
+    expect(selfTestVerdict("地黎 talk").reason).toBe("script");
   });
 });
 
@@ -179,14 +226,28 @@ describe("progression : 100 % n'est que la fin du téléchargement", () => {
 });
 
 describe("décision après échec : repli explicite, jamais deux téléchargements d'office", () => {
-  it("WebGPU qui échoue ou se bloque à l'initialisation : mémorisé, q4f16 purgé, WASM proposé", () => {
+  it("q4f16 qui échoue ou se bloque à l'initialisation : fp16 écarté, q4f16 purgé, q4 sur le GPU proposé", () => {
     for (const timedOut of [false, true]) {
-      const d = decideAfterFailure({ device: "webgpu", phase: "init", timedOut });
+      const d = decideAfterFailure({ device: "webgpu", dtype: "q4f16", phase: "init", timedOut });
       expect(d.code).toBe(timedOut ? "webgpu_init_timeout" : "webgpu_init");
-      expect(d.markWebGPUBroken).toBe(true);
+      expect(d.markF16Broken).toBe(true);
+      expect(d.markWebGPUBroken).toBe(false);   // le GPU n'est pas condamné pour un échec fp16
       expect(d.purgeDtype).toBe("q4f16");
-      expect(d.next).toBe(VARIANTS.wasm);
+      expect(d.next).toBe(VARIANTS.webgpuQ4);
     }
+  });
+
+  it("q4f16 chargé mais chaque génération échoue (cas mesuré) : même repli, code propre", () => {
+    const d = decideAfterFailure({ device: "webgpu", dtype: "q4f16", phase: "generate" });
+    expect(d).toMatchObject({ code: "webgpu_generate", markF16Broken: true, purgeDtype: "q4f16", next: VARIANTS.webgpuQ4 });
+    // Un simple délai dépassé ne prouve rien sur le fp16 : on ne change pas de variante.
+    expect(decideAfterFailure({ device: "webgpu", dtype: "q4f16", phase: "generate", timedOut: true }))
+      .toMatchObject({ code: "generate_timeout", markF16Broken: false, next: VARIANTS.webgpu });
+  });
+
+  it("q4 sur le GPU qui échoue à son tour : GPU condamné, WASM proposé, fichiers q4 conservés", () => {
+    const d = decideAfterFailure({ device: "webgpu", dtype: "q4", phase: "init" });
+    expect(d).toMatchObject({ code: "webgpu_q4_init", markWebGPUBroken: true, purgeDtype: null, next: VARIANTS.wasm });
   });
 
   it("aucune décision ne relance automatiquement un téléchargement", () => {
@@ -212,10 +273,10 @@ describe("décision après échec : repli explicite, jamais deux téléchargemen
   it("chaque code produit a sa phrase en français et en anglais", async () => {
     const fr = (await import("../locales/fr.js")).default;
     const en = (await import("../locales/en.js")).default;
-    for (const device of ["webgpu", "wasm"]) {
+    for (const [device, dtype] of [["webgpu", "q4f16"], ["webgpu", "q4"], ["wasm", "q4"]]) {
       for (const phase of ["setup", "download", "init", "generate"]) {
         for (const timedOut of [false, true]) {
-          const key = `ui.ai.model.fail.${decideAfterFailure({ device, phase, timedOut }).code}`;
+          const key = `ui.ai.model.fail.${decideAfterFailure({ device, dtype, phase, timedOut }).code}`;
           expect(fr[key], key).toBeTruthy();
           expect(en[key], key).toBeTruthy();
         }

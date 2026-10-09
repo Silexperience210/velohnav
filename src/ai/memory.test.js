@@ -168,7 +168,7 @@ describe("façade : la mémoire est contrôlée avant, et rendue après", () => 
     const loading = mod.loadModel();
     await flush();
     const w = FakeWorker.all[0];
-    w.emit({ type: "ready" });
+    w.emit({ type: "ready", selfTest: "Bonjour !" });
     await loading;
     expect(mod.isModelReady()).toBe(true);
     mod.unloadModel();
@@ -234,11 +234,11 @@ describe("façade : la mémoire est contrôlée avant, et rendue après", () => 
 
   it("après déchargement, une nouvelle activation recharge (worker neuf)", async () => {
     const l1 = mod.loadModel(); await flush();
-    FakeWorker.all[0].emit({ type: "ready" }); await l1;
+    FakeWorker.all[0].emit({ type: "ready", selfTest: "Bonjour !" }); await l1;
     mod.unloadModel();
     const l2 = mod.loadModel(); await flush();
     expect(FakeWorker.all).toHaveLength(2);
-    FakeWorker.all[1].emit({ type: "ready" });
+    FakeWorker.all[1].emit({ type: "ready", selfTest: "Bonjour !" });
     await expect(l2).resolves.toBeUndefined();
   });
 });

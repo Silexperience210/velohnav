@@ -90,7 +90,7 @@ describe("façade : un chargement ne peut plus rester figé", () => {
   });
   afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
-  it("WebGPU figé à 100 % : échec explicite après le délai, worker tué, repli WASM mémorisé", async () => {
+  it("WebGPU figé à 100 % : échec explicite après le délai, worker tué, repli q4 sur le GPU mémorisé", async () => {
     const pcts = [], phases = [];
     const p = mod.loadModel((x) => pcts.push(x), (x) => phases.push(x));
     const outcome = p.then(() => "resolved", (e) => e);
@@ -114,19 +114,21 @@ describe("façade : un chargement ne peut plus rester figé", () => {
     const e = await outcome;
     expect(e).toMatchObject({ name: "ModelError", code: "webgpu_init_timeout", seconds: 180, mb: 294 });
     expect(w.terminated).toBe(true);
-    expect(store.get("velohnav_ai_webgpu_ko")).toBeTruthy();
+    expect(store.get("velohnav_ai_f16_ko")).toBeTruthy();
+    expect(store.has("velohnav_ai_webgpu_ko")).toBe(false);   // le GPU n'est pas condamné
     expect(mod.chatModelMB()).toBe(294); // l'interface annonce la taille du repli
     expect(mod.isModelReady()).toBe(false);
 
-    // « Réessayer » : worker neuf, plus de sonde, directement WASM / q4.
+    // « Réessayer » : worker neuf, sonde (bornée), puis q4 sur le GPU — jamais q4f16 à nouveau.
     const retry = mod.loadModel();
     await flush();
     const w2 = FakeWorker.all[1];
     expect(w2).not.toBe(w);
-    expect(w2.sent).toEqual([{ type: "load", variant: expect.objectContaining({ dtype: "q4", device: "wasm" }) }]);
+    w2.emit({ type: "probe", probe: GOOD_PROBE });
+    expect(w2.sent.filter((m) => m.type === "load")).toEqual([{ type: "load", variant: expect.objectContaining({ dtype: "q4", device: "webgpu" }) }]);
     w2.emit(progress("onnx/model_q4.onnx", 10, 10));
     w2.emit(progress("onnx/model_q4.onnx_data", 10, 10));
-    w2.emit({ type: "ready" });
+    w2.emit({ type: "ready", selfTest: "Bonjour !" });
     await expect(retry).resolves.toBeUndefined();
     expect(mod.isModelReady()).toBe(true);
   });
@@ -170,7 +172,7 @@ describe("façade : un chargement ne peut plus rester figé", () => {
     const loading = mod.loadModel();
     await flush();
     const w = FakeWorker.all[0];
-    w.emit({ type: "ready" });
+    w.emit({ type: "ready", selfTest: "Bonjour !" });
     await loading;
     const outcome = mod.generate("sys", [{ role: "user", content: "salut" }]).then(() => "resolved", (e) => e);
     await vi.advanceTimersByTimeAsync(0);
@@ -186,7 +188,7 @@ describe("façade : un chargement ne peut plus rester figé", () => {
     const loading = mod.loadModel();
     await flush();
     const w = FakeWorker.all[0];
-    w.emit({ type: "ready" });
+    w.emit({ type: "ready", selfTest: "Bonjour !" });
     await loading;
     const reply = mod.generate("sys", [{ role: "user", content: "salut" }]);
     await vi.advanceTimersByTimeAsync(0);
@@ -197,12 +199,49 @@ describe("façade : un chargement ne peut plus rester figé", () => {
     await expect(reply).resolves.toBe("Bonjour !");
   });
 
+  it("« prêt » exige l'essai à vide : sans texte, ou charabia, c'est un échec de chargement explicite", async () => {
+    for (const selfTest of [undefined, "", "地黎 talk"]) {
+      FakeWorker.all = [];
+      const outcome = mod.loadModel().then(() => "resolved", (e) => e);
+      await flush();
+      const w = FakeWorker.all[0];
+      w.emit({ type: "probe", probe: GOOD_PROBE });
+      w.emit(progress("onnx/model_q4f16.onnx", GRAPH, GRAPH));
+      w.emit(progress("onnx/model_q4f16.onnx_data", MB, MB));
+      w.emit({ type: "ready", selfTest });
+      const e = await outcome;
+      expect(e, String(selfTest)).toMatchObject({ code: "webgpu_init", mb: 294 });
+      expect(e.detail).toMatch(/^self-test /);
+      expect(mod.isModelReady()).toBe(false);
+      expect(w.terminated).toBe(true);
+      store.clear();
+    }
+  });
+
+  it("q4f16 chargé mais la génération échoue (cas mesuré) : erreur dite, fp16 écarté, « Réessayer » passe en q4 sur le GPU", async () => {
+    const loading = mod.loadModel();
+    await flush();
+    const w = FakeWorker.all[0];
+    w.emit({ type: "probe", probe: GOOD_PROBE });
+    w.emit({ type: "ready", selfTest: "Bonjour !" });
+    await loading;
+    const reply = mod.generateDetailed("sys", [{ role: "user", content: "Je suis Silex" }]).then(() => "resolved", (e) => e);
+    await vi.advanceTimersByTimeAsync(0);
+    const msg = "failed to call OrtRun(). Sub requires f16 but the device does not support it.";
+    w.emit({ type: "result", id: w.sent.at(-1).id, error: msg });
+    expect(await reply).toMatchObject({ code: "webgpu_generate", detail: msg, mb: 294 });
+    expect(w.terminated).toBe(true);
+    expect(mod.isModelReady()).toBe(false);
+    expect(store.get("velohnav_ai_f16_ko")).toBeTruthy();
+    expect(mod.chatModelMB()).toBe(294);
+  });
+
   it("generateDetailed rend aussi la sortie BRUTE, marqueurs compris", async () => {
     store.set("velohnav_ai_webgpu_ko", "1");
     const loading = mod.loadModel();
     await flush();
     const w = FakeWorker.all[0];
-    w.emit({ type: "ready" });
+    w.emit({ type: "ready", selfTest: "Bonjour !" });
     await loading;
     const reply = mod.generateDetailed("sys", [{ role: "user", content: "Je suis Silex" }]);
     await vi.advanceTimersByTimeAsync(0);
@@ -219,7 +258,7 @@ describe("façade : un chargement ne peut plus rester figé", () => {
     const loading = mod.loadModel();
     await flush();
     const w = FakeWorker.all[0];
-    w.emit({ type: "ready" });
+    w.emit({ type: "ready", selfTest: "Bonjour !" });
     await loading;
     const reply = mod.generateDetailed("sys", [{ role: "user", content: "Je suis Silex" }]).then(() => "resolved", (e) => e);
     await vi.advanceTimersByTimeAsync(0);

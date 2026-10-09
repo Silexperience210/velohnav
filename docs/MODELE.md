@@ -143,6 +143,7 @@ mêmes options (`generationOptions`, 96 jetons, glouton), même chemin `cleanRep
 | Node, q4f16, WebGPU natif (Dawn, vrai GPU) | oui | identique | réponse du modèle, 6/6 tours |
 | Chrome, q4, WASM | **non** : `GatherBlockQuantized` sans implémentation, la session ne se crée pas | — | — |
 | Chrome, q4f16, WebGPU sans `shader-f16` (forcé) | **oui** | **vide** : erreur `OrtRun` à chaque génération (`Sub requires f16`) | repli `generate`, 0/6, **aucune erreur montrée** |
+| Chrome, **q4, WebGPU** sans `shader-f16` (adaptateur logiciel) | oui | `"Comment puis-je vous aider aujourd'hui ?<\|im_end\|>"` | réponse du modèle, 3/3 tours mesurés (~200 s par réponse : GPU émulé, durée non représentative) |
 
 Ce qui est établi :
 - la sortie du modèle n'est ni tronquée ni réduite à du balisage : 10 à 51 jetons sur 96,
@@ -153,6 +154,15 @@ Ce qui est établi :
   alors l'erreur (`ModelError` « generate ») et affichait le repli sans rien dire : seul
   `generate_timeout` était signalé. « Aucune erreur affichée » ne prouvait donc pas que le
   modèle avait répondu.
+
+Correctif qui en découle :
+- **essai à vide** : le worker génère 6 jetons juste après le chargement ; « prêt » n'est
+  annoncé que si le texte produit est lisible (`selfTestVerdict`). Mesuré dans Chrome : q4f16
+  sur un GPU sans fp16 échoue désormais au chargement, avec le message du moteur, au lieu
+  d'afficher « prêt » ; q4 sur WebGPU passe l'essai ;
+- **ordre des replis** : q4f16/GPU → q4/GPU → q4/WASM. Un échec fp16 (chargement, essai à
+  vide ou génération) écarte q4f16, pas le GPU ; un GPU sans `shader-f16` part directement
+  en q4/GPU. Le changement passe par « Réessayer », taille annoncée (294 Mo).
 
 Ce qui reste supposé (aucune mesure sur téléphone) : la cause exacte sur l'appareil du
 propriétaire — une erreur de génération WebGPU propre à son GPU (cas le plus cohérent avec

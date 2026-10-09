@@ -13,7 +13,12 @@ import { QUESTIONS, CONFIGS, CONVERSATION } from "./cases.js";
 
 const t = (k, p = {}) => String(fr[k] ?? k).replace(/\{(\w+)\}/g, (_, n) => p[n] ?? "");
 const params = new URLSearchParams(location.search);
-const variant = VARIANTS[params.get("device") || "webgpu"];
+// « webgpu », « wasm », ou « <device>-<dtype> » (ex. webgpu-q4) pour essayer une autre quantification.
+const [devName, dtypeOver] = (params.get("device") || "webgpu").split("-");
+const base = VARIANTS[devName] ?? { device: devName };
+const variant = dtypeOver
+  ? { ...base, device: devName, dtype: dtypeOver, files: [`onnx/model_${dtypeOver}.onnx`, `onnx/model_${dtypeOver}.onnx_data`], file: `onnx/model_${dtypeOver}.onnx`, bytes: {} }
+  : base;
 const only = params.get("configs")?.split(",");
 const send = (o) => fetch("/__bench", { method: "POST", body: JSON.stringify(o) });
 const log = (s) => { document.getElementById("log").textContent += s + "\n"; };

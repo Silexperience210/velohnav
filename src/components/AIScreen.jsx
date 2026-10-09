@@ -207,7 +207,9 @@ function AIScreen({ stations, aiHistory, setAiHistory,
       raw = out.raw;
       reply = resolveModelOutput(out.text, { ...answerCtx, now: new Date() }, local);
     } catch(e) {
-      if (e?.code === "generate_timeout") {   // worker arrêté : le dire, plutôt qu'un « prêt » mensonger
+      // Worker arrêté (délai dépassé, ou fp16 en échec sur ce GPU : « Réessayer » passe en q4) :
+      // le dire, plutôt qu'un « prêt » mensonger.
+      if (e?.code === "generate_timeout" || e?.code === "webgpu_generate") {
         setModelState("error");
         setModelError(describeModelError(e));
       }

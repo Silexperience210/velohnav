@@ -12,7 +12,7 @@
 import {
   VARIANTS, chooseVariant, assessWebGPU, planLoad, LIMITS, watchdog,
   initialProgress, progressReducer, decideAfterFailure, withTimeout,
-  memoryVerdict, heaviestVariant, LEGACY_MODEL_DIRS,
+  memoryVerdict, heaviestVariant, LEGACY_MODEL_DIRS, selfTestVerdict,
 } from "./modelPolicy.js";
 import { readMemoryInfo } from "./deviceMemory.js";
 
@@ -27,6 +27,16 @@ function webgpuKnownBroken() {
 }
 function markWebGPUBroken(reason) {
   try { globalThis.localStorage?.setItem(WEBGPU_KO_KEY, reason || "1"); } catch { /* mode privé */ }
+}
+// Mémorise que le calcul fp16 (q4f16) a échoué sur ce GPU : les tentatives suivantes
+// gardent le GPU mais en q4 (fp32). Établi au banc : un GPU peut charger q4f16 puis
+// échouer à chaque génération, alors que q4 y répond normalement.
+const F16_KO_KEY = "velohnav_ai_f16_ko";
+function f16KnownBroken() {
+  try { return !!globalThis.localStorage?.getItem(F16_KO_KEY); } catch { return false; }
+}
+function markF16Broken(reason) {
+  try { globalThis.localStorage?.setItem(F16_KO_KEY, reason || "1"); } catch { /* mode privé */ }
 }
 
 /** Échec de chargement ou de génération, avec un code traduisible côté interface. */
@@ -122,12 +132,11 @@ function runLoad(onProgress, onPhase) {
 
     const fail = (phase, { timedOut = false, seconds = 0, detail = "" } = {}) => {
       if (settled) return;
-      const d = decideAfterFailure({ device: device || "wasm", phase, timedOut });
+      const d = decideAfterFailure({ device: device || "wasm", dtype: chosen?.dtype, phase, timedOut });
       killWorker();
-      if (d.markWebGPUBroken) {
-        markWebGPUBroken(detail || d.code);
-        purgeCachedVariant(d.purgeDtype);
-      }
+      if (d.markWebGPUBroken) markWebGPUBroken(detail || d.code);
+      if (d.markF16Broken) markF16Broken(detail || d.code);
+      if (d.purgeDtype) purgeCachedVariant(d.purgeDtype);
       chosen = d.next; // la prochaine tentative (« Réessayer ») et sa taille
       console.warn(`[IA] échec ${d.code} (${device || "?"}, phase ${phase}) :`, detail);
       done(new ModelError(d.code, { detail, seconds, mb: d.next.mb }));
@@ -135,7 +144,12 @@ function runLoad(onProgress, onPhase) {
 
     const start = (probe) => {
       const known = webgpuKnownBroken();
-      const plan = planLoad({ webgpuKnownBroken: known, assessment: known ? null : assessWebGPU(probe) });
+      const plan = planLoad({
+        webgpuKnownBroken: known,
+        f16KnownBroken: f16KnownBroken(),
+        assessment: known ? null : assessWebGPU(probe),
+        assessmentQ4: known ? null : assessWebGPU(probe, { f16: false }),
+      });
       chosen = plan.variant;
       device = plan.variant.device;
       st = { ...st, expect: plan.variant.files };   // init seulement quand les POIDS sont là
@@ -161,6 +175,13 @@ function runLoad(onProgress, onPhase) {
         onProgress?.(st.pct);
         if (st.phase !== prev && st.phase === "init") onPhase?.({ phase: "init", device });
       } else if (data.type === "ready") {
+        // « Prêt » seulement si l'essai à vide a produit du texte : une session créée ne
+        // suffit pas (q4f16 sur un GPU sans fp16 se charge, puis ne génère rien).
+        const v = selfTestVerdict(data.selfTest);
+        if (!v.ok) {
+          fail("init", { detail: `self-test ${v.reason}: ${JSON.stringify(data.selfTest ?? null)}` });
+          return;
+        }
         w.onmessage = onRuntimeMessage;
         w.onerror = (e) => killWorker(new ModelError("generate", { detail: e?.message || "worker error" }));
         ready = true;
@@ -285,7 +306,33 @@ export async function generateDetailed(system, history, opts = {}) {
   ];
   const id = ++seq;
   const seconds = Math.round(LIMITS.generateMs / 1000);
-  const full = await withTimeout(
+  const full = await runGeneration(id, messages, opts, seconds);
+  return { raw: String(full ?? ""), text: cleanReply(full) };
+}
+
+async function runGeneration(id, messages, opts, seconds) {
+  try {
+    return await sendGeneration(id, messages, opts, seconds);
+  } catch (e) {
+    // Erreur du moteur (pas un délai) en q4f16 sur le GPU : le calcul fp16 de cet appareil
+    // est en cause (banc : « Sub requires f16 » à chaque génération). Ce GPU passera en q4
+    // à la prochaine tentative ; le worker est arrêté pour que l'interface ne reste pas
+    // sur un « prêt » qui ne répond jamais.
+    if (e?.code === "generate" && chosen === VARIANTS.webgpu) {
+      const d = decideAfterFailure({ device: "webgpu", dtype: chosen.dtype, phase: "generate" });
+      markF16Broken(e.detail || d.code);
+      if (d.purgeDtype) purgeCachedVariant(d.purgeDtype);
+      chosen = d.next;
+      const err = new ModelError(d.code, { detail: e.detail, mb: d.next.mb });
+      killWorker(err);
+      throw err;
+    }
+    throw e;
+  }
+}
+
+function sendGeneration(id, messages, opts, seconds) {
+  return withTimeout(
     new Promise((resolve, reject) => {
       pending.set(id, { resolve, reject });
       worker.postMessage({
@@ -300,5 +347,4 @@ export async function generateDetailed(system, history, opts = {}) {
     "generate",
     () => killWorker(new ModelError("generate_timeout", { seconds })),
   );
-  return { raw: String(full ?? ""), text: cleanReply(full) };
 }

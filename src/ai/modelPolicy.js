@@ -63,10 +63,23 @@ const variant = (dtype, device, suffix) => {
 /** Variantes du modèle (255 Mo en q4f16, 294 Mo en q4). */
 export const VARIANTS = Object.freeze({
   webgpu: variant("q4f16", "webgpu", "_q4f16"),
+  // q4 sur le GPU : poids 4 bits, calcul en fp32 — n'exige pas shader-f16. Mesuré au banc
+  // (scripts/bench-chat, Chrome) : là où q4f16 se charge puis échoue à CHAQUE génération
+  // (« Sub requires f16 »), q4 sur WebGPU répond normalement (« Je suis Silex » compris).
+  // Mêmes fichiers que la variante WASM.
+  webgpuQ4: variant("q4", "webgpu", "_q4"),
   // q4 sur WASM : q4f16 calcule en fp16, que le moteur processeur ne sait pas faire ;
-  // q8 (model_quantized) pèserait 510 Mo.
+  // q8 (model_quantized) pèserait 510 Mo. Mesuré au banc : dans Chrome, la session ne se
+  // crée pas (GatherBlockQuantized sans implémentation WASM — les trois exports du modèle
+  // l'utilisent). Gardée en dernier recours : l'échec y est explicite.
   wasm:   variant("q4",    "wasm",   "_q4"),
 });
+
+/** Variante correspondant à un couple appareil / quantification (q4f16 par défaut sur GPU). */
+export function variantFor(device, dtype) {
+  if (device === "webgpu") return dtype === "q4" ? VARIANTS.webgpuQ4 : VARIANTS.webgpu;
+  return VARIANTS.wasm;
+}
 
 /** URL d'un fichier du modèle sur le Hub — c'est aussi la clé du cache de transformers.js. */
 export function hubFileUrl(file, model = MODEL.id, revision = MODEL.revision) {
@@ -119,6 +132,7 @@ export const LARGEST_TENSOR_BYTES = 65536 * 512; // 33 554 432 o = 32 Mio
 /**
  * Le GPU peut-il réellement porter la variante q4f16 ?
  *
+ * @param {{ f16?: boolean }} [opts] f16 : false pour évaluer la variante q4 (sans shader-f16)
  * @param {null | {
  *   adapter: boolean,
  *   isFallbackAdapter?: boolean,
@@ -128,11 +142,13 @@ export const LARGEST_TENSOR_BYTES = 65536 * 512; // 33 554 432 o = 32 Mio
  * }} probe résumé de la sonde (null : pas de navigator.gpu)
  * @returns {{ ok: boolean, reason: string }}
  */
-export function assessWebGPU(probe) {
+export function assessWebGPU(probe, { f16 = true } = {}) {
   if (!probe) return { ok: false, reason: "no-webgpu" };
   if (!probe.adapter) return { ok: false, reason: "no-adapter" };
+  // Adaptateur logiciel (SwiftShader) : q4 y tourne, mais mesuré à ~200 s par réponse.
   if (probe.isFallbackAdapter) return { ok: false, reason: "software-adapter" };
-  if (!(probe.features || []).includes("shader-f16")) return { ok: false, reason: "no-shader-f16" };
+  // `f16: false` : évaluation pour la variante q4 (calcul fp32), qui se passe de shader-f16.
+  if (f16 && !(probe.features || []).includes("shader-f16")) return { ok: false, reason: "no-shader-f16" };
   const lim = probe.limits || {};
   if (!((lim.maxBufferSize ?? 0) >= LARGEST_TENSOR_BYTES)) {
     return { ok: false, reason: `maxBufferSize ${mib(lim.maxBufferSize)} < ${mib(LARGEST_TENSOR_BYTES)}` };
@@ -153,12 +169,20 @@ const mib = (n) => (typeof n === "number" ? `${Math.round(n / 1048576)} MiB` : "
 
 /**
  * Variante à charger. Un échec WebGPU déjà constaté sur cet appareil (mémorisé) force
- * WASM sans même sonder : on ne retente pas un chemin qui a déjà bloqué.
- * @param {{ webgpuKnownBroken: boolean, assessment: {ok:boolean, reason:string} | null }} s
+ * WASM sans même sonder : on ne retente pas un chemin qui a déjà bloqué. Un échec
+ * propre au calcul fp16 (f16KnownBroken) écarte seulement q4f16 : le GPU reste utilisé,
+ * en q4.
+ * @param {{ webgpuKnownBroken: boolean, f16KnownBroken?: boolean,
+ *           assessment: {ok:boolean, reason:string} | null,
+ *           assessmentQ4?: {ok:boolean, reason:string} | null }} s
+ *   assessment : sonde évaluée pour q4f16 ; assessmentQ4 : la même, pour q4 (sans shader-f16)
  */
-export function planLoad({ webgpuKnownBroken, assessment }) {
+export function planLoad({ webgpuKnownBroken, f16KnownBroken = false, assessment, assessmentQ4 = null }) {
   if (webgpuKnownBroken) return { variant: VARIANTS.wasm, reason: "webgpu-failed-before" };
-  if (assessment?.ok) return { variant: VARIANTS.webgpu, reason: "webgpu-ok" };
+  if (assessment?.ok && !f16KnownBroken) return { variant: VARIANTS.webgpu, reason: "webgpu-ok" };
+  // GPU utilisable sans fp16 (shader-f16 absent, ou fp16 déjà en échec ici) : q4 sur le
+  // GPU plutôt que WASM, où ce modèle ne se charge pas dans le navigateur (banc).
+  if (assessmentQ4?.ok) return { variant: VARIANTS.webgpuQ4, reason: f16KnownBroken ? "f16-failed-before" : (assessment?.reason || "no-f16") };
   return { variant: VARIANTS.wasm, reason: assessment?.reason || "no-probe" };
 }
 
@@ -299,28 +323,62 @@ export function progressReducer(state, ev, now) {
 
 /**
  * Que faire après un échec ? Aucune décision ne relance AUTOMATIQUEMENT un second
- * téléchargement complet : le repli vers WASM après un échec WebGPU (le fichier q4f16
- * est déjà téléchargé) est annoncé à l'utilisateur, avec la taille, et n'a lieu que
- * s'il appuie sur « Réessayer ». Seule la sonde, AVANT tout téléchargement, bascule
- * d'elle-même vers WASM.
- * @param {{ device: "webgpu"|"wasm", phase: "setup"|"download"|"init"|"generate", timedOut?: boolean }} f
+ * téléchargement complet : le repli est annoncé à l'utilisateur, avec la taille, et n'a
+ * lieu que s'il appuie sur « Réessayer ». Seule la sonde, AVANT tout téléchargement,
+ * bascule d'elle-même.
+ *
+ * Ordre des replis, établi au banc (docs/MODELE.md) : q4f16/GPU → q4/GPU → q4/WASM.
+ * Un GPU peut charger q4f16 puis échouer à chaque génération (calcul fp16) : l'échec
+ * d'initialisation (essai à vide compris) ou de génération en q4f16 écarte donc le fp16,
+ * pas le GPU. Seul l'échec de q4 sur le GPU condamne le GPU.
+ * @param {{ device: "webgpu"|"wasm", dtype?: string, phase: "setup"|"download"|"init"|"generate", timedOut?: boolean }} f
  */
-export function decideAfterFailure({ device, phase, timedOut = false }) {
+export function decideAfterFailure({ device, dtype, phase, timedOut = false }) {
   const sfx = timedOut ? "_timeout" : "";
-  if (phase === "init" && device === "webgpu") {
+  const current = variantFor(device, dtype);
+  const base = { markWebGPUBroken: false, markF16Broken: false, purgeDtype: null, autoRetry: false };
+  const gpuF16 = current === VARIANTS.webgpu;
+  if (gpuF16 && (phase === "init" || (phase === "generate" && !timedOut))) {
     return {
-      code: `webgpu_init${sfx}`,
-      markWebGPUBroken: true,
-      purgeDtype: VARIANTS.webgpu.dtype, // libère le fichier GPU devenu inutile sur cet appareil
-      next: VARIANTS.wasm,
-      autoRetry: false,
+      ...base,
+      code: phase === "init" ? `webgpu_init${sfx}` : "webgpu_generate",
+      markF16Broken: true,
+      purgeDtype: VARIANTS.webgpu.dtype, // libère le fichier q4f16 devenu inutile sur cet appareil
+      next: VARIANTS.webgpuQ4,
     };
   }
-  if (phase === "init") return { code: `wasm_init${sfx}`, markWebGPUBroken: false, purgeDtype: null, next: VARIANTS.wasm, autoRetry: false };
-  if (phase === "download") return { code: `download${sfx}`, markWebGPUBroken: false, purgeDtype: null, next: VARIANTS[device], autoRetry: false };
-  if (phase === "generate") return { code: `generate${sfx}`, markWebGPUBroken: false, purgeDtype: null, next: VARIANTS[device], autoRetry: false };
-  return { code: `setup${sfx}`, markWebGPUBroken: false, purgeDtype: null, next: VARIANTS[device] || VARIANTS.wasm, autoRetry: false };
+  if (phase === "init" && current === VARIANTS.webgpuQ4) {
+    // Les fichiers q4 servent aussi à WASM : rien à purger.
+    return { ...base, code: `webgpu_q4_init${sfx}`, markWebGPUBroken: true, next: VARIANTS.wasm };
+  }
+  if (phase === "init") return { ...base, code: `wasm_init${sfx}`, next: VARIANTS.wasm };
+  if (phase === "download") return { ...base, code: `download${sfx}`, next: current };
+  if (phase === "generate") return { ...base, code: `generate${sfx}`, next: current };
+  return { ...base, code: `setup${sfx}`, next: current };
 }
+
+/**
+ * Essai à vide fait par le worker juste après le chargement (quelques jetons, glouton,
+ * sans outils) : « prêt » n'est annoncé que si le modèle a réellement GÉNÉRÉ. Avant,
+ * une session créée suffisait — et un GPU pouvait la créer puis échouer à chaque
+ * réponse, ou produire du charabia (« 地黎 », relevé sur téléphone).
+ * @param {unknown} text texte produit, jetons spéciaux retirés
+ * @returns {{ ok: boolean, reason: string }}
+ */
+export function selfTestVerdict(text) {
+  if (typeof text !== "string") return { ok: false, reason: "no-output" };
+  const s = text.trim();
+  if (!/\p{L}{2,}/u.test(s)) return { ok: false, reason: "no-word" };
+  // L'essai est en français : une lettre d'une autre écriture trahit un calcul faussé.
+  if (/(?=\p{L})\P{Script=Latin}/u.test(s)) return { ok: false, reason: "script" };
+  return { ok: true, reason: "ok" };
+}
+
+/** Message de l'essai à vide (le worker et les tests s'en servent). */
+export const SELF_TEST = Object.freeze({
+  messages: Object.freeze([{ role: "user", content: "Bonjour" }]),
+  maxNewTokens: 6,
+});
 
 /**
  * Borne une promesse dans le temps. À l'expiration, rejette avec une erreur portant
