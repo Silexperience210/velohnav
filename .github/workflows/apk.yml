@@ -84,6 +84,11 @@ jobs:
             echo "DEBUG_KEYSTORE_BASE64 non configuré — keystore de debug éphémère"
           fi
 
+      # Géométrie de l'AR ancrée au sol (GroundAnchorTest : JVM pur)
+      - name: Native unit tests
+        working-directory: android
+        run: ./gradlew :app:testDebugUnitTest --no-daemon
+
       - name: Build debug APK
         working-directory: android
         run: ./gradlew assembleDebug --no-daemon

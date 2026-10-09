@@ -53,3 +53,47 @@ describe("clé ARCore — la CI et Gradle parlent du même fichier", () => {
       expect(doc).toContain(mot);
   });
 });
+
+// Défaut 2 — « il le dit impossible et veut passer en GPS à chaque fois » : sans
+// clé Google, l'AR locale d'ARCore marche, mais l'activité la traitait comme un
+// échec. La géométrie est testée en Kotlin (GroundAnchorTest, JVM) ; ici, les
+// garde-fous lisibles dans les sources, faute de SDK Android dans `vitest`.
+describe("AR ancrée au sol — la clé Google est un bonus, pas une condition", () => {
+  const AR = "android/app/src/main/java/com/silexperience/velohnav/ar/";
+  const activite = lire(AR + "ArNavigationActivity.kt");
+  const vm = lire(AR + "ArNavigationViewModel.kt");
+  const textes = lire(AR + "ArStrings.kt");
+
+  it("détecte les plans de sol, et ne demande Geospatial que si une clé existe", () => {
+    expect(activite).toMatch(/planeFindingMode\s*=\s*Config\.PlaneFindingMode\.HORIZONTAL/);
+    expect(activite).toMatch(/geospatialMode = if \(viewModel\.apiKeyPresent\)/);
+  });
+
+  it("une erreur Geospatial (clé absente ou refusée) ne fait plus passer en GPS seul", () => {
+    const onEarth = vm.slice(vm.indexOf("private fun onEarth"), vm.indexOf("// ── Progression"));
+    expect(onEarth).toContain("geoBonusOff");
+    expect(onEarth).not.toContain("fallbackToGps");
+    // Seules les vraies impossibilités mènent au GPS seul
+    expect(vm).toMatch(/fallbackToGps\(FallbackReason\.NO_TRACKING\)/);
+    expect(vm).toMatch(/fallbackToGps\(FallbackReason\.NO_COMPASS\)/);
+  });
+
+  it("le mode au sol est annoncé comme un mode à part entière, en fr et en en", () => {
+    expect(textes).toContain("AR ANCRÉE AU SOL");
+    expect(textes).toContain("GROUND-ANCHORED AR");
+    expect(textes).toContain("sans compte ni clé");
+    // Plus d'encart « AR précise indisponible » faute de clé
+    expect(textes).not.toContain("AR PRÉCISE INDISPONIBLE");
+    expect(textes).not.toMatch(/compilée sans clé/);
+  });
+
+  it("l'image ARCore est traitée sur l'instant (essai d'impact), pas reportée", () => {
+    const cb = activite.slice(activite.indexOf("v.onSessionUpdated"), activite.indexOf("v.onSessionFailed"));
+    expect(cb).toContain("viewModel.onArFrame(session, frame, v)");
+    expect(cb).not.toContain("mainHandler.post");
+  });
+
+  it("les tests natifs de géométrie tournent en CI", () => {
+    expect(lire(".github/workflows/apk.yml")).toMatch(/testDebugUnitTest/);
+  });
+});

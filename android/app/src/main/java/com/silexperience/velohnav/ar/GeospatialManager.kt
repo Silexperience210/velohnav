@@ -1,7 +1,6 @@
 package com.silexperience.velohnav.ar
 
 import android.util.Log
-import com.google.ar.core.Anchor
 import com.google.ar.core.Earth
 import com.google.ar.core.Frame
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -13,14 +12,6 @@ data class VpsAccuracy(
     val headingDegrees: Double,
     val isReliable: Boolean
 ) { val label get() = "±${"%.1f".format(horizontalMeters)}m" }
-
-data class TerrainAnchorData(
-    val stepIndex: Int,
-    val latitude: Double,
-    val longitude: Double,
-    val bearingDegrees: Float,
-    val anchor: Anchor? = null
-)
 
 /**
  * État Earth ARCore — utilisé pour diagnostiquer pourquoi VPS ne converge pas.
@@ -62,8 +53,8 @@ class GeospatialManager {
                     Earth.EarthState.ERROR_INTERNAL ->
                         "Erreur interne ARCore — redémarrer l'app"
                     Earth.EarthState.ERROR_NOT_AUTHORIZED ->
-                        "Clé API ARCore non autorisée — bascule en mode GPS. " +
-                        "Pour activer ARCore Geospatial : Google Cloud Console → " +
+                        "Clé API ARCore non autorisée — localisation Google (bonus) indisponible, " +
+                        "AR au sol active. Pour l'activer : Google Cloud Console → " +
                         "API ARCore activée + restriction Android (package + SHA-1)"
                     Earth.EarthState.ERROR_RESOURCE_EXHAUSTED ->
                         "Quota Geospatial dépassé — patienter ou augmenter quota GCP"
@@ -98,23 +89,6 @@ class GeospatialManager {
             }
         } catch (e: Exception) {
             Log.w(TAG, "onFrame error (frame=$frameCount): ${e.message}", e)
-        }
-    }
-
-    // Appelé depuis le main thread — resolveAnchorOnTerrain est thread-safe
-    @Suppress("DEPRECATION")
-    fun placeArrowAnchor(earth: Earth, data: TerrainAnchorData): TerrainAnchorData {
-        val (qy, qw) = arrowYawQuaternion(data.bearingDegrees.toDouble())
-        return try {
-            val anchor = earth.resolveAnchorOnTerrain(
-                data.latitude, data.longitude, 1.5, // 1.5m : meilleure visibilité, évite z-fighting
-                0f, qy, 0f, qw
-            )
-            Log.d(TAG, "Anchor OK step=${data.stepIndex} bearing=${data.bearingDegrees}°")
-            data.copy(anchor = anchor)
-        } catch (e: Exception) {
-            Log.e(TAG, "placeArrowAnchor step=${data.stepIndex}: ${e.message}")
-            data
         }
     }
 

@@ -1,12 +1,52 @@
-# ARCore Geospatial — mise en service (administrateur)
+# Navigation AR native — AR ancrée au sol (et localisation Google en option)
 
-La navigation AR native (`ArNavigationActivity`) localise le téléphone avec
-**ARCore Geospatial** (VPS : précision ~1 m et cap exact, à partir des images
-Street View). Google n'accepte la requête que si **trois conditions** sont réunies.
-Si l'une manque, ARCore répond `ERROR_NOT_AUTHORIZED` : l'application bascule
-alors immédiatement en guidage GPS et affiche l'encart « AR précise
-indisponible » avec la cause. Rien de tout cela ne se corrige dans le code
-applicatif : c'est de la configuration.
+## Le mode principal : AR ancrée au sol, sans Google
+
+La navigation AR native (`ArNavigationActivity`) fonctionne **sans clé, sans compte
+et hors ligne** (hors calcul de l'itinéraire) : elle n'utilise que le suivi local
+d'ARCore (caméra + centrale inertielle), gratuit.
+
+1. **Ancrage** : l'utilisateur vise le sol devant lui ; un essai d'impact
+   (*hit-test*) sur un plan horizontal détecté fixe la hauteur du sol et y pose une
+   ancre ARCore. Le tracé est rattaché à cette ancre et **part des pieds** de
+   l'utilisateur : ses pieds sont associés au point de l'itinéraire le plus proche de
+   la position GPS (jusqu'à 25 m), si bien que l'erreur GPS ne décale pas le départ.
+   Sans plan détecté au bout de 6 s, le sol est estimé à 1,35 m sous l'objectif
+   (badge « AR SOL » orange au lieu de vert ; « Recaler » refait l'ancrage).
+2. **Orientation** : un seul angle relie le repère ARCore (orientation arbitraire au
+   démarrage) au nord. Il est mesuré **à l'ancrage**, en moyennant sur 1,5 s l'écart
+   entre le cap boussole de l'axe de la caméra (capteur de rotation + déclinaison
+   magnétique) et la direction de visée donnée par ARCore au même instant. Il n'est
+   **jamais** recalculé image par image à partir du cap brut : c'était la source du
+   tremblement et du décalage latéral de la vue boussole.
+3. **Maintien** : ensuite, c'est le suivi d'ARCore qui garde le tracé en place.
+   Deux corrections seulement, ponctuelles :
+   - **trajectoire marchée** : après une quinzaine de mètres, la trajectoire ARCore
+     est comparée à la trajectoire GPS (moindres carrés, rotation pure) ; si l'angle
+     diffère nettement (≥ 3°), il est corrigé ;
+   - **ré-ancrage en continuité** tous les 60 m (dérive du suivi), sans saut : la
+     position est déduite du suivi ARCore, pas du GPS.
+4. **Rendu** : des chevrons tous les 2,5 m (de 4 m derrière à 60 m devant) et une
+   flèche à chaque manœuvre, posés au sol et orientés selon la route. La projection
+   à l'écran est celle d'ARCore : pose réelle de la caméra et intrinsèques réelles
+   (champ de vision) — plus d'estimation.
+
+Le guidage **GPS seul** n'est utilisé que si ARCore ne fournit aucune image, ne
+parvient pas à suivre la scène, ou si l'appareil n'a pas de boussole, ou sur
+demande (« Passer en mode GPS »).
+
+La géométrie est dans `GroundAnchor.kt` (Kotlin pur), testée sur JVM :
+`./gradlew :app:testDebugUnitTest` (`GroundAnchorTest` : point connu, cap connu,
+position connue, départ aux pieds, stabilité, correction par la trajectoire).
+
+## En option : localisation Google (ARCore Geospatial / VPS)
+
+Si une clé est présente, ARCore Geospatial est activé en plus : quand il atteint
+±5 m et ±10° de cap, il **recale** le même tracé au sol (cap et position absolus),
+puis porte la progression (badge « VPS ±x m »). C'est un **bonus** : sans clé il
+n'est même pas demandé, et une clé refusée n'interrompt rien (une ligne discrète
+l'indique, pour l'administrateur). Google n'accepte la requête que si **trois
+conditions** sont réunies ; sinon ARCore répond `ERROR_NOT_AUTHORIZED`.
 
 | Condition | Où | Symptôme si absente |
 |---|---|---|
@@ -86,11 +126,13 @@ adb logcat -s ArNavActivity ArNavViewModel GeospatialManager
 
 - `API key diag: native=39c` → la clé est dans l'APK (0c = absente) ;
 - `Earth state=ENABLED tracking=true` puis `VPS OK (±… m)` → autorisation acceptée ;
-- `Earth en erreur permanente (ERROR_NOT_AUTHORIZED)` → revoir les points 2 et 3.
+- `Geospatial indisponible (ERROR_NOT_AUTHORIZED) — AR au sol seule` → revoir les points 2 et 3 ;
+- `Ancré au sol (INITIAL) lacet=…° sol=détecté` → l'AR au sol est posée ;
+- `Lacet corrigé par la trajectoire : … → …` → correction d'orientation en marchant.
 
 Le VPS a aussi besoin d'**extérieur** et de **bâtiments couverts par Street View** :
-en intérieur ou en zone non couverte, il ne converge pas et l'application passe
-en GPS au bout de 25 s (compte à rebours affiché, bouton « Passer en mode GPS »).
+en intérieur ou en zone non couverte, il ne converge pas — et l'AR au sol continue
+seule, sans attente ni compte à rebours.
 
 ## Alternative : authentification sans clé
 
@@ -98,3 +140,23 @@ Google recommande sur Android l'authentification « keyless » (client OAuth de
 type Android, même paquet + SHA-1, dépendance `play-services-auth`, sans
 meta-data `com.google.android.geo.API_KEY`). Non implémentée ici : elle demande
 les mêmes empreintes SHA-1, et la clé reste nécessaire pour Directions.
+
+## Évolution possible (non implémentée) : marqueurs ancrés aux stations
+
+Pour un ancrage **exact**, toujours hors ligne, sans compte ni facture : une image
+de référence (QR code ou marqueur visuel) posée à chaque station Vel'OH!, dont la
+position et l'orientation sont relevées une fois.
+
+- **Principe** : ARCore *Augmented Images* reconnaît l'image dans le flux caméra et
+  en donne la pose 6 DoF au centimètre près. Connaissant la position géographique et
+  l'orientation du marqueur, on obtient directement l'angle nord ↔ ARCore et la
+  position de l'utilisateur : ni boussole (perturbée en ville), ni GPS, ni Google.
+- **Intégration** : un `AugmentedImageDatabase` embarqué dans l'APK (quelques Ko par
+  image) ; à la détection, un ancrage `ABSOLUTE` (déjà prévu par `GroundAligner.anchorAbsolute`)
+  avec le cap et la position tirés du marqueur. Le reste (chevrons, ré-ancrage,
+  trajectoire) ne change pas.
+- **À prévoir** : fabrication et pose physique des marqueurs (accord de l'exploitant),
+  relevé précis de chaque pose (position ± 0,5 m, orientation ± 2°), marqueurs
+  suffisamment grands (≥ 15 cm, lisibles à 1–3 m) et contrastés, entretien
+  (vandalisme, salissures). Le marqueur ne sert qu'au départ d'une station ; en cours
+  de route, le mode au sol actuel prend le relais.

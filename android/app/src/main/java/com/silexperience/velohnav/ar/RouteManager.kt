@@ -23,8 +23,21 @@ data class NavigationStep(
 data class NavigationRoute(
     val steps: List<NavigationStep>,
     val totalDistanceMeters: Int,
-    val totalDurationSeconds: Int
-)
+    val totalDurationSeconds: Int,
+    /** Géométrie complète (lat, lng) — vide si le service ne la fournit pas. */
+    val geometry: List<Pair<Double, Double>> = emptyList()
+) {
+    /**
+     * Tracé à poser au sol : la géométrie complète si elle existe, sinon les points
+     * de manœuvre (Google) — une rue courbe est alors tirée au cordeau.
+     */
+    fun polyline(): List<Pair<Double, Double>> =
+        if (geometry.size >= 2) geometry
+        else steps.flatMapIndexed { i, s ->
+            if (i == 0) listOf(Pair(s.startLat, s.startLng), Pair(s.endLat, s.endLng))
+            else listOf(Pair(s.endLat, s.endLng))
+        }
+}
 
 class RouteManager(private val mapsApiKey: String) {
     private val TAG = "RouteManager"
@@ -126,7 +139,7 @@ class RouteManager(private val mapsApiKey: String) {
             val totalTime = props.totalTime?.toIntOrNull() ?: 0
             val steps = buildBrouterSteps(coords, props.voicehints ?: emptyList(), totalDist, totalTime)
             if (steps.isEmpty()) return Result.failure(Exception("BRouter: aucune étape"))
-            Result.success(NavigationRoute(steps, totalDist, totalTime))
+            Result.success(NavigationRoute(steps, totalDist, totalTime, coords.map { Pair(it[1], it[0]) }))
         } catch (e: Exception) {
             Result.failure(e)
         }
@@ -218,7 +231,7 @@ class RouteManager(private val mapsApiKey: String) {
         }
         
         return try {
-            val url = "https://router.project-osrm.org/route/v1/$profile/$oLng,$oLat;$dLng,$dLat?overview=false&steps=true"
+            val url = "https://router.project-osrm.org/route/v1/$profile/$oLng,$oLat;$dLng,$dLat?overview=full&geometries=geojson&steps=true"
             val request = okhttp3.Request.Builder()
                 .url(url)
                 .header("User-Agent", "VelohNav/1.0")
@@ -271,7 +284,9 @@ class RouteManager(private val mapsApiKey: String) {
                 )
             }
             
-            Result.success(NavigationRoute(steps, leg.distance.toInt(), leg.duration.toInt()))
+            val geometry = route.geometry?.coordinates.orEmpty()
+                .filter { it.size >= 2 }.map { Pair(it[1], it[0]) }
+            Result.success(NavigationRoute(steps, leg.distance.toInt(), leg.duration.toInt(), geometry))
         } catch (e: Exception) {
             Result.failure(e)
         }
@@ -330,7 +345,8 @@ class RouteManager(private val mapsApiKey: String) {
     }
     
     data class OsrmResponse(val code: String, val routes: List<OsrmRoute>)
-    data class OsrmRoute(val legs: List<OsrmLeg>)
+    data class OsrmRoute(val legs: List<OsrmLeg>, val geometry: OsrmGeometry? = null)
+    data class OsrmGeometry(val coordinates: List<List<Double>> = emptyList()) // [lng,lat]
     data class OsrmLeg(val steps: List<OsrmStep>, val distance: Double, val duration: Double)
     data class OsrmStep(val distance: Double, val duration: Double, val name: String, val maneuver: OsrmManeuver)
     data class OsrmManeuver(val location: List<Double>, val type: String, val modifier: String?)

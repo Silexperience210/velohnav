@@ -2,6 +2,10 @@ package com.silexperience.velohnav.ar
 
 import android.Manifest
 import android.content.pm.PackageManager
+import android.hardware.Sensor
+import android.hardware.SensorEvent
+import android.hardware.SensorEventListener
+import android.hardware.SensorManager
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -16,6 +20,7 @@ import androidx.activity.viewModels
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.viewinterop.AndroidView
@@ -33,7 +38,7 @@ import com.silexperience.velohnav.ar.ui.NavigationHud
 import com.silexperience.velohnav.ar.ui.VelohNavArTheme
 import java.util.concurrent.atomic.AtomicInteger
 
-class ArNavigationActivity : ComponentActivity() {
+class ArNavigationActivity : ComponentActivity(), SensorEventListener {
 
     private val viewModel: ArNavigationViewModel by viewModels()
     private var arView: ARSceneView? = null
@@ -58,6 +63,12 @@ class ArNavigationActivity : ComponentActivity() {
     private var afterInstall: (() -> Unit)? = null
     private var availabilityTries = 0
 
+    // Boussole native : capteur de rotation (gyroscope + accéléromètre +
+    // magnétomètre fusionnés), lu pour l'axe de la CAMÉRA, pas le haut de l'écran.
+    private val sensorManager by lazy { getSystemService(SENSOR_SERVICE) as SensorManager }
+    private val rotationMatrix = FloatArray(9)
+    private val rotationD = DoubleArray(9)
+
     private val permLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { results ->
@@ -81,9 +92,9 @@ class ArNavigationActivity : ComponentActivity() {
         webGuidance       = intent.getBooleanExtra("web_guidance", false)
 
         // Diagnostic clé API au démarrage : on loggue la longueur (jamais la clé
-        // en clair). La bascule GPS se décide sur la réponse d'ARCore
-        // (ERROR_NOT_AUTHORIZED), dès la première image — voir permanentEarthError ;
-        // la longueur ne sert qu'à choisir l'explication (clé absente / refusée).
+        // en clair). Sans clé, Geospatial n'est pas demandé et l'AR au sol suffit ;
+        // avec une clé refusée (ERROR_NOT_AUTHORIZED, voir permanentEarthError), seul
+        // le bonus manque.
         val nativeKeyLen = try {
             com.silexperience.velohnav.BuildConfig.MAPS_API_KEY.length
         } catch (_: Exception) { 0 }
@@ -116,31 +127,32 @@ class ArNavigationActivity : ComponentActivity() {
                                 context          = ctx,
                                 sharedActivity   = this@ArNavigationActivity,
                                 sharedLifecycle  = this@ArNavigationActivity.lifecycle,
-                                sessionConfiguration = { _, config ->
-                                    config.geospatialMode      = Config.GeospatialMode.ENABLED
+                                sessionConfiguration = { session, config ->
+                                    // AR au sol : plans horizontaux pour l'essai d'impact (avant :
+                                    // DISABLED, aucun sol n'était jamais détecté). Geospatial n'est
+                                    // demandé que si une clé existe — c'est un bonus, pas une condition.
+                                    config.geospatialMode = if (viewModel.apiKeyPresent)
+                                        Config.GeospatialMode.ENABLED else Config.GeospatialMode.DISABLED
+                                    config.planeFindingMode    = Config.PlaneFindingMode.HORIZONTAL
                                     config.lightEstimationMode = Config.LightEstimationMode.ENVIRONMENTAL_HDR
-                                    config.planeFindingMode    = Config.PlaneFindingMode.DISABLED
-                                    Log.d(TAG, "ARCore config: Geospatial=ENABLED")
+                                    config.focusMode           = Config.FocusMode.AUTO
+                                    // Profondeur (si l'appareil la gère) : essais d'impact plus sûrs
+                                    if (session.isDepthModeSupported(Config.DepthMode.AUTOMATIC))
+                                        config.depthMode = Config.DepthMode.AUTOMATIC
+                                    Log.d(TAG, "ARCore config: plans=HORIZONTAL geospatial=${config.geospatialMode} depth=${config.depthMode}")
                                 }
                             ).also { v ->
                                 arView = v
 
+                                // Thread principal (Choreographer). Traité sur l'instant et non
+                                // plus reporté par mainHandler.post : l'essai d'impact exige le
+                                // Frame courant, périmé dès l'image suivante.
                                 v.onSessionUpdated = { session, frame ->
                                     sessionUpdateCount.incrementAndGet()
-                                    val earth = session.earth
-                                    if (earth != null) {
-                                        // FIX : appeler onEarthTracking MÊME si pas tracking,
-                                        // pour que le diagnostic Earth soit toujours à jour.
-                                        // Le ViewModel gérera le cas non-tracking en interne.
-                                        mainHandler.post {
-                                            try {
-                                                viewModel.onEarthTracking(earth, frame, v)
-                                            } catch (e: Exception) {
-                                                Log.e(TAG, "onEarthTracking error", e)
-                                            }
-                                        }
-                                    } else if (sessionUpdateCount.get() % 60 == 0) {
-                                        Log.w(TAG, "session.earth est null (frame ${sessionUpdateCount.get()})")
+                                    try {
+                                        viewModel.onArFrame(session, frame, v)
+                                    } catch (e: Exception) {
+                                        Log.e(TAG, "onArFrame error", e)
                                     }
                                 }
 
@@ -167,8 +179,15 @@ class ArNavigationActivity : ComponentActivity() {
                         strings         = s,
                         webGuidance     = webGuidance,
                         onClose         = { finish() },
-                        onFallbackToGps = { viewModel.fallbackToGps() }
+                        onFallbackToGps = { viewModel.fallbackToGps() },
+                        onRealign       = { viewModel.requestRealign() }
                     )
+                    // Plans détectés affichés pendant l'ancrage (ils aident à viser le
+                    // sol), masqués une fois le tracé posé
+                    LaunchedEffect(state.groundAnchored, state.aimFloor) {
+                        try { arView?.planeRenderer?.isEnabled = !state.groundAnchored || state.aimFloor }
+                        catch (e: Exception) { Log.w(TAG, "planeRenderer: ${e.message}") }
+                    }
                 }
             }
         }
@@ -259,6 +278,26 @@ class ArNavigationActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         if (installRequested) afterInstall?.let { requestArCoreInstall(it) }
+        sensorManager.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)?.let {
+            sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME)
+        } ?: Log.w(TAG, "Pas de capteur de rotation : pas de boussole")
+    }
+
+    override fun onPause() {
+        super.onPause()
+        sensorManager.unregisterListener(this)
+        viewModel.onCompass(null)
+    }
+
+    override fun onSensorChanged(event: SensorEvent) {
+        if (event.sensor.type != Sensor.TYPE_ROTATION_VECTOR) return
+        SensorManager.getRotationMatrixFromVector(rotationMatrix, event.values)
+        for (i in 0 until 9) rotationD[i] = rotationMatrix[i].toDouble()
+        GroundGeo.cameraHeadingFromRotationMatrix(rotationD)?.let { viewModel.onCompass(it) }
+    }
+
+    override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {
+        if (accuracy <= SensorManager.SENSOR_STATUS_ACCURACY_LOW) Log.w(TAG, "Boussole peu fiable (précision $accuracy)")
     }
 
     private fun checkPermissions(onGranted: () -> Unit) {

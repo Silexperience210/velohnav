@@ -16,31 +16,71 @@ class ArStrings private constructor(private val en: Boolean) {
     fun sessionFailed(detail: String) =
         if (en) "ARCore unavailable: $detail" else "ARCore indisponible : $detail"
 
-    // ── Encart « AR précise indisponible » (bascule GPS sur erreur ARCore) ──
-    val fallbackTitle get() = if (en) "PRECISE AR UNAVAILABLE" else "AR PRÉCISE INDISPONIBLE"
+    // ── Chargement / ancrage ─────────────────────────────────────────
+    val statusLocating get() = "GPS…"
+    val statusRouting get() = if (en) "Computing route…" else "Calcul itinéraire…"
+    val statusAnchoring get() = if (en) "Anchoring to the ground…" else "Ancrage au sol…"
+    val aimFloor get() = if (en) "Point at the ground one or two steps ahead" else "Visez le sol à un ou deux pas devant vous"
+    val aimFloorWhy get() = if (en) "The route will start at your feet." else "Le tracé partira de vos pieds."
+    val compassUnsteady get() = if (en) "Hold the phone still for a second" else "Tenez le téléphone immobile une seconde"
+    fun accuracy(m: Double) = if (en) "Accuracy: ±${"%.1f".format(m)}m" else "Précision : ±${"%.1f".format(m)}m"
+    fun bestAccuracy(m: Double) = if (en) "Best: ±${"%.1f".format(m)}m" else "Meilleure : ±${"%.1f".format(m)}m"
+    val actionGpsOnly get() = if (en) "Switch to GPS mode" else "Passer en mode GPS"
+    val actionRealign get() = if (en) "Realign" else "Recaler"
+
+    // ── Badges ───────────────────────────────────────────────────────
+    val groundBadge get() = if (en) "GROUND AR" else "AR SOL"
+    val gpsBadge get() = if (en) "GPS MODE · LIMITED AR" else "MODE GPS · AR LIMITÉE"
+
+    // ── Encart « AR ancrée au sol » : un mode à part entière ──────────
+    val localTitle get() = if (en) "GROUND-ANCHORED AR" else "AR ANCRÉE AU SOL"
+    val localBody get() =
+        if (en) "The route starts at your feet and stays on the road thanks to the phone's motion tracking. Works offline, with no account or key."
+        else "Le tracé part de vos pieds et reste posé sur la chaussée grâce au suivi du téléphone. Fonctionne hors ligne, sans compte ni clé."
+    val floorEstimatedNote get() =
+        if (en) "Ground not detected: height estimated. Point at the road, then « Realign » for more precision."
+        else "Sol non détecté : hauteur estimée. Visez la chaussée puis « Recaler » pour plus de précision."
+
+    /** Localisation Google : un bonus. Null quand il n'y a rien d'utile à dire (pas de clé = choix normal). */
+    fun geoBonusNote(reason: FallbackReason?): String? = when (reason) {
+        FallbackReason.NOT_AUTHORIZED ->
+            if (en) "Google localisation (bonus): key refused — admin: see docs/ARCORE.md."
+            else "Localisation Google (bonus) : clé refusée — administrateur : voir docs/ARCORE.md."
+        FallbackReason.APK_TOO_OLD ->
+            if (en) "Google localisation (bonus): update Google Play Services for AR."
+            else "Localisation Google (bonus) : mettez à jour les Services Google Play pour la RA."
+        FallbackReason.QUOTA ->
+            if (en) "Google localisation (bonus): project quota used up."
+            else "Localisation Google (bonus) : quota du projet épuisé."
+        else -> null
+    }
+
+    // ── Encart « AR au sol indisponible » (GPS seul) ──────────────────
+    val fallbackTitle get() = if (en) "GROUND AR UNAVAILABLE" else "AR AU SOL INDISPONIBLE"
     val fallbackGpsActive get() = if (en) "GPS guidance is active." else "Le guidage GPS est actif."
     val actionWebAr get() = if (en) "Compass AR view" else "Vue AR boussole"
     val actionDismiss get() = if (en) "Got it" else "Compris"
 
-    /** Cause + quoi faire, en deux phrases au plus. Null : pas d'encart (lenteur ou choix). */
+    /** Cause + quoi faire, en deux phrases au plus. Null : pas d'encart (choix de l'utilisateur). */
     fun fallbackBody(reason: FallbackReason?): String? = when (reason) {
-        FallbackReason.NO_API_KEY ->
-            if (en) "This build has no Google API key (MAPS_API_KEY), so ARCore cannot localise. Rebuild with the key — see docs/ARCORE.md."
-            else "Cette version a été compilée sans clé Google (MAPS_API_KEY) : ARCore ne peut pas se localiser. Recompiler avec la clé — voir docs/ARCORE.md."
-        FallbackReason.NOT_AUTHORIZED ->
-            if (en) "Google refuses this app's key for the ARCore API. Admin: enable « ARCore API » and allow package com.silexperience.velohnav + the SHA-1 of the certificate that signed this APK."
-            else "Google refuse la clé de l'application pour l'API ARCore. Administrateur : activer « ARCore API » et autoriser le paquet com.silexperience.velohnav + l'empreinte SHA-1 du certificat qui a signé cet APK."
-        FallbackReason.APK_TOO_OLD ->
-            if (en) "Google Play Services for AR is too old. Update it from the Play Store."
-            else "Les Services Google Play pour la RA sont trop anciens. Mettez-les à jour depuis le Play Store."
-        FallbackReason.QUOTA ->
-            if (en) "The ARCore Geospatial quota of the Google Cloud project is used up. Try again later."
-            else "Le quota ARCore Geospatial du projet Google Cloud est épuisé. Réessayez plus tard."
         FallbackReason.NO_FRAMES ->
             if (en) "ARCore delivers no camera image (camera busy or sensor unavailable)."
             else "ARCore ne reçoit aucune image de la caméra (caméra occupée ou capteur indisponible)."
-        FallbackReason.TIMEOUT, FallbackReason.MANUAL, null -> null
+        FallbackReason.NO_TRACKING ->
+            if (en) "ARCore cannot track the scene (too dark, or camera covered?)."
+            else "ARCore n'arrive pas à suivre la scène (trop sombre, ou caméra masquée ?)."
+        FallbackReason.NO_COMPASS ->
+            if (en) "No compass available: the route cannot be oriented."
+            else "Aucune boussole disponible : impossible d'orienter le tracé."
+        else -> null
     }
+
+    // ── Fin de parcours / erreur ─────────────────────────────────────
+    val arrived get() = if (en) "ARRIVED" else "ARRIVÉ"
+    val finish get() = if (en) "FINISH" else "TERMINER"
+    val errorTitle get() = if (en) "Navigation error" else "Erreur navigation"
+    val errorUnknown get() = if (en) "Unknown error" else "Erreur inconnue"
+    val back get() = if (en) "Back" else "Retour"
 
     companion object {
         private val FR = ArStrings(false)

@@ -53,15 +53,16 @@ fun NavigationHud(
     strings: ArStrings = ArStrings.of("fr"),
     webGuidance: Boolean = false,
     onClose: () -> Unit,
-    onFallbackToGps: () -> Unit = {}
+    onFallbackToGps: () -> Unit = {},
+    onRealign: () -> Unit = {}
 ) {
     Box(Modifier.fillMaxSize()) {
 
         // Barre supérieure
-        TopBar(state, onClose, Modifier.align(Alignment.TopStart))
+        TopBar(state, strings, onClose, onRealign, Modifier.align(Alignment.TopStart))
 
-        // Encart « AR précise indisponible » : cause + quoi faire, sans bloquer la
-        // nav GPS qui tourne déjà dessous. Fermable ; réapparaît à la prochaine nav.
+        // Encart « AR au sol indisponible » (GPS seul) : cause + quoi faire, sans
+        // bloquer la nav GPS qui tourne déjà dessous. Fermable.
         val body = if (state.trackingMode == TrackingMode.GPS_FALLBACK) strings.fallbackBody(state.fallbackReason) else null
         var dismissed by remember(state.fallbackReason) { mutableStateOf(false) }
         AnimatedVisibility(
@@ -79,14 +80,38 @@ fun NavigationHud(
             )
         }
 
-        // Badge précision VPS
-        state.vpsAccuracy?.let {
-            VpsBadge(it, state.trackingMode, Modifier
+        // Encart « AR ancrée au sol » : le mode principal, présenté comme tel (sans
+        // clé Google, ce n'est pas un échec). Une fois par navigation, puis il s'efface.
+        val showLocal = state.status == NavStatus.NAVIGATING && state.groundAnchored &&
+                        state.trackingMode == TrackingMode.LOCAL
+        var localSeen by remember { mutableStateOf(false) }
+        LaunchedEffect(showLocal) {
+            if (showLocal && !localSeen) { kotlinx.coroutines.delay(9_000); localSeen = true }
+        }
+        AnimatedVisibility(
+            visible = showLocal && !localSeen,
+            enter = fadeIn() + slideInVertically { -it / 3 },
+            exit = fadeOut(),
+            modifier = Modifier.align(Alignment.TopCenter).padding(top = 64.dp)
+        ) {
+            LocalModeNotice(
+                strings = strings,
+                note = listOfNotNull(
+                    if (state.floorEstimated) strings.floorEstimatedNote else null,
+                    strings.geoBonusNote(state.geoBonusOff)
+                ),
+                onDismiss = { localSeen = true }
+            )
+        }
+
+        // Badge du mode : AR SOL, VPS ±x m, ou GPS
+        if (state.status == NavStatus.NAVIGATING || state.vpsAccuracy != null) {
+            ModeBadge(state, strings, Modifier
                 .align(Alignment.TopEnd)
                 .padding(top = 72.dp, end = 12.dp))
         }
 
-        // Overlay chargement / localisation
+        // Overlay chargement / ancrage au sol
         AnimatedVisibility(
             visible = state.status in listOf(
                 NavStatus.LOCATING, NavStatus.ROUTING, NavStatus.LOCALIZING
@@ -95,13 +120,22 @@ fun NavigationHud(
             modifier = Modifier.align(Alignment.Center)
         ) {
             LocalizingOverlay(
-                status         = state.status,
-                vpsAccuracy    = state.vpsAccuracy,
-                bestAccuracy   = state.bestHorizontalAccuracy,
-                secondsLeft    = state.vpsTimeoutSecondsLeft,
-                earthDiagnostic = state.earthDiagnostic,
-                onFallback     = onFallbackToGps
+                status          = state.status,
+                strings         = strings,
+                vpsAccuracy     = state.vpsAccuracy,
+                bestAccuracy    = state.bestHorizontalAccuracy,
+                compassUnsteady = state.compassUnsteady,
+                onFallback      = onFallbackToGps
             )
+        }
+
+        // Recalage en cours pendant la nav : aide discrète, le tracé reste affiché
+        AnimatedVisibility(
+            visible = state.status == NavStatus.NAVIGATING && state.aimFloor,
+            enter = fadeIn(), exit = fadeOut(),
+            modifier = Modifier.align(Alignment.Center)
+        ) {
+            AimFloorChip(if (state.compassUnsteady) strings.compassUnsteady else strings.aimFloor)
         }
 
         // Panneau instruction navigation
@@ -114,7 +148,7 @@ fun NavigationHud(
                 .padding(bottom = 24.dp)
         ) {
             state.currentStep?.let {
-                InstructionPanel(it, state.distanceToNextTurnMeters, state.trackingMode)
+                InstructionPanel(it, state.distanceToNextTurnMeters, state.trackingMode, strings)
             }
         }
 
@@ -123,19 +157,19 @@ fun NavigationHud(
             visible = state.status == NavStatus.ARRIVED,
             enter   = scaleIn() + fadeIn(),
             modifier = Modifier.align(Alignment.Center)
-        ) { ArrivedCard(state.destName, onClose) }
+        ) { ArrivedCard(state.destName, strings, onClose) }
 
         // Carte erreur
         AnimatedVisibility(
             visible = state.status == NavStatus.ERROR,
             modifier = Modifier.align(Alignment.Center)
-        ) { ErrorCard(state.errorMessage ?: "Erreur inconnue", onClose) }
+        ) { ErrorCard(state.errorMessage ?: strings.errorUnknown, strings, onClose) }
     }
 }
 
 // ── Barre supérieure ──────────────────────────────────────────────
 @Composable
-private fun TopBar(state: NavState, onClose: () -> Unit, modifier: Modifier) {
+private fun TopBar(state: NavState, strings: ArStrings, onClose: () -> Unit, onRealign: () -> Unit, modifier: Modifier) {
     Row(
         modifier
             .fillMaxWidth()
@@ -166,6 +200,18 @@ private fun TopBar(state: NavState, onClose: () -> Unit, modifier: Modifier) {
                     "${RouteManager.formatDistance(state.totalRemainingMeters)}  ·  ${RouteManager.formatDuration(state.etaSeconds)}",
                     color = GrayText, fontSize = 12.sp
                 )
+        }
+
+        // Recaler : nouvel ancrage au sol (si le tracé a dérivé ou a été posé de travers)
+        if (state.status == NavStatus.NAVIGATING && state.trackingMode != TrackingMode.GPS_FALLBACK) {
+            IconButton(
+                onClick = onRealign,
+                modifier = Modifier
+                    .size(40.dp)
+                    .background(DarkCard, CircleShape)
+                    .border(1.dp, OrangeDim, CircleShape)
+            ) { Icon(Icons.Filled.CenterFocusStrong, strings.actionRealign, tint = Orange) }
+            Spacer(Modifier.width(8.dp))
         }
 
         if (state.totalSteps > 0 && state.status == NavStatus.NAVIGATING)
@@ -232,9 +278,57 @@ private fun FallbackNotice(
     }
 }
 
+// ── Encart « AR ancrée au sol » ───────────────────────────────────
+@Composable
+private fun LocalModeNotice(strings: ArStrings, note: List<String>, onDismiss: () -> Unit) {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp)
+            .background(DarkCard, RoundedCornerShape(16.dp))
+            .border(1.dp, GreenOK.copy(alpha = 0.6f), RoundedCornerShape(16.dp))
+            .padding(14.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(Icons.Filled.CheckCircle, null, tint = GreenOK, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.width(8.dp))
+            Text(
+                strings.localTitle,
+                color = GreenOK, fontSize = 11.sp, letterSpacing = 1.sp,
+                fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold
+            )
+        }
+        Spacer(Modifier.height(6.dp))
+        Text(strings.localBody, color = Color.White, fontSize = 12.sp, lineHeight = 16.sp)
+        note.forEach {
+            Spacer(Modifier.height(4.dp))
+            Text(it, color = GrayText, fontSize = 11.sp, lineHeight = 14.sp)
+        }
+        Spacer(Modifier.height(6.dp))
+        TextButton(onClick = onDismiss) {
+            Text(strings.actionDismiss, color = GrayText, fontSize = 12.sp, fontFamily = FontFamily.Monospace)
+        }
+    }
+}
+
+@Composable
+private fun AimFloorChip(text: String) {
+    Row(
+        Modifier
+            .background(DarkCard, RoundedCornerShape(20.dp))
+            .border(1.dp, OrangeDim, RoundedCornerShape(20.dp))
+            .padding(horizontal = 14.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(Icons.Filled.CenterFocusStrong, null, tint = Orange, modifier = Modifier.size(16.dp))
+        Spacer(Modifier.width(8.dp))
+        Text(text, color = Color.White, fontSize = 12.sp, fontFamily = FontFamily.Monospace)
+    }
+}
+
 // ── Panneau instruction ───────────────────────────────────────────
 @Composable
-private fun InstructionPanel(step: NavigationStep, dist: Double, mode: TrackingMode = TrackingMode.VPS) {
+private fun InstructionPanel(step: NavigationStep, dist: Double, mode: TrackingMode, strings: ArStrings) {
     Box(
         Modifier
             .fillMaxWidth()
@@ -257,7 +351,7 @@ private fun InstructionPanel(step: NavigationStep, dist: Double, mode: TrackingM
                         .padding(horizontal = 6.dp, vertical = 2.dp)
                 ) {
                     Text(
-                        "MODE GPS · AR LIMITÉE",
+                        strings.gpsBadge,
                         color = Orange, fontSize = 9.sp,
                         fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold,
                         letterSpacing = 1.sp
@@ -295,53 +389,47 @@ private fun InstructionPanel(step: NavigationStep, dist: Double, mode: TrackingM
     }
 }
 
-// ── Badge VPS ─────────────────────────────────────────────────────
+// ── Badge du mode ─────────────────────────────────────────────────
 @Composable
-private fun VpsBadge(acc: VpsAccuracy, mode: TrackingMode, modifier: Modifier) {
-    if (mode == TrackingMode.GPS_FALLBACK) {
-        // Mode dégradé — badge jaune "GPS"
-        Box(
-            modifier
-                .background(DarkCard, RoundedCornerShape(6.dp))
-                .border(1.dp, Orange.copy(alpha = 0.5f), RoundedCornerShape(6.dp))
-                .padding(horizontal = 7.dp, vertical = 3.dp)
-        ) {
-            Text("GPS", color = Orange, fontSize = 10.sp,
-                fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold)
-        }
-        return
-    }
-    // Mêmes seuils que le web (src/ui/format.js, positioning) : ≤ 1,5 m bon, ≤ 5 m moyen
-    val c = when {
-        acc.horizontalMeters <= 1.5 -> GreenOK
-        acc.horizontalMeters <= 5   -> WarnYellow
-        else                        -> RedBad
+private fun ModeBadge(state: NavState, strings: ArStrings, modifier: Modifier) {
+    val acc = state.vpsAccuracy
+    val (label, c) = when {
+        state.trackingMode == TrackingMode.GPS_FALLBACK -> Pair("GPS", Orange)
+        state.trackingMode == TrackingMode.VPS && acc != null ->
+            // Mêmes seuils que le web (src/ui/format.js, positioning) : ≤ 1,5 m bon, ≤ 5 m moyen
+            Pair("VPS ${acc.label}", when {
+                acc.horizontalMeters <= 1.5 -> GreenOK
+                acc.horizontalMeters <= 5   -> WarnYellow
+                else                        -> RedBad
+            })
+        // AR au sol : vert quand le sol a été détecté, orange s'il est estimé
+        else -> Pair(strings.groundBadge, if (state.floorEstimated) Orange else GreenOK)
     }
     Box(
         modifier
             .background(DarkCard, RoundedCornerShape(6.dp))
-            .border(1.dp, c.copy(alpha = 0.4f), RoundedCornerShape(6.dp))
+            .border(1.dp, c.copy(alpha = 0.5f), RoundedCornerShape(6.dp))
             .padding(horizontal = 7.dp, vertical = 3.dp)
     ) {
-        Text("VPS ${acc.label}", color = c, fontSize = 10.sp,
+        Text(label, color = c, fontSize = 10.sp,
             fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold)
     }
 }
 
-// ── Overlay localisation ──────────────────────────────────────────
+// ── Overlay chargement / ancrage au sol ───────────────────────────
 @Composable
 private fun LocalizingOverlay(
     status: NavStatus,
+    strings: ArStrings,
     vpsAccuracy: VpsAccuracy? = null,
     bestAccuracy: Double = Double.MAX_VALUE,
-    secondsLeft: Int = 0,
-    earthDiagnostic: EarthDiagnostic? = null,
+    compassUnsteady: Boolean = false,
     onFallback: () -> Unit = {}
 ) {
     val label = when (status) {
-        NavStatus.LOCATING    -> "GPS…"
-        NavStatus.ROUTING     -> "Calcul itinéraire…"
-        else                   -> "Localisation VPS…"
+        NavStatus.LOCATING    -> strings.statusLocating
+        NavStatus.ROUTING     -> strings.statusRouting
+        else                   -> strings.statusAnchoring
     }
     val inf = rememberInfiniteTransition(label = "pulse")
     val a by inf.animateFloat(
@@ -365,59 +453,29 @@ private fun LocalizingOverlay(
         Text(label, color = Orange, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
         if (status == NavStatus.LOCALIZING) {
             Spacer(Modifier.height(4.dp))
-            Text("Pointez vers les bâtiments", color = GrayText, fontSize = 13.sp,
-                textAlign = TextAlign.Center)
+            Text(if (compassUnsteady) strings.compassUnsteady else strings.aimFloor,
+                color = Color.White, fontSize = 13.sp, textAlign = TextAlign.Center)
+            Spacer(Modifier.height(4.dp))
+            Text(strings.aimFloorWhy, color = GrayText, fontSize = 11.sp, textAlign = TextAlign.Center)
 
-            // Diagnostic Earth — affiché si on a reçu un état Earth
-            // Crucial pour identifier les blocages (clé API, version trop vieille...)
-            if (earthDiagnostic != null) {
-                Spacer(Modifier.height(8.dp))
-                val diagColor = when {
-                    earthDiagnostic.state.toString().startsWith("ERROR") -> RedBad
-                    earthDiagnostic.isTracking -> GreenOK
-                    else -> Orange
-                }
-                Text(
-                    "ARCore: ${earthDiagnostic.message}",
-                    color = diagColor, fontSize = 10.sp, fontFamily = FontFamily.Monospace,
-                    textAlign = TextAlign.Center,
-                    modifier = Modifier.fillMaxWidth(0.9f)
-                )
-            } else {
-                Spacer(Modifier.height(8.dp))
-                Text(
-                    "En attente d'ARCore…",
-                    color = GrayText, fontSize = 10.sp, fontFamily = FontFamily.Monospace
-                )
-            }
-
-            // Précision actuelle + meilleure observée
+            // Localisation Google (bonus) : affichée seulement si elle progresse
             val currentAcc = vpsAccuracy?.horizontalMeters
             if (currentAcc != null) {
                 Spacer(Modifier.height(8.dp))
                 Text(
-                    "Précision : ±${"%.1f".format(currentAcc)}m",
+                    strings.accuracy(currentAcc),
                     color = if (currentAcc < 8) GreenOK else if (currentAcc < 15) Orange else RedBad,
                     fontSize = 12.sp, fontFamily = FontFamily.Monospace
                 )
                 if (bestAccuracy < Double.MAX_VALUE && bestAccuracy < currentAcc) {
                     Text(
-                        "Meilleure : ±${"%.1f".format(bestAccuracy)}m",
+                        strings.bestAccuracy(bestAccuracy),
                         color = GrayText, fontSize = 10.sp, fontFamily = FontFamily.Monospace
                     )
                 }
             }
 
-            // Countdown VPS — informe l'utilisateur du fallback automatique
-            if (secondsLeft > 0) {
-                Spacer(Modifier.height(6.dp))
-                Text(
-                    "Bascule GPS dans ${secondsLeft}s",
-                    color = GrayText, fontSize = 11.sp, fontFamily = FontFamily.Monospace
-                )
-            }
-
-            // Bouton manuel "passer en GPS" — l'utilisateur n'attend pas le timeout
+            // Bouton manuel « passer en GPS » : toujours possible
             Spacer(Modifier.height(12.dp))
             OutlinedButton(
                 onClick = onFallback,
@@ -425,7 +483,7 @@ private fun LocalizingOverlay(
                 shape = RoundedCornerShape(8.dp)
             ) {
                 Text(
-                    "Passer en mode GPS",
+                    strings.actionGpsOnly,
                     color = Orange, fontSize = 12.sp,
                     fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold
                 )
@@ -436,7 +494,7 @@ private fun LocalizingOverlay(
 
 // ── Carte arrivée ─────────────────────────────────────────────────
 @Composable
-private fun ArrivedCard(dest: String, onClose: () -> Unit) {
+private fun ArrivedCard(dest: String, strings: ArStrings, onClose: () -> Unit) {
     Column(
         Modifier
             .background(DarkCard, RoundedCornerShape(24.dp))
@@ -446,7 +504,7 @@ private fun ArrivedCard(dest: String, onClose: () -> Unit) {
     ) {
         Text("🎯", fontSize = 52.sp)
         Spacer(Modifier.height(8.dp))
-        Text("ARRIVÉ", color = Orange, fontWeight = FontWeight.ExtraBold,
+        Text(strings.arrived, color = Orange, fontWeight = FontWeight.ExtraBold,
             fontFamily = FontFamily.Monospace, fontSize = 26.sp, letterSpacing = 6.sp)
         Text(dest, color = Color.White, fontSize = 16.sp, textAlign = TextAlign.Center)
         Spacer(Modifier.height(20.dp))
@@ -455,7 +513,7 @@ private fun ArrivedCard(dest: String, onClose: () -> Unit) {
             colors = ButtonDefaults.buttonColors(containerColor = Orange),
             shape = RoundedCornerShape(10.dp)
         ) {
-            Text("TERMINER", color = Color.Black,
+            Text(strings.finish, color = Color.Black,
                 fontWeight = FontWeight.ExtraBold, fontFamily = FontFamily.Monospace)
         }
     }
@@ -463,7 +521,7 @@ private fun ArrivedCard(dest: String, onClose: () -> Unit) {
 
 // ── Carte erreur ──────────────────────────────────────────────────
 @Composable
-private fun ErrorCard(msg: String, onClose: () -> Unit) {
+private fun ErrorCard(msg: String, strings: ArStrings, onClose: () -> Unit) {
     Column(
         Modifier
             .padding(24.dp)
@@ -474,14 +532,14 @@ private fun ErrorCard(msg: String, onClose: () -> Unit) {
     ) {
         Icon(Icons.Filled.Warning, null, tint = RedBad, modifier = Modifier.size(40.dp))
         Spacer(Modifier.height(8.dp))
-        Text("Erreur navigation", color = RedBad, fontWeight = FontWeight.Bold)
+        Text(strings.errorTitle, color = RedBad, fontWeight = FontWeight.Bold)
         Text(msg, color = GrayText, fontSize = 13.sp, textAlign = TextAlign.Center)
         Spacer(Modifier.height(16.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             OutlinedButton(
                 onClick = onClose,
                 border = androidx.compose.foundation.BorderStroke(1.dp, Orange)
-            ) { Text("Retour", color = Orange) }
+            ) { Text(strings.back, color = Orange) }
         }
     }
 }

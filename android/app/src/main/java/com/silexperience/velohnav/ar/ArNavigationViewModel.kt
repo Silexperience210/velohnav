@@ -2,17 +2,23 @@ package com.silexperience.velohnav.ar
 
 import android.annotation.SuppressLint
 import android.app.Application
+import android.hardware.GeomagneticField
 import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.google.android.gms.location.LocationServices
 import com.google.android.gms.location.Priority
+import com.google.ar.core.Anchor
 import com.google.ar.core.Earth
 import com.google.ar.core.Frame
+import com.google.ar.core.Plane
+import com.google.ar.core.Pose
+import com.google.ar.core.Session
 import com.google.ar.core.TrackingState
 import io.github.sceneview.ar.ARSceneView
 import io.github.sceneview.ar.node.AnchorNode
-import io.github.sceneview.model.Model
+import io.github.sceneview.math.Position
+import io.github.sceneview.math.Rotation
 import io.github.sceneview.node.ModelNode
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -28,16 +34,22 @@ import kotlinx.coroutines.withTimeoutOrNull
 
 enum class NavStatus { IDLE, LOCATING, ROUTING, LOCALIZING, NAVIGATING, ARRIVED, ERROR }
 
-// Mode de tracking : VPS (haute précision) ou GPS dégradé (fallback)
-enum class TrackingMode { VPS, GPS_FALLBACK }
+/**
+ * Mode de guidage.
+ *  - LOCAL : AR ancrée au sol — suivi ARCore local, gratuit, hors ligne, sans compte
+ *    ni clé. C'est le mode principal, pas un pis-aller.
+ *  - VPS : le même tracé au sol, recalé en plus par la localisation Google
+ *    (Geospatial) quand elle est disponible et précise — un bonus.
+ *  - GPS_FALLBACK : pas de suivi ARCore exploitable ; guidage texte + GPS.
+ */
+enum class TrackingMode { LOCAL, VPS, GPS_FALLBACK }
 
 /**
- * Pourquoi la nav est passée en mode GPS. Les quatre premières causes ne se
- * résolvent pas en attendant : la bascule est immédiate et le HUD explique quoi
- * faire. TIMEOUT / MANUAL : VPS simplement lent (zone mal couverte) ou choix de
- * l'utilisateur.
+ * Cause d'une limitation. NO_FRAMES / NO_TRACKING / NO_COMPASS / MANUAL font passer
+ * en GPS seul. Les autres ne concernent QUE le bonus Geospatial (clé absente ou
+ * refusée, ARCore trop ancien, quota) : l'AR au sol fonctionne sans.
  */
-enum class FallbackReason { NO_API_KEY, NOT_AUTHORIZED, APK_TOO_OLD, QUOTA, NO_FRAMES, TIMEOUT, MANUAL }
+enum class FallbackReason { NO_API_KEY, NOT_AUTHORIZED, APK_TOO_OLD, QUOTA, NO_FRAMES, NO_TRACKING, NO_COMPASS, TIMEOUT, MANUAL }
 
 /** Erreur Earth qui ne se corrigera pas d'elle-même pendant la session (null sinon). */
 fun permanentEarthError(state: Earth.EarthState?, apiKeyPresent: Boolean): FallbackReason? = when (state) {
@@ -59,33 +71,51 @@ data class NavState(
     val vpsAccuracy: VpsAccuracy? = null,
     val destName: String         = "",
     val errorMessage: String?    = null,
-    // Compte à rebours avant fallback GPS si VPS ne converge pas (secondes)
+    // Plus de compte à rebours VPS (la nav n'attend plus Google) : toujours 0
     val vpsTimeoutSecondsLeft: Int = 0,
-    // Mode actif — basculé en GPS_FALLBACK si VPS timeout
-    val trackingMode: TrackingMode = TrackingMode.VPS,
-    // Meilleure précision VPS observée — pour debug/UX
+    val trackingMode: TrackingMode = TrackingMode.LOCAL,
+    // Meilleure précision Geospatial observée — pour debug/UX
     val bestHorizontalAccuracy: Double = Double.MAX_VALUE,
-    // Diagnostic Earth — affiché dans le HUD si bloqué
+    // Diagnostic Earth (journal, administrateur)
     val earthDiagnostic: EarthDiagnostic? = null,
-    // Cause de la bascule GPS (null tant qu'on est en VPS)
-    val fallbackReason: FallbackReason? = null
+    // Cause de la bascule en GPS seul (null sinon)
+    val fallbackReason: FallbackReason? = null,
+    // Pourquoi le bonus Geospatial est absent (informatif, n'empêche rien)
+    val geoBonusOff: FallbackReason? = null,
+    // Tracé posé au sol (ancre ARCore active)
+    val groundAnchored: Boolean = false,
+    // En attente d'un sol à viser (ancrage ou recalage en cours)
+    val aimFloor: Boolean = false,
+    // Boussole trop agitée pour ancrer
+    val compassUnsteady: Boolean = false,
+    // Sol non détecté : hauteur estimée (moins exact)
+    val floorEstimated: Boolean = false
 )
 
 class ArNavigationViewModel(application: Application) : AndroidViewModel(application) {
     private val TAG = "ArNavViewModel"
 
-    // ── Constantes VPS ────────────────────────────────────────────
-    // Timeout : si la VPS ne converge pas en 25s, on bascule en GPS dégradé.
-    // Couvre les cas réels : zone sans couverture Street View, ciel obstrué,
-    // intérieur (parking, tunnel), bâtiments trop proches/uniformes.
-    private val VPS_TIMEOUT_SECONDS = 25
-    // Seuil de précision "fiable" — relâché vs avant (5m → 8m horiz, 15° → 20° heading)
-    // Permet de démarrer la nav plus tôt dans les zones à VPS médiocre.
-    private val VPS_RELIABLE_HORIZ_M  = 8.0
-    private val VPS_RELIABLE_HEAD_DEG = 20.0
-    // Seuil "acceptable" — fallback graceful : si on reste bloqué mais qu'on a
-    // une précision raisonnable (<15m), on démarre quand même la nav.
-    private val VPS_ACCEPTABLE_HORIZ_M = 15.0
+    // ── Constantes ────────────────────────────────────────────────
+    /** Attente d'un plan de sol avant de poser le tracé à hauteur estimée (ms). */
+    private val FLOOR_WAIT_MS = 6_000L
+    /** Idem pour un ré-ancrage en continuité : le sol est déjà connu. */
+    private val FLOOR_WAIT_CONTINUE_MS = 1_500L
+    /** Boussole jamais stable : on ancre quand même avec une dispersion plus large. */
+    private val COMPASS_RELAX_MS = 10_000L
+    private val COMPASS_RELAXED_SPREAD_DEG = 25.0
+    /** Aucune boussole du tout / aucun suivi ARCore : GPS seul. */
+    private val COMPASS_MISSING_MS = 12_000L
+    private val TRACKING_MISSING_MS = 15_000L
+    /** Hauteur de l'objectif au-dessus du sol tant qu'aucun plan n'a été mesuré. */
+    private val DEFAULT_CAM_HEIGHT_M = 1.35
+    /** Repères posés légèrement au-dessus du sol (évite le scintillement avec la chaussée). */
+    private val MARK_LIFT_M = 0.03f
+    private val CHEVRON_POOL = 28
+    private val MANEUVER_POOL = 4
+    /** Geospatial accepté pour recaler (bonus) : précision de cap et de position. */
+    private val GEO_HEADING_OK_DEG = 10.0
+    private val GEO_HORIZ_OK_M = 5.0
+    private val GEO_RECALIBRATE_MS = 30_000L
 
     private val _state = MutableStateFlow(NavState())
     val navState: StateFlow<NavState> = _state.asStateFlow()
@@ -94,42 +124,57 @@ class ArNavigationViewModel(application: Application) : AndroidViewModel(applica
     private var routeManager: RouteManager = RouteManager("")
     private val fusedLocation = LocationServices.getFusedLocationProviderClient(application)
 
-    // FIX : arView n'est PLUS stocké ici — fuite mémoire lors des rotations écran.
-    // ARSceneView est passé en paramètre à chaque méthode qui en a besoin,
-    // sauf pour cleanup() où l'Activity passe explicitement la référence courante.
-    private var cleanupView: ARSceneView? = null  // référence unique pour cleanup
+    // ARSceneView n'est pas stocké pour le rendu (fuite lors des rotations) : seule
+    // une référence de nettoyage est gardée.
+    private var cleanupView: ARSceneView? = null
 
     private var route: NavigationRoute? = null
     private var currentStepIdx = 0
-    private val arrowNodes = java.util.concurrent.ConcurrentHashMap<Int, AnchorNode>()
-    private var modelAsset: Model? = null
-    private var vpsReady = false
     private var navigationJob: Job? = null
-    private var vpsTimeoutJob: Job? = null   // job de timeout VPS — annulé dès que vpsReady
+    private var gpsWatchJob: Job? = null
+    private var watchdogJob: Job? = null
     private var lastEarth: Earth? = null
-    // Position GPS de fallback (mise à jour si VPS down) — utilisée pour avancer
-    // dans les étapes même sans tracking ARCore Geospatial fiable.
+
     @Volatile private var lastGpsLat: Double = 0.0
     @Volatile private var lastGpsLng: Double = 0.0
-    private var gpsWatchJob: Job? = null
-    // Fix GPS plus imprécis que ça : ignoré pour la progression (seuil de franchissement 20 m)
+    @Volatile private var lastGpsAcc: Double = 99.0
+    @Volatile private var lastGpsFixAt: Long = 0L
+    private var lastPairFixAt = 0L
     private val MAX_GPS_ACCURACY_M = 30f
-    // Dernière pose VPS acceptée pour la progression. Si le suivi Earth se perd
-    // en pleine nav (tunnel, passage couvert), updateProgress sortait sans rien
-    // faire et la progression gelait : au-delà de VPS_STALE_MS, le GPS prend le
-    // relais jusqu'au retour d'une pose VPS fiable.
-    private var lastVpsProgressAt = 0L
-    private val VPS_STALE_MS = 10_000L
-    // Ancres posées avant la fin du chargement du modèle GLB : elles restaient
-    // vides (flèches invisibles) — complétées dès que le modèle arrive.
-    private val arrowsWithoutModel = java.util.concurrent.ConcurrentHashMap.newKeySet<Int>()
-    // Clé API présente dans le build (manifest) : distingue « clé absente » de
-    // « clé refusée » dans l'explication affichée.
+
+    // Clé API présente dans le build (manifest) : sans elle, Geospatial n'est même
+    // pas demandé — l'AR au sol n'en a pas besoin.
     var apiKeyPresent: Boolean = true
-    // Cause de bascule constatée AVANT que l'itinéraire soit prêt (ARCore répond
-    // en quelques images, le GPS + l'itinéraire en plusieurs secondes) : appliquée
-    // dès l'entrée en LOCALIZING au lieu d'attendre le compte à rebours de 25 s.
     @Volatile private var pendingFallback: FallbackReason? = null
+
+    // ── AR ancrée au sol ──────────────────────────────────────────
+    private var aligner: GroundAligner? = null
+    private var maneuverS: List<Double> = emptyList()
+    private var anchorNode: AnchorNode? = null
+    private var anchor: Anchor? = null
+    private val chevronNodes = ArrayList<ModelNode>()
+    private val maneuverNodes = ArrayList<ModelNode>()
+    private var marksAtS = Double.NaN
+    private var camHeight = DEFAULT_CAM_HEIGHT_M
+    private var everTracked = false
+    private var routeReadyAt = 0L
+    private var lastGeoCorrectionAt = 0L
+
+    /** Demande d'ancrage en attente (premier ancrage, recalage, continuité, Geospatial). */
+    private enum class AnchorKind { INITIAL, CONTINUE, ABSOLUTE }
+    private data class AnchorRequest(val kind: AnchorKind, val since: Long, val yaw: Double? = null, val userEnu: Enu? = null)
+    private var anchorRequest: AnchorRequest? = null
+
+    // Boussole native (capteur de rotation, fourni par l'activité) : cap magnétique
+    // de l'axe de la caméra + instant de la mesure.
+    @Volatile private var compassMagDeg: Double? = null
+    @Volatile private var compassAt: Long = 0L
+    private var declinationDeg: Double? = null
+
+    fun onCompass(headingMagDeg: Double?) {
+        compassMagDeg = headingMagDeg
+        compassAt = System.currentTimeMillis()
+    }
 
     // ── Initialisation ─────────────────────────────────────────────
     fun initializeNavigation(
@@ -138,60 +183,53 @@ class ArNavigationViewModel(application: Application) : AndroidViewModel(applica
         destName: String, travelMode: String,
         mapsKey: String = ""
     ) {
-        navigationJob?.cancel()
-        vpsTimeoutJob?.cancel()
-        gpsWatchJob?.cancel()
-        // Stocker uniquement pour cleanup — pas pour les opérations de rendu
+        navigationJob?.cancel(); gpsWatchJob?.cancel(); watchdogJob?.cancel()
         cleanupView = arSceneView
         routeManager = RouteManager(mapsKey)
-        vpsReady = false
         currentStepIdx = 0
-        arrowNodes.clear()
-        arrowsWithoutModel.clear()
         lastEarth = null
         pendingFallback = null
+        clearGround(arSceneView)
 
-        _state.value = NavState(status = NavStatus.LOCATING, destName = destName)
+        _state.value = NavState(
+            status = NavStatus.LOCATING, destName = destName,
+            geoBonusOff = if (apiKeyPresent) null else FallbackReason.NO_API_KEY
+        )
 
+        // Un seul modèle GLB, instancié une fois pour tous les repères (réutilisés :
+        // aucune création ni destruction de nœud en cours de route).
         viewModelScope.launch {
             try {
-                modelAsset = arSceneView.modelLoader.loadModel("models/arrow_navigation.glb")
-                Log.d(TAG, "GLB chargé")
-                // Rattraper les flèches déjà ancrées sans modèle (VPS plus rapide que le GLB)
-                modelAsset?.let { asset ->
-                    for (idx in arrowsWithoutModel.toList()) {
-                        val node = arrowNodes[idx] ?: continue
-                        arSceneView.modelLoader.createInstance(asset)?.let { instance ->
-                            node.addChildNode(ModelNode(modelInstance = instance, scaleToUnits = 0.8f))
-                        }
-                        arrowsWithoutModel.remove(idx)
-                    }
+                val instances = arSceneView.modelLoader.loadInstancedModel(
+                    "models/arrow_navigation.glb", CHEVRON_POOL + MANEUVER_POOL)
+                instances.forEachIndexed { i, inst ->
+                    val node = ModelNode(modelInstance = inst, scaleToUnits = if (i < CHEVRON_POOL) 0.45f else 0.9f)
+                    node.isVisible = false
+                    if (i < CHEVRON_POOL) chevronNodes.add(node) else maneuverNodes.add(node)
+                    anchorNode?.addChildNode(node)
                 }
+                Log.d(TAG, "GLB chargé : ${instances.size} instances")
+                marksAtS = Double.NaN
+                refreshMarks()
             } catch (e: Exception) {
                 Log.w(TAG, "GLB load failed (nav textuelle): ${e.message}")
             }
         }
 
-        navigationJob = viewModelScope.launch {
-            locateAndRoute(destLat, destLng, travelMode)
-        }
+        navigationJob = viewModelScope.launch { locateAndRoute(destLat, destLng, travelMode) }
     }
 
     // ── GPS + routing ───────────────────────────────────────────────
     @SuppressLint("MissingPermission")
     private suspend fun locateAndRoute(dLat: Double, dLng: Double, mode: String) {
         try {
-            // Timeout 10s — évite blocage indéfini si GPS ne fix jamais (indoor, tunnel...)
             val loc = withTimeoutOrNull(10_000) {
                 withContext(Dispatchers.IO) {
                     fusedLocation.getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, null).await()
                 }
             } ?: return setState(NavStatus.ERROR, "GPS indisponible (timeout 10s) — sortez en extérieur")
 
-            // Mémoriser GPS pour fallback éventuel si VPS échoue
-            lastGpsLat = loc.latitude
-            lastGpsLng = loc.longitude
-
+            onGpsFix(loc.latitude, loc.longitude, if (loc.hasAccuracy()) loc.accuracy.toDouble() else 20.0)
             _state.value = _state.value.copy(status = NavStatus.ROUTING)
 
             var lastError: Throwable? = null
@@ -200,22 +238,21 @@ class ArNavigationViewModel(application: Application) : AndroidViewModel(applica
                 routeManager.fetchRoute(loc.latitude, loc.longitude, dLat, dLng, mode)
                     .onSuccess { r ->
                         route = r
+                        prepareGround(r)
+                        routeReadyAt = System.currentTimeMillis()
                         _state.value = _state.value.copy(
                             status               = NavStatus.LOCALIZING,
                             totalSteps           = r.steps.size,
                             totalRemainingMeters = r.totalDistanceMeters,
                             etaSeconds           = r.totalDurationSeconds,
                             currentStep          = r.steps.firstOrNull(),
-                            vpsTimeoutSecondsLeft = VPS_TIMEOUT_SECONDS
+                            aimFloor             = true
                         )
-                        Log.i(TAG, "Route: ${r.steps.size} étapes, ${r.totalDistanceMeters}m")
+                        Log.i(TAG, "Route: ${r.steps.size} étapes, ${r.totalDistanceMeters}m, ${r.polyline().size} points")
+                        anchorRequest = AnchorRequest(AnchorKind.INITIAL, System.currentTimeMillis())
                         startGpsWatcher()
-                        // ARCore a déjà dit non (clé refusée, aucune image…) : pas de
-                        // compte à rebours de 25 s devant une erreur qui ne passera pas.
-                        val early = pendingFallback
-                            ?: permanentEarthError(geo.diagnostic.value?.state, apiKeyPresent)
-                        if (early != null) fallbackToGps(early)
-                        else startVpsTimeout(dLat, dLng, mode)
+                        startWatchdog()
+                        pendingFallback?.let { fallbackToGps(it) }
                         return
                     }
                     .onFailure { lastError = it }
@@ -226,22 +263,31 @@ class ArNavigationViewModel(application: Application) : AndroidViewModel(applica
         }
     }
 
-    // ── Timeout VPS + fallback GPS ─────────────────────────────────
-    // Si la VPS ne devient pas fiable en VPS_TIMEOUT_SECONDS, on bascule
-    // en mode GPS dégradé pour ne pas laisser l'utilisateur bloqué.
-    private fun startVpsTimeout(dLat: Double, dLng: Double, mode: String) {
-        vpsTimeoutJob?.cancel()
-        vpsTimeoutJob = viewModelScope.launch {
-            for (sec in VPS_TIMEOUT_SECONDS downTo 1) {
-                if (vpsReady) return@launch
-                _state.value = _state.value.copy(vpsTimeoutSecondsLeft = sec)
+    /** Géométrie au sol : route en ENU autour de son point de départ, abscisses des manœuvres. */
+    private fun prepareGround(r: NavigationRoute) {
+        val line = r.polyline()
+        if (line.size < 2) { aligner = null; return }
+        val path = RoutePath(line[0].first, line[0].second, line)
+        aligner = GroundAligner(path)
+        var hint = 0.0
+        maneuverS = r.steps.filter { it.maneuver != "arrive" && it.maneuver != "straight" }.map { st ->
+            path.project(path.toEnu(st.endLat, st.endLng), hint, back = 0.0, fwd = Double.MAX_VALUE).first.also { hint = it }
+        }
+        marksAtS = Double.NaN
+    }
+
+    /**
+     * Pas de suivi ARCore, ou pas de boussole du tout : GPS seul, avec la cause.
+     * Une AR ancrée qui fonctionne n'est jamais interrompue par ce chien de garde.
+     */
+    private fun startWatchdog() {
+        watchdogJob?.cancel()
+        watchdogJob = viewModelScope.launch {
+            while (isActive && _state.value.status == NavStatus.LOCALIZING) {
+                val waited = System.currentTimeMillis() - routeReadyAt
+                if (!everTracked && waited > TRACKING_MISSING_MS) { fallbackToGps(FallbackReason.NO_TRACKING); return@launch }
+                if (compassMagDeg == null && waited > COMPASS_MISSING_MS) { fallbackToGps(FallbackReason.NO_COMPASS); return@launch }
                 delay(1000)
-            }
-            // Timeout atteint — VPS ne convergera probablement pas.
-            if (!vpsReady) {
-                val best = _state.value.bestHorizontalAccuracy
-                Log.w(TAG, "VPS timeout après ${VPS_TIMEOUT_SECONDS}s — best=${best}m → fallback GPS")
-                fallbackToGps(FallbackReason.TIMEOUT)
             }
         }
     }
@@ -249,43 +295,48 @@ class ArNavigationViewModel(application: Application) : AndroidViewModel(applica
     /** Watchdog de l'activité : aucune image ARCore reçue. */
     fun onArCoreSilent() = fallbackToGps(FallbackReason.NO_FRAMES)
 
-    // Bascule manuelle (bouton "passer en GPS"), auto sur timeout ou sur erreur
-    // ARCore définitive. Avant LOCALIZING (itinéraire pas encore prêt), la cause
-    // est mémorisée et appliquée dès que l'itinéraire arrive : avant, elle était
-    // ignorée et l'utilisateur attendait 25 s devant « API non autorisée ».
+    /** Bouton « Passer en mode GPS », ou absence de suivi / de boussole. */
     fun fallbackToGps(reason: FallbackReason = FallbackReason.MANUAL) {
-        if (vpsReady) return  // déjà en nav, rien à faire
-        val st = _state.value.status
-        if (st == NavStatus.LOCATING || st == NavStatus.ROUTING) {
+        val s = _state.value
+        if (s.trackingMode == TrackingMode.GPS_FALLBACK) return
+        if (s.status == NavStatus.LOCATING || s.status == NavStatus.ROUTING) {
             if (reason != FallbackReason.MANUAL && pendingFallback == null) pendingFallback = reason
-            Log.d(TAG, "fallbackToGps($reason) différé (état=$st)")
+            Log.d(TAG, "fallbackToGps($reason) différé (état=${s.status})")
             return
         }
-        if (st != NavStatus.LOCALIZING) {
-            Log.d(TAG, "fallbackToGps ignoré (état=$st, pas LOCALIZING)")
-            return
-        }
-        val r = route
-        if (r == null) {
-            Log.w(TAG, "fallbackToGps: route null en LOCALIZING (cas anormal)")
-            return
-        }
-        Log.i(TAG, "Fallback GPS ($reason) — démarrage navigation dégradée")
-        vpsReady = true  // débloque updateProgress
-        vpsTimeoutJob?.cancel()
-        _state.value = _state.value.copy(
+        if (s.status != NavStatus.LOCALIZING && s.status != NavStatus.NAVIGATING) return
+        val r = route ?: return
+        Log.i(TAG, "GPS seul ($reason)")
+        anchorRequest = null
+        cleanupView?.let { clearGround(it) }
+        _state.value = s.copy(
             status = NavStatus.NAVIGATING,
             trackingMode = TrackingMode.GPS_FALLBACK,
             fallbackReason = reason,
-            vpsTimeoutSecondsLeft = 0,
-            currentStep = r.steps.firstOrNull()
+            aimFloor = false, compassUnsteady = false,
+            currentStep = s.currentStep ?: r.steps.firstOrNull()
         )
-        // Distance et étape affichées tout de suite, sans attendre le prochain fix
         updateProgressGps()
     }
 
-    // Watcher GPS — alimente lastGpsLat/Lng en continu pour le mode fallback
-    // et pour updateProgressGps (calcul distances sans Earth.cameraGeospatialPose).
+    /** Bouton « Recaler » : nouvel ancrage au sol (boussole + GPS), la nav continue. */
+    fun requestRealign() {
+        val s = _state.value
+        if (s.status != NavStatus.NAVIGATING || s.trackingMode == TrackingMode.GPS_FALLBACK) return
+        anchorRequest = AnchorRequest(AnchorKind.INITIAL, System.currentTimeMillis())
+        _state.value = s.copy(aimFloor = true)
+    }
+
+    private fun onGpsFix(lat: Double, lng: Double, acc: Double) {
+        lastGpsLat = lat; lastGpsLng = lng; lastGpsAcc = acc
+        lastGpsFixAt = System.currentTimeMillis()
+        if (declinationDeg == null) {
+            declinationDeg = try {
+                GeomagneticField(lat.toFloat(), lng.toFloat(), 0f, System.currentTimeMillis()).declination.toDouble()
+            } catch (_: Exception) { 0.0 }
+        }
+    }
+
     @SuppressLint("MissingPermission")
     private fun startGpsWatcher() {
         gpsWatchJob?.cancel()
@@ -295,116 +346,264 @@ class ArNavigationViewModel(application: Application) : AndroidViewModel(applica
                     withContext(Dispatchers.IO) {
                         fusedLocation.getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, null).await()
                     }?.let {
-                        // Fix trop imprécis : ni position de repli, ni progression
                         if (it.hasAccuracy() && it.accuracy > MAX_GPS_ACCURACY_M) return@let
-                        lastGpsLat = it.latitude
-                        lastGpsLng = it.longitude
+                        onGpsFix(it.latitude, it.longitude, if (it.hasAccuracy()) it.accuracy.toDouble() else 20.0)
                         val s = _state.value
-                        if (s.status == NavStatus.NAVIGATING) {
-                            // Mode GPS, ou VPS sans pose exploitable depuis VPS_STALE_MS
-                            val vpsStale = s.trackingMode == TrackingMode.VPS &&
-                                System.currentTimeMillis() - lastVpsProgressAt > VPS_STALE_MS
-                            if (s.trackingMode == TrackingMode.GPS_FALLBACK || vpsStale) updateProgressGps()
-                        }
+                        // Progression par GPS, sauf quand Geospatial (plus précis) la porte
+                        if (s.status == NavStatus.NAVIGATING && s.trackingMode != TrackingMode.VPS) updateProgressGps()
                     }
                 } catch (e: Exception) {
                     Log.w(TAG, "GPS watch: ${e.message}")
                 }
-                delay(2000)  // poll toutes les 2s
+                delay(2000)
             }
         }
     }
 
-    // ── Appelé depuis main thread (via mainHandler.post dans Activity) ──
-    // arView passé en paramètre — jamais stocké
-    // FIX : appelé MÊME quand earth.trackingState != TRACKING (pour diagnostic)
-    fun onEarthTracking(earth: Earth, frame: Frame, arView: ARSceneView) {
+    // ── Chaque image ARCore (thread principal, pendant onSessionUpdated) ──
+    // Le Frame n'est valable que pendant cet appel : l'essai d'impact se fait ici.
+    fun onArFrame(session: Session, frame: Frame, arView: ARSceneView) {
+        session.earth?.let { onEarth(it, frame) }
+
+        val camera = frame.camera
+        if (camera.trackingState != TrackingState.TRACKING) {
+            // Positions monde d'avant la perte non comparables à celles d'après
+            aligner?.clearTrack()
+            return
+        }
+        everTracked = true
+        val now = System.currentTimeMillis()
+        val pose = camera.pose
+        val z = pose.zAxis
+        val fwdX = -z[0].toDouble(); val fwdZ = -z[2].toDouble()
+        val cam = WorldXZ(pose.tx().toDouble(), pose.tz().toDouble())
+        val al = aligner ?: return
+
+        // Lacet boussole : cap de l'axe caméra (capteur) − azimut du même axe (ARCore),
+        // au même instant. Accumulé, jamais appliqué image par image.
+        val mag = compassMagDeg
+        if (mag != null && now - compassAt < 250) {
+            GroundGeo.yawOffset(mag + (declinationDeg ?: 0.0), fwdX, fwdZ)?.let { al.addYawSample(now, it) }
+        }
+
+        anchorRequest?.let { tryAnchor(it, session, frame, arView, pose, cam, now) }
+
+        // Arrivé (repères masqués), GPS seul ou pas encore ancré : rien à suivre
+        if (!al.anchored || _state.value.status != NavStatus.NAVIGATING ||
+            _state.value.trackingMode == TrackingMode.GPS_FALLBACK) return
+
+        // Ancre perdue par ARCore (monde réinitialisé) : nouvel ancrage complet
+        if (anchor?.trackingState == TrackingState.STOPPED && anchorRequest == null) {
+            Log.w(TAG, "Ancre perdue — nouvel ancrage")
+            anchorRequest = AnchorRequest(AnchorKind.INITIAL, now)
+            return
+        }
+
+        al.updateUser(cam)
+        if (marksAtS.isNaN() || kotlin.math.abs(al.userS - marksAtS) >= GroundAligner.SPACING_M) refreshMarks()
+
+        if (anchorRequest == null && al.needsReanchor(cam)) {
+            anchorRequest = AnchorRequest(AnchorKind.CONTINUE, now)
+        }
+
+        // Trajectoire marchée : une paire (ARCore, GPS) par nouveau fix GPS
+        if (lastGpsFixAt > lastPairFixAt) {
+            lastPairFixAt = lastGpsFixAt
+            al.addTrackPair(cam, al.path.toEnu(lastGpsLat, lastGpsLng), lastGpsAcc)
+            if (anchorRequest == null && _state.value.trackingMode == TrackingMode.LOCAL) {
+                al.trackYawCorrection()?.let { yaw ->
+                    Log.i(TAG, "Lacet corrigé par la trajectoire : ${al.yawDeg} → $yaw")
+                    anchorRequest = AnchorRequest(AnchorKind.CONTINUE, now, yaw = yaw)
+                }
+            }
+        }
+    }
+
+    /** Essai d'impact sur un plan horizontal, au centre bas de l'écran. */
+    private fun hitFloor(frame: Frame, arView: ARSceneView, camY: Float): Pair<Plane, Pose>? {
+        val w = arView.width.toFloat(); val h = arView.height.toFloat()
+        if (w <= 0f || h <= 0f) return null
+        for (fy in floatArrayOf(0.72f, 0.62f, 0.82f, 0.52f)) {
+            for (hit in frame.hitTest(w / 2f, h * fy)) {
+                val plane = hit.trackable as? Plane ?: continue
+                val p = hit.hitPose
+                if (plane.type != Plane.Type.HORIZONTAL_UPWARD_FACING) continue
+                if (plane.trackingState != TrackingState.TRACKING || !plane.isPoseInPolygon(p)) continue
+                if (hit.distance > 8f || (camY - p.ty()) !in 0.4f..2.5f) continue
+                return Pair(plane, p)
+            }
+        }
+        return null
+    }
+
+    private fun tryAnchor(req: AnchorRequest, session: Session, frame: Frame, arView: ARSceneView,
+                          pose: Pose, cam: WorldXZ, now: Long) {
+        val al = aligner ?: return
+        val hit = hitFloor(frame, arView, pose.ty())
+        val wait = if (req.kind == AnchorKind.INITIAL && !al.anchored) FLOOR_WAIT_MS else FLOOR_WAIT_CONTINUE_MS
+        if (hit == null && now - req.since < wait) {
+            if (!_state.value.aimFloor) _state.value = _state.value.copy(aimFloor = true)
+            return
+        }
+
+        // Lacet : boussole moyennée (premier ancrage / recalage), sinon celui demandé
+        val yaw: Double = when (req.kind) {
+            AnchorKind.INITIAL -> al.compassYaw() ?: relaxedCompassYaw(al, now - req.since) ?: run {
+                if (!_state.value.compassUnsteady) _state.value = _state.value.copy(compassUnsteady = true)
+                return
+            }
+            AnchorKind.CONTINUE -> req.yaw ?: al.yawDeg ?: return
+            AnchorKind.ABSOLUTE -> req.yaw ?: return
+        }
+        if (req.kind == AnchorKind.INITIAL && lastGpsFixAt == 0L) return
+        if (req.kind == AnchorKind.ABSOLUTE && req.userEnu == null) { anchorRequest = null; return }
+
+        val floorY: Float
+        val newAnchor: Anchor
+        try {
+            if (hit != null) {
+                val (plane, p) = hit
+                floorY = p.ty()
+                camHeight = (pose.ty() - floorY).toDouble().coerceIn(0.6, 2.2)
+                newAnchor = plane.createAnchor(Pose.makeTranslation(p.tx(), floorY, p.tz()))
+            } else {
+                floorY = (pose.ty() - camHeight).toFloat()
+                newAnchor = session.createAnchor(Pose.makeTranslation(pose.tx(), floorY, pose.tz()))
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Ancrage impossible : ${e.message}")
+            return
+        }
+        val anchorAt = WorldXZ(newAnchor.pose.tx().toDouble(), newAnchor.pose.tz().toDouble())
+
+        when (req.kind) {
+            AnchorKind.INITIAL -> al.anchor(cam, anchorAt, al.path.toEnu(lastGpsLat, lastGpsLng), yaw)
+            AnchorKind.CONTINUE -> al.reanchor(cam, anchorAt, yaw)
+            AnchorKind.ABSOLUTE -> al.anchorAbsolute(cam, anchorAt, req.userEnu!!, yaw)
+        }
+        attachAnchor(arView, newAnchor)
+        anchorRequest = null
+        Log.i(TAG, "Ancré au sol (${req.kind}) lacet=${"%.1f".format(yaw)}° sol=${if (hit != null) "détecté" else "estimé"} " +
+                   "s=${"%.1f".format(al.userS)}m")
+
+        val s = _state.value
+        _state.value = s.copy(
+            status = if (s.status == NavStatus.LOCALIZING) NavStatus.NAVIGATING else s.status,
+            groundAnchored = true, aimFloor = false, compassUnsteady = false,
+            floorEstimated = hit == null,
+            trackingMode = if (req.kind == AnchorKind.ABSOLUTE) TrackingMode.VPS
+                           else if (s.trackingMode == TrackingMode.GPS_FALLBACK) TrackingMode.LOCAL else s.trackingMode
+        )
+        if (s.status == NavStatus.LOCALIZING) updateProgressGps()
+    }
+
+    /** Boussole jamais assez stable : au bout de COMPASS_RELAX_MS, dispersion plus large admise. */
+    private fun relaxedCompassYaw(al: GroundAligner, waited: Long): Double? =
+        if (waited < COMPASS_RELAX_MS) null else al.compassYaw(COMPASS_RELAXED_SPREAD_DEG)
+
+    /** Remplace l'ancre : les repères passent sur la nouvelle avant destruction de l'ancienne. */
+    private fun attachAnchor(arView: ARSceneView, newAnchor: Anchor) {
+        val old = anchorNode; val oldAnchor = anchor
+        val node = AnchorNode(engine = arView.engine, anchor = newAnchor)
+        arView.addChildNode(node)
+        (chevronNodes + maneuverNodes).forEach { node.addChildNode(it) }
+        anchorNode = node; anchor = newAnchor
+        marksAtS = Double.NaN
+        refreshMarks()
+        if (old != null) {
+            try { arView.removeChildNode(old); old.destroy() } catch (e: Exception) { Log.w(TAG, "ancre: ${e.message}") }
+        }
+        try { oldAnchor?.detach() } catch (_: Exception) {}
+    }
+
+    /** Positionne les repères réutilisés (aucune allocation) ; masque ceux qui ne servent pas. */
+    private fun refreshMarks() {
+        val al = aligner
+        if (al == null || !al.anchored || anchorNode == null) { (chevronNodes + maneuverNodes).forEach { it.isVisible = false }; return }
+        marksAtS = al.userS
+        val marks = al.marks(maneuverS)
+        val chev = marks.filter { !it.maneuver }; val man = marks.filter { it.maneuver }
+        fun place(nodes: List<ModelNode>, ms: List<GroundMark>) {
+            nodes.forEachIndexed { i, n ->
+                val m = ms.getOrNull(i)
+                if (m == null) { n.isVisible = false; return@forEachIndexed }
+                n.position = Position(m.x.toFloat(), MARK_LIFT_M, m.z.toFloat())
+                n.rotation = Rotation(0f, m.yawDeg.toFloat(), 0f)
+                n.isVisible = true
+            }
+        }
+        place(chevronNodes, chev); place(maneuverNodes, man)
+    }
+
+    // ── Geospatial (bonus) ─────────────────────────────────────────
+    private fun onEarth(earth: Earth, frame: Frame) {
         lastEarth = earth
         geo.onFrame(earth, frame)
-
-        // Toujours mettre à jour le diagnostic Earth (visible dans le HUD)
         val diag = geo.diagnostic.value
-        if (diag != null && _state.value.earthDiagnostic != diag) {
-            _state.value = _state.value.copy(earthDiagnostic = diag)
-        }
-        // Erreur Earth définitive (clé API refusée, ARCore trop ancien, quota) :
-        // bascule GPS sans attendre le timeout de 25 s. Évaluée à CHAQUE image et
-        // non plus seulement quand le diagnostic change : le diagnostic arrive
-        // pendant le calcul d'itinéraire, l'ancien test (status == LOCALIZING) était
-        // faux à ce moment-là, et il ne se représentait jamais — d'où l'encart
-        // « API non autorisée » avec « Bascule GPS dans 18s » (capture du propriétaire).
+        if (diag != null && _state.value.earthDiagnostic != diag) _state.value = _state.value.copy(earthDiagnostic = diag)
+
+        // Clé refusée, ARCore trop ancien, quota : le bonus est indisponible, et
+        // c'est tout — l'AR au sol continue. (Avant : bascule en GPS seul et encart
+        // « AR précise indisponible » à chaque lancement sans clé.)
         val permanent = permanentEarthError(diag?.state, apiKeyPresent)
-        if (permanent != null && !vpsReady) {
-            val st = _state.value.status
-            // Une seule fois par état (sinon 30 appels et journaux par seconde)
-            if (st == NavStatus.LOCALIZING ||
-                ((st == NavStatus.LOCATING || st == NavStatus.ROUTING) && pendingFallback == null)) {
-                Log.w(TAG, "Earth en erreur permanente (${diag?.state}) — fallback GPS immédiat")
-                fallbackToGps(permanent)
+        if (permanent != null) {
+            if (_state.value.geoBonusOff != permanent) {
+                Log.w(TAG, "Geospatial indisponible (${diag?.state}) — AR au sol seule")
+                _state.value = _state.value.copy(geoBonusOff = permanent)
             }
             return
         }
 
         val acc = geo.accuracy.value ?: return
+        _state.value = _state.value.copy(
+            vpsAccuracy = acc,
+            bestHorizontalAccuracy = minOf(_state.value.bestHorizontalAccuracy, acc.horizontalMeters)
+        )
 
-        // Suivre la meilleure précision observée (debug + UX)
-        val bestSoFar = minOf(_state.value.bestHorizontalAccuracy, acc.horizontalMeters)
-        _state.value = _state.value.copy(vpsAccuracy = acc, bestHorizontalAccuracy = bestSoFar)
+        val al = aligner ?: return
+        val s = _state.value
+        if (earth.trackingState != TrackingState.TRACKING || !al.anchored || anchorRequest != null) return
+        if (s.status != NavStatus.NAVIGATING || s.trackingMode == TrackingMode.GPS_FALLBACK) return
 
-        val r = route ?: return
-        val st = _state.value.status
-
-        // Critère "fiable" — seuils relâchés (8m / 20°) plus permissifs que le défaut.
-        val reliable = acc.horizontalMeters < VPS_RELIABLE_HORIZ_M &&
-                       acc.headingDegrees   < VPS_RELIABLE_HEAD_DEG
-
-        // Critère "acceptable" — fallback graceful : si on plafonne à <15m
-        // depuis quelques secondes, on démarre quand même la nav.
-        val secondsLeft = _state.value.vpsTimeoutSecondsLeft
-        val acceptable  = acc.horizontalMeters < VPS_ACCEPTABLE_HORIZ_M &&
-                          secondsLeft < VPS_TIMEOUT_SECONDS / 2  // au moins 12s d'attente
-
-        if (!vpsReady && st == NavStatus.LOCALIZING && (reliable || acceptable)) {
-            Log.i(TAG, "VPS OK (±${acc.horizontalMeters}m, head ±${acc.headingDegrees}°, " +
-                       "reliable=$reliable acceptable=$acceptable) — démarrage nav")
-            vpsReady = true
-            vpsTimeoutJob?.cancel()
-            lastVpsProgressAt = System.currentTimeMillis()
-            placeArrows(arView, earth, r, 0, minOf(3, r.steps.size))
-            _state.value = _state.value.copy(
-                status = NavStatus.NAVIGATING,
-                trackingMode = TrackingMode.VPS,
-                vpsTimeoutSecondsLeft = 0
-            )
+        val gp = earth.cameraGeospatialPose
+        if (gp.headingAccuracy > GEO_HEADING_OK_DEG || gp.horizontalAccuracy > GEO_HORIZ_OK_M) return
+        val now = System.currentTimeMillis()
+        if (s.trackingMode == TrackingMode.VPS && now - lastGeoCorrectionAt < GEO_RECALIBRATE_MS) {
+            updateProgress(earth, route ?: return)
+            return
         }
-
-        // En GPS_FALLBACK, c'est updateProgressGps (écouteur de position) qui fait
-        // avancer les étapes : garder les deux faisait progresser deux fois.
-        if ((st == NavStatus.NAVIGATING || _state.value.status == NavStatus.NAVIGATING) &&
-            _state.value.trackingMode == TrackingMode.VPS) {
-            updateProgress(arView, earth, r)
-        }
+        val q = gp.eastUpSouthQuaternion
+        val bearing = GroundGeo.bearingFromEusQuaternion(q[0].toDouble(), q[1].toDouble(), q[2].toDouble(), q[3].toDouble()) ?: return
+        val z = frame.camera.pose.zAxis
+        val yaw = GroundGeo.yawOffset(bearing, -z[0].toDouble(), -z[2].toDouble()) ?: return
+        lastGeoCorrectionAt = now
+        Log.i(TAG, "Geospatial ±${gp.horizontalAccuracy}m / ±${gp.headingAccuracy}° : recalage absolu (lacet $yaw)")
+        anchorRequest = AnchorRequest(AnchorKind.ABSOLUTE, now, yaw = yaw, userEnu = al.path.toEnu(gp.latitude, gp.longitude))
     }
 
-    // ── Progression GPS (mode fallback) ────────────────────────────
-    // Pas d'Earth fiable — on avance dans les étapes via lastGpsLat/Lng.
-    // Pas de placement d'ancres ARCore : la nav est en mode "boussole + texte".
+    // ── Progression ─────────────────────────────────────────────────
     private fun updateProgressGps() {
         val r = route ?: return
-        if (currentStepIdx >= r.steps.size) {
-            _state.value = _state.value.copy(status = NavStatus.ARRIVED); return
-        }
-        val step = r.steps[currentStepIdx]
-        val dist = GeospatialManager.distanceMeters(lastGpsLat, lastGpsLng, step.endLat, step.endLng)
+        if (lastGpsFixAt == 0L) return
+        val step = r.steps.getOrNull(currentStepIdx) ?: return arrived()
+        // Tolérance plus large qu'avec Geospatial (précision GPS ±10 m typique)
+        stepProgress(r, GeospatialManager.distanceMeters(lastGpsLat, lastGpsLng, step.endLat, step.endLng), threshold = 20.0)
+    }
 
-        if (dist < 20.0) {  // tolérance plus large en mode GPS (précision ±10m typique)
+    /** Progression par Geospatial (mode VPS) : position plus sûre que le GPS. */
+    private fun updateProgress(earth: Earth, r: NavigationRoute) {
+        if (earth.trackingState != TrackingState.TRACKING) return
+        val pose = earth.cameraGeospatialPose
+        if (pose.horizontalAccuracy > 15.0) return
+        val step = r.steps.getOrNull(currentStepIdx) ?: return arrived()
+        stepProgress(r, GeospatialManager.distanceMeters(pose.latitude, pose.longitude, step.endLat, step.endLng), threshold = 15.0)
+    }
+
+    private fun stepProgress(r: NavigationRoute, dist: Double, threshold: Double) {
+        if (dist < threshold) {
             currentStepIdx++
-            if (currentStepIdx >= r.steps.size) {
-                _state.value = _state.value.copy(status = NavStatus.ARRIVED)
-                return
-            }
+            if (currentStepIdx >= r.steps.size) return arrived()
         }
-
         _state.value = _state.value.copy(
             currentStep              = r.steps[currentStepIdx.coerceAtMost(r.steps.size - 1)],
             stepIndex                = currentStepIdx,
@@ -414,136 +613,62 @@ class ArNavigationViewModel(application: Application) : AndroidViewModel(applica
         )
     }
 
-    // ── Placement flèches ────────────────────────────────────────────
-    private fun placeArrows(arView: ARSceneView, earth: Earth, r: NavigationRoute, from: Int, count: Int) {
-        for (i in from until (from + count).coerceAtMost(r.steps.size)) {
-            if (!arrowNodes.containsKey(i)) placeArrow(arView, earth, r, i)
-        }
-    }
-
-    private fun placeArrow(arView: ARSceneView, earth: Earth, r: NavigationRoute, idx: Int) {
-        val step = r.steps.getOrNull(idx) ?: return
-        // La flèche est posée au point de manœuvre (fin de l'étape) et indique la
-        // direction À PRENDRE, celle de l'étape suivante. Avant : relèvement de
-        // step.end vers next.start — le MÊME point pour BRouter, OSRM et Google
-        // (fin d'étape = début de la suivante) → atan2(0, 0) = 0 : toutes les
-        // flèches pointaient au nord.
-        val next = r.steps.getOrNull(idx + 1)
-        val bearing = if (next != null)
-            GeospatialManager.computeBearing(next.startLat, next.startLng, next.endLat, next.endLng)
-        else
-            GeospatialManager.computeBearing(step.startLat, step.startLng, step.endLat, step.endLng)
-
-        val placed = geo.placeArrowAnchor(earth, TerrainAnchorData(idx, step.endLat, step.endLng, bearing))
-        val anchor = placed.anchor ?: return
-
-        // Main thread — SceneView 2.2.1 accepte addChildNode sur le main thread
-        viewModelScope.launch {
-            try {
-                val anchorNode = AnchorNode(engine = arView.engine, anchor = anchor)
-                val asset = modelAsset
-                if (asset == null) {
-                    arrowsWithoutModel.add(idx)   // modèle pas encore chargé : complété plus tard
-                } else {
-                    val instance = arView.modelLoader.createInstance(asset)
-                    if (instance != null)
-                        anchorNode.addChildNode(ModelNode(modelInstance = instance, scaleToUnits = 0.8f))
-                }
-                arView.addChildNode(anchorNode)
-                arrowNodes[idx] = anchorNode
-                Log.d(TAG, "Flèche step=$idx")
-            } catch (e: Exception) {
-                Log.e(TAG, "Flèche $idx : ${e.message}")
-            }
-        }
-    }
-
-    // ── Progression ─────────────────────────────────────────────────
-    /** Précision (m) au-delà de laquelle une pose VPS n'est pas assez sûre pour
-     *  valider le franchissement d'une étape (le seuil de franchissement est 15 m). */
-    private val MAX_STEP_ACCURACY_M = 15.0
-
-    private fun updateProgress(arView: ARSceneView, earth: Earth, r: NavigationRoute) {
-        if (currentStepIdx >= r.steps.size) {
-            _state.value = _state.value.copy(status = NavStatus.ARRIVED); return
-        }
-        if (earth.trackingState != TrackingState.TRACKING) return
-
-        val pose = earth.cameraGeospatialPose
-        // Une pose très imprécise ne doit pas faire avancer une étape : on attend un
-        // meilleur fix plutôt que de valider un franchissement au hasard.
-        if (pose.horizontalAccuracy > MAX_STEP_ACCURACY_M) return
-        lastVpsProgressAt = System.currentTimeMillis()
-        val step = r.steps[currentStepIdx]
-        val dist = GeospatialManager.distanceMeters(pose.latitude, pose.longitude, step.endLat, step.endLng)
-
-        if (dist < 15.0) { advance(arView, earth, r); return }
-
-        _state.value = _state.value.copy(
-            currentStep              = step,
-            stepIndex                = currentStepIdx,
-            distanceToNextTurnMeters = dist,
-            totalRemainingMeters     = r.steps.drop(currentStepIdx).sumOf { it.distanceMeters },
-            etaSeconds               = r.steps.drop(currentStepIdx).sumOf { it.durationSeconds }
-        )
-    }
-
-    private fun advance(arView: ARSceneView, earth: Earth, r: NavigationRoute) {
-        arrowNodes.remove(currentStepIdx)?.let { node ->
-            viewModelScope.launch {
-                arView.removeChildNode(node)
-                try { node.destroy() } catch (e: Exception) { Log.w(TAG, "destroy: ${e.message}") }
-            }
-        }
-        currentStepIdx++
-        if (currentStepIdx >= r.steps.size) {
-            _state.value = _state.value.copy(status = NavStatus.ARRIVED)
-            Log.i(TAG, "Destination atteinte !")
-            return
-        }
-        val nextToLoad = currentStepIdx + 3
-        if (nextToLoad < r.steps.size) placeArrow(arView, earth, r, nextToLoad)
+    private fun arrived() {
+        if (_state.value.status == NavStatus.ARRIVED) return
+        _state.value = _state.value.copy(status = NavStatus.ARRIVED, aimFloor = false)
+        anchorRequest = null
+        (chevronNodes + maneuverNodes).forEach { it.isVisible = false }
+        Log.i(TAG, "Destination atteinte !")
     }
 
     // ── Retry ────────────────────────────────────────────────────────
     fun retry(arView: ARSceneView, destLat: Double, destLng: Double, travelMode: String) {
-        navigationJob?.cancel()
-        vpsTimeoutJob?.cancel()
-        gpsWatchJob?.cancel()
-        vpsReady = false
+        navigationJob?.cancel(); gpsWatchJob?.cancel(); watchdogJob?.cancel()
         pendingFallback = null
         cleanupView = arView
+        clearGround(arView)
         _state.value = _state.value.copy(
             status = NavStatus.LOCATING,
             errorMessage = null,
-            trackingMode = TrackingMode.VPS,
+            trackingMode = TrackingMode.LOCAL,
             fallbackReason = null,
             bestHorizontalAccuracy = Double.MAX_VALUE,
-            vpsTimeoutSecondsLeft = 0
+            groundAnchored = false, aimFloor = false, compassUnsteady = false
         )
         navigationJob = viewModelScope.launch { locateAndRoute(destLat, destLng, travelMode) }
     }
 
+    /** Retire l'ancre et masque les repères (les nœuds du pool sont conservés). */
+    private fun clearGround(arView: ARSceneView) {
+        anchorRequest = null
+        (chevronNodes + maneuverNodes).forEach { it.isVisible = false }
+        anchorNode?.let { n ->
+            try { arView.removeChildNode(n) } catch (_: Exception) {}
+        }
+        try { anchor?.detach() } catch (_: Exception) {}
+        anchorNode = null; anchor = null
+        aligner?.reset()
+        marksAtS = Double.NaN
+        everTracked = false
+        _state.value = _state.value.copy(groundAnchored = false)
+    }
+
     // ── Cleanup — appelé depuis Activity.onDestroy avec la référence courante ──
     fun cleanup(arViewFromActivity: ARSceneView?) {
-        navigationJob?.cancel()
-        vpsTimeoutJob?.cancel()
-        gpsWatchJob?.cancel()
+        navigationJob?.cancel(); gpsWatchJob?.cancel(); watchdogJob?.cancel()
         val view = arViewFromActivity ?: cleanupView
-        view?.let { v ->
-            arrowNodes.values.forEach { node ->
-                try {
-                    v.removeChildNode(node)
-                    node.destroy()
-                } catch (e: Exception) {
-                    Log.w(TAG, "cleanup node: ${e.message}")
-                }
-            }
+        anchorRequest = null
+        try {
+            anchorNode?.let { n -> view?.removeChildNode(n); n.destroy() }
+            (chevronNodes + maneuverNodes).forEach { it.destroy() }
+        } catch (e: Exception) {
+            Log.w(TAG, "cleanup node: ${e.message}")
         }
-        arrowNodes.clear()
-        arrowsWithoutModel.clear()
+        try { anchor?.detach() } catch (_: Exception) {}
+        chevronNodes.clear(); maneuverNodes.clear()
+        anchorNode = null; anchor = null
+        aligner = null
         geo.cleanup()
-        modelAsset = null
         cleanupView = null
         lastEarth = null
         route = null
