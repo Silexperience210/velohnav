@@ -27,29 +27,70 @@
  */
 export const MODEL = Object.freeze({
   id: "onnx-community/LFM2.5-350M-ONNX",
+  // Révision ÉPINGLÉE (celle mesurée) : « main » peut changer sous nos pieds — autres
+  // tailles, autre export — sans que l'application le sache.
+  revision: "7dd4999565b0342c381ba90a3d8fc467d6df19c4",
   localDir: "LFM2.5-350M-ONNX",            // copie embarquée éventuelle (scripts/fetch-model.sh)
 });
-/** Anciens modèles dont les fichiers en cache (1,2 à 1,8 Go de stockage) sont à purger. */
-export const LEGACY_MODEL_DIRS = Object.freeze(["Qwen2.5-1.5B-Instruct"]);
+/**
+ * Anciens modèles dont les fichiers en cache sont à purger : ils ne servent plus et
+ * occupent jusqu'à 1,8 Go (1.5B) et 1 Go (0.5B, q4f16 + q8) de stockage.
+ */
+export const LEGACY_MODEL_DIRS = Object.freeze(["Qwen2.5-1.5B-Instruct", "Qwen2.5-0.5B-Instruct"]);
 
-const variant = (dtype, device, mb, suffix) => Object.freeze({
-  dtype, device, mb,
-  file: `onnx/model${suffix}.onnx`,
-  // Tous les fichiers de poids, le graphe d'abord : le dernier est le gros.
-  files: Object.freeze([`onnx/model${suffix}.onnx`, `onnx/model${suffix}.onnx_data`]),
+// Octets exacts de chaque fichier (API /tree du Hub, révision ci-dessus).
+const FILE_BYTES = Object.freeze({
+  "onnx/model_q4f16.onnx": 182_827,
+  "onnx/model_q4f16.onnx_data": 254_965_760,
+  "onnx/model_q4.onnx": 183_442,
+  "onnx/model_q4.onnx_data": 293_629_952,
 });
 
-/** Variantes du modèle, tailles mesurées sur le dépôt HF (Mo décimaux arrondis). */
+const variant = (dtype, device, suffix) => {
+  const files = [`onnx/model${suffix}.onnx`, `onnx/model${suffix}.onnx_data`];
+  const bytes = Object.freeze(Object.fromEntries(files.map((f) => [f, FILE_BYTES[f]])));
+  return Object.freeze({
+    dtype, device,
+    // Taille annoncée à l'utilisateur, en Mo décimaux : déduite des octets, jamais recopiée.
+    mb: Math.round(files.reduce((a, f) => a + bytes[f], 0) / 1e6),
+    file: files[0],
+    // Tous les fichiers de poids, le graphe d'abord : le dernier est le gros.
+    files: Object.freeze(files),
+    bytes,
+  });
+};
+
+/** Variantes du modèle (255 Mo en q4f16, 294 Mo en q4). */
 export const VARIANTS = Object.freeze({
-  webgpu: variant("q4f16", "webgpu", 255, "_q4f16"),
+  webgpu: variant("q4f16", "webgpu", "_q4f16"),
   // q4 sur WASM : q4f16 calcule en fp16, que le moteur processeur ne sait pas faire ;
   // q8 (model_quantized) pèserait 510 Mo.
-  wasm:   variant("q4",    "wasm",   294, "_q4"),
+  wasm:   variant("q4",    "wasm",   "_q4"),
 });
 
 /** URL d'un fichier du modèle sur le Hub — c'est aussi la clé du cache de transformers.js. */
-export function hubFileUrl(file, model = MODEL.id) {
-  return `https://huggingface.co/${model}/resolve/main/${file}`;
+export function hubFileUrl(file, model = MODEL.id, revision = MODEL.revision) {
+  return `https://huggingface.co/${model}/resolve/${encodeURIComponent(revision)}/${file}`;
+}
+
+/**
+ * En-têtes à stocker avec un fichier pré-chargé en cache : Content-Length FORCÉ à la
+ * taille connue quand le réseau ne l'a pas donné (ou que CORS l'a masqué).
+ *
+ * Pourquoi : à la relecture, transformers.js (readResponse) pré-alloue un tampon de
+ * Content-Length octets. Sans cet en-tête, il part d'un tampon vide et le RÉALLOUE à
+ * chaque morceau reçu, en recopiant tout : deux copies du fichier coexistent à chaque
+ * étape et le coût de copie devient quadratique (des centaines de Go recopiés pour
+ * 255 Mo lus par morceaux de 64 Ko).
+ * @param {Headers|Record<string,string>|null} headers en-têtes de la réponse réseau
+ * @param {number|undefined} bytes taille attendue
+ */
+export function cacheHeaders(headers, bytes) {
+  const h = new Headers(headers || {});
+  if (!(Number(h.get("content-length")) > 0) && Number.isFinite(bytes) && bytes > 0) {
+    h.set("content-length", String(bytes));
+  }
+  return h;
 }
 
 /**
@@ -123,17 +164,20 @@ export function planLoad({ webgpuKnownBroken, assessment }) {
 
 // ── Mémoire : refuser proprement plutôt que faire tuer l'application ─────────
 //
-// Copies simultanées pendant le chargement (lecture de transformers.js 3.8.1 et
-// onnxruntime-web) :
-//   1. le fichier entier lu en JS (Uint8Array, readResponse / arrayBuffer) ;
-//   2. sa copie dans le tas WASM d'onnxruntime (InferenceSession.create(buffer)) —
-//      un tas WASM ne rétrécit jamais ;
-//   3. les poids de travail : tas WASM (CPU) ou tampons GPU (mémoire unifiée sur
-//      téléphone, donc la même RAM).
-// Premier téléchargement : transformers.js garde EN PLUS une copie pour cache.put
-// (new Response(buffer)) — 4 copies. Le worker pré-remplit désormais le cache en
-// flux (prefetch, sans copie JS), ce qui ramène le premier lancement à 3.
-// Facteur 3 = estimation, À MESURER sur l'appareil (chrome://inspect → mémoire).
+// Copies simultanées du fichier de poids pendant le chargement (lecture de
+// transformers.js 4.3.1 et onnxruntime-web 1.31) :
+//   1. le .onnx_data entier lu en JS (Uint8Array, readResponse) — inévitable : c'est
+//      la forme sous laquelle transformers.js le passe à onnxruntime (externalData) ;
+//   2. sa destination : le tas WASM d'onnxruntime (CPU) — un tas WASM ne rétrécit
+//      jamais — ou les tampons GPU (WebGPU ; mémoire unifiée sur téléphone, donc la
+//      même RAM). onnxruntime démonte (unmountExternalData) la copie 1 après la
+//      création de session ; elle part au ramasse-miettes suivant ;
+//   3. en CPU, les poids réarrangés (prepack) par certains opérateurs.
+// Copies supprimées : celle de cache.put au premier téléchargement (pré-chargement en
+// flux, modelWorker.prefetchToCache) et les réallocations de readResponse sans
+// Content-Length (cacheHeaders).
+// Facteur 3 : cohérent avec la mesure Node/CPU de docs/MODELE.md (pic RSS 821 Mo pour
+// 294 Mo de q4, soit 2,8 fois, runtime Node compris). Pas mesuré sur téléphone.
 export const MEMORY = Object.freeze({
   peakFactor: 3,
   marginBytes: 300 * 2 ** 20,   // le reste de l'application (carte, caméra, JS)

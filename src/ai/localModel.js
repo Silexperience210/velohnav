@@ -82,9 +82,11 @@ async function purgeCache(match) {
 }
 // `model_q4f16.onnx` couvre aussi `model_q4f16.onnx_data`, où sont les poids.
 const purgeCachedVariant = (dtype) => purgeCache((u) => u.includes(`model_${dtype}.onnx`));
-// L'ancien modèle 1.5B (1,2 à 1,8 Go de stockage) ne sert plus : une seule fois par session.
+// Les anciens modèles Qwen (0.5B : jusqu'à 1 Go ; 1.5B : 1,2 à 1,8 Go de stockage) ne
+// servent plus. Une seule fois par session ; appelé au démarrage de l'application (App)
+// et avant tout chargement. Ne touche que le cache local : aucun accès réseau.
 let legacyPurged = false;
-function purgeLegacyModels() {
+export function purgeLegacyModels() {
   if (legacyPurged) return;
   legacyPurged = true;
   purgeCache((u) => LEGACY_MODEL_DIRS.some((d) => u.includes(`/${d}/`)));

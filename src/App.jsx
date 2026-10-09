@@ -89,6 +89,12 @@ function Shell() {
   const [aiDisplay, setAiDisplay] = useState([]);
 
   // Persist settings
+  // Fichiers des anciens modèles Qwen (jusqu'à 1,8 Go de stockage) : purgés une fois,
+  // après le démarrage, même si l'écran IA n'est jamais ouvert. Cache local seulement.
+  useEffect(()=>{
+    const id = setTimeout(()=>{ import("./ai/localModel.js").then(m=>m.purgeLegacyModels()).catch(()=>{}); }, 20000);
+    return ()=>clearTimeout(id);
+  },[]);
   useEffect(()=>{ localStorage.setItem("velohnav_jcdKey",   apiKey);    },[apiKey]);
   useEffect(()=>{ localStorage.setItem("velohnav_lnAddr",   lnAddr);    },[lnAddr]);
   useEffect(()=>{ localStorage.setItem("velohnav_lnOn",     lnOn);      },[lnOn]);

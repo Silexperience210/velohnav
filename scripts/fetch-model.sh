@@ -11,6 +11,7 @@
 set -euo pipefail
 
 MODEL="onnx-community/LFM2.5-350M-ONNX"
+REVISION="7dd4999565b0342c381ba90a3d8fc467d6df19c4"   # = MODEL.revision (src/ai/modelPolicy.js)
 DEST="public/models/LFM2.5-350M-ONNX"
 
 if [ -f "$DEST/config.json" ]; then
@@ -25,7 +26,7 @@ if command -v huggingface-cli >/dev/null 2>&1; then
   # Seulement les fichiers utilisés (configs + les deux variantes, voir
   # src/ai/modelPolicy.js VARIANTS, graphes ET poids .onnx_data) : le dépôt complet
   # dépasse 3 Go.
-  huggingface-cli download "$MODEL" --local-dir "$DEST" \
+  huggingface-cli download "$MODEL" --revision "$REVISION" --local-dir "$DEST" \
     --include "*.json" "*.jinja" "onnx/model_q4f16.onnx*" "onnx/model_q4.onnx*"
 else
   echo "⚠ huggingface-cli absent. Installe-le puis relance :"

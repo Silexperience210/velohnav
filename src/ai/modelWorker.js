@@ -8,7 +8,7 @@
 // tentative suivante dans la même page. Un worker, lui, se termine : la façade
 // (localModel.js) le tue à l'expiration du délai et en recrée un neuf.
 import { pipeline, env } from "@huggingface/transformers";
-import { LIMITS, MODEL, hubFileUrl, withTimeout } from "./modelPolicy.js";
+import { LIMITS, MODEL, hubFileUrl, cacheHeaders, withTimeout } from "./modelPolicy.js";
 
 const MODEL_ID = MODEL.id;
 // Copie embarquée éventuelle (public/models/ via scripts/fetch-model.sh).
@@ -100,7 +100,7 @@ async function probeWebGPU() {
  * transformers.js le trouve ensuite en cache (une seule lecture).
  * Tout échec est silencieux : transformers.js retélécharge alors à sa manière.
  */
-async function prefetchToCache(file) {
+async function prefetchToCache(file, bytes) {
   if (typeof caches === "undefined" || typeof TransformStream === "undefined") return;
   const url = hubFileUrl(file);
   try {
@@ -108,7 +108,7 @@ async function prefetchToCache(file) {
     if (await cache.match(url)) return;
     const resp = await fetch(url);
     if (!resp.ok || !resp.body) return;
-    const total = Number(resp.headers.get("content-length")) || 0;
+    const total = Number(resp.headers.get("content-length")) || bytes || 0;
     let loaded = 0, lastPost = 0;
     const counter = new TransformStream({
       transform(chunk, ctl) {
@@ -121,7 +121,7 @@ async function prefetchToCache(file) {
         ctl.enqueue(chunk);
       },
     });
-    await cache.put(url, new Response(resp.body.pipeThrough(counter), { status: 200, headers: resp.headers }));
+    await cache.put(url, new Response(resp.body.pipeThrough(counter), { status: 200, headers: cacheHeaders(resp.headers, bytes) }));
   } catch (e) {
     console.warn("[IA] pré-chargement en flux impossible :", e?.message || e);
   }
@@ -136,9 +136,10 @@ async function load({ variant, modelId }) {
   } else if (!modelId) {
     // Graphe puis poids (.onnx_data, le gros), l'un après l'autre : jamais deux flux
     // de plusieurs centaines de Mo en même temps.
-    for (const file of variant.files || [variant.file]) await prefetchToCache(file);
+    for (const file of variant.files || [variant.file]) await prefetchToCache(file, variant.bytes?.[file]);
   }
   generator = await pipeline("text-generation", ref, {
+    ...(ref === MODEL_ID ? { revision: MODEL.revision } : {}),   // même clé de cache que le pré-chargement
     dtype: variant.dtype,
     device: variant.device,
     progress_callback: (p) => {

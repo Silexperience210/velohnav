@@ -3,8 +3,10 @@
 // qui tient, on refuse proprement s'il ne tient pas, et on rend la mémoire.
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { DEFAULT_DTYPE_SUFFIX_MAPPING } from "../../node_modules/@huggingface/transformers/src/utils/dtypes.js";
+import { buildResourcePaths } from "../../node_modules/@huggingface/transformers/src/utils/hub.js";
 import {
   VARIANTS, MODEL, hubFileUrl, MEMORY, estimatePeakBytes, memoryVerdict, heaviestVariant,
+  LEGACY_MODEL_DIRS, cacheHeaders,
 } from "./modelPolicy.js";
 
 const GB = 1e9;
@@ -61,10 +63,42 @@ describe("fichiers du modèle — même nom et même clé de cache que transform
       expect(x.files).toEqual([x.file, `${x.file}_data`]);
     }
   });
-  it("URL = remoteHost + « {model}/resolve/main/ » + fichier (clé du cache transformers-cache)", () => {
-    expect(hubFileUrl(VARIANTS.webgpu.file))
-      .toBe("https://huggingface.co/onnx-community/LFM2.5-350M-ONNX/resolve/main/onnx/model_q4f16.onnx");
-    expect(MODEL.id).toBe("onnx-community/LFM2.5-350M-ONNX");
+  it("URL = clé de cache calculée par transformers.js lui-même, révision épinglée comprise", () => {
+    for (const x of Object.values(VARIANTS)) for (const f of x.files) {
+      expect(hubFileUrl(f)).toBe(buildResourcePaths(MODEL.id, f, { revision: MODEL.revision }).remoteURL);
+    }
+    expect(hubFileUrl("onnx/model_q4f16.onnx_data"))
+      .toBe(`https://huggingface.co/onnx-community/LFM2.5-350M-ONNX/resolve/${MODEL.revision}/onnx/model_q4f16.onnx_data`);
+  });
+  it("tailles annoncées déduites des octets exacts : 255 Mo (q4f16) et 294 Mo (q4)", () => {
+    expect(VARIANTS.webgpu.mb).toBe(255);
+    expect(VARIANTS.wasm.mb).toBe(294);
+    expect(VARIANTS.webgpu.bytes["onnx/model_q4f16.onnx_data"]).toBe(254_965_760);
+  });
+});
+
+describe("contrôle préalable : besoins du NOUVEAU modèle", () => {
+  it("variante la plus exigeante = q4 (294 Mo), pas l'ancien q8 de Qwen (512 Mo)", () => {
+    expect(heaviestVariant()).toBe(VARIANTS.wasm);
+    expect(memoryVerdict(null, heaviestVariant()).needMB).toBe(1197);   // 294 × 3 + 300 Mio
+  });
+  it("téléphone à 1,5 Go libres au-dessus du seuil : refusé avec Qwen (1,85 Go), accepté désormais", () => {
+    const info = { availBytes: 1.8 * GB, thresholdBytes: 0.3 * GB };
+    expect(memoryVerdict(info, { mb: 512 }).ok).toBe(false);
+    expect(memoryVerdict(info, heaviestVariant()).ok).toBe(true);
+  });
+});
+
+describe("relecture du cache sans réallocations (Content-Length)", () => {
+  it("en-tête absent : forcé à la taille connue", () => {
+    expect(cacheHeaders(new Headers({ "content-type": "application/octet-stream" }), 254_965_760).get("content-length"))
+      .toBe("254965760");
+  });
+  it("en-tête présent : conservé", () => {
+    expect(cacheHeaders({ "content-length": "12" }, 99).get("content-length")).toBe("12");
+  });
+  it("taille inconnue : rien d'inventé", () => {
+    expect(cacheHeaders(null, undefined).get("content-length")).toBeNull();
   });
 });
 
@@ -162,6 +196,40 @@ describe("façade : la mémoire est contrôlée avant, et rendue après", () => 
     await flush();
     expect(await outcome).toMatchObject({ code: "cancelled" });
     expect(FakeWorker.all).toHaveLength(0);
+  });
+
+  it("purge des anciens modèles : Qwen 0.5B et 1.5B retirés du cache, LFM2.5 intact, une fois par session", async () => {
+    const keys = [
+      "https://huggingface.co/onnx-community/Qwen2.5-0.5B-Instruct/resolve/main/onnx/model_q4f16.onnx",
+      "https://huggingface.co/onnx-community/Qwen2.5-0.5B-Instruct/resolve/main/config.json",
+      "https://huggingface.co/onnx-community/Qwen2.5-1.5B-Instruct/resolve/main/onnx/model_q4f16.onnx",
+      hubFileUrl("onnx/model_q4.onnx_data"),
+    ].map((url) => ({ url }));
+    const deleted = [];
+    const cache = { keys: async () => keys, delete: async (r) => { deleted.push(r.url); return true; } };
+    const open = vi.fn(async () => cache);
+    vi.stubGlobal("caches", { open });
+    expect(LEGACY_MODEL_DIRS).toEqual(["Qwen2.5-1.5B-Instruct", "Qwen2.5-0.5B-Instruct"]);
+    mod.purgeLegacyModels();
+    await flush();
+    expect(open).toHaveBeenCalledWith("transformers-cache");
+    expect(deleted).toHaveLength(3);
+    expect(deleted.some((u) => u.includes("LFM2.5"))).toBe(false);
+    mod.purgeLegacyModels();
+    await flush();
+    expect(open).toHaveBeenCalledTimes(1);
+  });
+
+  it("échec du chargement : worker arrêté, mémoire rendue, aucun minuteur qui reste armé", async () => {
+    const outcome = mod.loadModel().then(() => "resolved", (e) => e);
+    await flush();
+    const w = FakeWorker.all[0];
+    w.emit({ type: "error", message: "RangeError: Array buffer allocation failed" });
+    expect(await outcome).toMatchObject({ name: "ModelError" });
+    expect(w.terminated).toBe(true);
+    expect(mod.isModelReady()).toBe(false);
+    await vi.advanceTimersByTimeAsync(600_000);
+    expect(FakeWorker.all).toHaveLength(1);
   });
 
   it("après déchargement, une nouvelle activation recharge (worker neuf)", async () => {
