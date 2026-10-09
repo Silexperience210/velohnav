@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
+import { pitchFromOrientation } from "../components/ar/groundProjection.js";
 
 // ── Fonctions pures (exportées pour tests) ─────────────────────────
 
@@ -42,6 +43,15 @@ export function emaHeadingStep(last, h, alpha = 0.08, deadzone = 1.5) {
   return (((last + diff * alpha) % 360) + 360) % 360;
 }
 
+/**
+ * Un pas de lissage de l'inclinaison (degrés, pas de bouclage à gérer). Plus
+ * réactif que le cap (0,25) : l'inclinaison place verticalement tout le tracé.
+ */
+export function emaPitchStep(last, p, alpha = 0.25) {
+  if (p == null || !Number.isFinite(p)) return last;
+  return last == null ? p : last + (p - last) * alpha;
+}
+
 /** Cap publié : entier dans [0, 359] (Math.round(359,7) donnait 360). */
 export function publishHeading(last) {
   return Math.round(last) % 360;
@@ -52,6 +62,11 @@ export function publishHeading(last) {
 function useCompass(){
   const [heading,setHeading]=useState(null);
   const [perm,setPerm]=useState("idle");
+  // Inclinaison de la caméra (élévation de visée, °) : la valeur lissée vit dans
+  // une ref (lue à chaque image par le tracé, sans re-rendu) ; l'état, arrondi
+  // au degré, re-rend les pins posés au sol.
+  const pitchRef=useRef(null);
+  const [pitch,setPitch]=useState(null);
   const cleanup=useRef(null);
 
   const start=useCallback(async()=>{
@@ -78,6 +93,14 @@ function useCompass(){
     let last=null;
     let gotAbsolute=false; // true dès qu'on reçoit un event absolu valide
 
+    const updatePitch=(e)=>{
+      pitchRef.current=emaPitchStep(pitchRef.current,pitchFromOrientation(e.beta,e.gamma));
+      if(pitchRef.current!=null){
+        const r=Math.round(pitchRef.current);
+        setPitch(p=>p===r?p:r);
+      }
+    };
+
     const update=(h)=>{
       const next=emaHeadingStep(last,h);
       if(next===last) return;
@@ -89,6 +112,7 @@ function useCompass(){
     const absHandler=(e)=>{
       if(e.alpha==null) return;
       gotAbsolute=true;
+      updatePitch(e);
       update(headingFromOrientation(e.alpha,e.beta,e.gamma) ?? (360-e.alpha+360)%360);
     };
 
@@ -96,6 +120,7 @@ function useCompass(){
     // iOS → webkitCompassHeading, Android fallback → alpha relatif
     const relHandler=(e)=>{
       if(gotAbsolute) return;
+      updatePitch(e);
       if(e.webkitCompassHeading!=null)      update(e.webkitCompassHeading);
       else if(e.alpha!=null)                update(headingFromOrientation(e.alpha,e.beta,e.gamma) ?? (360-e.alpha+360)%360);
     };
@@ -117,7 +142,7 @@ function useCompass(){
   },[]);
 
   useEffect(()=>()=>cleanup.current?.(),[]);
-  return{heading,perm,start};
+  return{heading,perm,start,pitch,pitchRef};
 }
 
 export { useCompass };

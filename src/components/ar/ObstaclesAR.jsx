@@ -5,8 +5,10 @@ import { C } from "../../constants.js";
 import { AR_RADIUS, LENS_HFOV_DEG, pinX, pinY, relBearing } from "./arProjection.js";
 import { haversine, getBearing } from "../../utils.js";
 import { OBSTACLE_TYPES } from "../../hooks/useObstacles.js";
+import { projectGround } from "./groundProjection.js";
 
-export function ObstaclePins({ obstacles, gpsPos, heading, fov = LENS_HFOV_DEG }) {
+// Un obstacle est sur la chaussée : projeté au sol comme le tracé (origine et caméra partagées).
+export function ObstaclePins({ obstacles, gpsPos, heading, fov = LENS_HFOV_DEG, origin = null, groundCam = null }) {
   if (!obstacles?.length || !gpsPos || heading === null) return null;
 
   return (
@@ -17,8 +19,10 @@ export function ObstaclePins({ obstacles, gpsPos, heading, fov = LENS_HFOV_DEG }
         const bear = getBearing(gpsPos.lat, gpsPos.lng, o.lat, o.lng);
         const rel  = relBearing(bear, heading);
         if (Math.abs(rel) > fov/2 + 4) return null;
-        const x = pinX(rel, fov);
-        const y = pinY(dist, AR_RADIUS);   // même convention que les stations
+        const g = groundCam && projectGround(origin ?? gpsPos, o, groundCam);
+        if (groundCam && !g) return null;   // sous l'objectif / derrière
+        const x = g ? g.x / groundCam.viewW * 100 : pinX(rel, fov);
+        const y = g ? Math.max(4, Math.min(96, g.y / groundCam.viewH * 100)) : pinY(dist, AR_RADIUS);
         const meta = OBSTACLE_TYPES[o.type];
         if (!meta) return null;
         const ageMin = Math.round((Date.now() - o.createdAt) / 60000);

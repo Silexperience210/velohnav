@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { t } from "../i18n.js";
 import { C, COMPASS_LABELS, FISCHER_STORES } from "../constants.js";
 import { AR_RADIUS, COMPASS_VIEW_W, compassOffsetPx, compassLabelWidth, pinX, pinY, relBearing, effectiveHFov } from "./ar/arProjection.js";
+import { projectGround, routeAhead } from "./ar/groundProjection.js";
 import { haversine, getBearing, fDist, fWalk, bCol, bTag } from "../utils.js";
 
 import { useCompass } from "../hooks/useCompass.js";
@@ -51,7 +52,7 @@ function ARScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey=""
   const rootRef=useRef(null);
   const [cam,   setCam]  =useState("idle");
   const [pulse, setPulse]=useState(false);
-  const {heading:magHeading,perm,start:startCompass}=useCompass();
+  const {heading:magHeading,perm,start:startCompass,pitch,pitchRef}=useCompass();
   // Fusion magnétomètre + course GPS — tue la dérive magnétique en ville.
   // Drop-in : tout le code aval (pins, projection, RouteOverlay) consomme
   // `heading` sans rien savoir de la fusion.
@@ -384,6 +385,16 @@ function ARScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey=""
   }, []);
   const fov = useMemo(() => effectiveHFov(dims), [dims]);
 
+  // ── Ce qui est posé au sol (tracé, flèches, pied du pin de destination,
+  // fantôme, obstacles) : UNE projection (groundProjection) et UNE origine — la
+  // position recalée sur le tracé pendant la nav, sinon le GPS brut.
+  const ahead = useMemo(() => (navMode && route?.coords?.length && gpsPos)
+    ? routeAhead(route.coords, gpsPos) : null, [navMode, route, gpsPos]);
+  const arOrigin = ahead?.origin ?? gpsPos;
+  const groundCam = useMemo(() => (heading === null || !dims.viewW || !dims.viewH) ? null
+    : { heading, pitch: pitch ?? 0, hfov: fov, viewW: dims.viewW, viewH: dims.viewH },
+    [heading, pitch, fov, dims.viewW, dims.viewH]);
+
   // ── Projection AR réelle ───────────────────────────────────────
   const arPins=useMemo(()=>{
     if(heading===null||!gpsPos) return null;
@@ -525,7 +536,7 @@ function ARScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey=""
           key={`${navStation?.id}-${navMode}`}
           route={route} gpsPos={gpsPos} heading={heading}
           mode={navMode} step={step} arriving={!!navFigures?.arriving}
-          isNight={isNight} fov={fov}
+          isNight={isNight} fov={fov} ahead={ahead} pitchRef={pitchRef}
         />
       )}
       {/* HUD de navigation — design system (src/ui/arHud.jsx) */}
@@ -706,8 +717,11 @@ function ARScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey=""
       {/* Pin destination dédié — affiché seulement en mode nav, projeté sur la station cible */}
       {navMode && navStation && navRel !== null && Math.abs(navRel) <= fov/2 + 10 && (
         (() => {
-          const x = pinX(navRel, fov);
-          const y = pinY(navStation.dist, AR_RADIUS);
+          // Point d'ancrage au sol = projection de la station, même origine et même
+          // caméra que le tracé : le pied du pin tombe au bout de la ligne.
+          const g = groundCam && arOrigin && projectGround(arOrigin, navStation, groundCam);
+          const x = g ? g.x / dims.viewW * 100 : pinX(navRel, fov);
+          const y = g ? Math.max(4, Math.min(96, g.y / dims.viewH * 100)) : pinY(navStation.dist, AR_RADIUS);
           const arriving = navStation.dist < 30;
           return (
             <div style={{
@@ -792,12 +806,13 @@ function ARScreen({ stations, sel, setSel, gpsPos, trip, onStartTrip, mapsKey=""
           hasGhost={hasGhost}
           bestTime={bestTime}
           ghostSource={ghostSource}
-          fov={fov}
+          fov={fov} origin={arOrigin} groundCam={groundCam}
         />
       )}
 
       {/* Obstacles crowd-sourced via Nostr */}
-      <ObstaclePins obstacles={obstacles} gpsPos={gpsPos} heading={heading} fov={fov}/>
+      <ObstaclePins obstacles={obstacles} gpsPos={gpsPos} heading={heading} fov={fov}
+        origin={arOrigin} groundCam={groundCam}/>
 
       {/* Zone capture long-press — partie centrale de l'écran uniquement.
           Hors nav, ne couvre pas les pins (qui sont en haut). En nav active,

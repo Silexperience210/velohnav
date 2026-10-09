@@ -104,12 +104,11 @@ class GeospatialManager {
     // Appelé depuis le main thread — resolveAnchorOnTerrain est thread-safe
     @Suppress("DEPRECATION")
     fun placeArrowAnchor(earth: Earth, data: TerrainAnchorData): TerrainAnchorData {
-        val rad  = Math.toRadians(data.bearingDegrees.toDouble())
-        val half = rad / 2.0
+        val (qy, qw) = arrowYawQuaternion(data.bearingDegrees.toDouble())
         return try {
             val anchor = earth.resolveAnchorOnTerrain(
                 data.latitude, data.longitude, 1.5, // 1.5m : meilleure visibilité, évite z-fighting
-                0f, sin(half).toFloat(), 0f, cos(half).toFloat()
+                0f, qy, 0f, qw
             )
             Log.d(TAG, "Anchor OK step=${data.stepIndex} bearing=${data.bearingDegrees}°")
             data.copy(anchor = anchor)
@@ -127,6 +126,20 @@ class GeospatialManager {
     }
 
     companion object {
+        /**
+         * Quaternion (composantes y, w) qui oriente la flèche GLB vers `bearing`
+         * (degrés, sens horaire depuis le nord). Repère des ancres Geospatial :
+         * EUS (X est, Y haut, Z sud) ; la pointe du modèle est en −Z (vérifié sur
+         * arrow_navigation.glb : sommet à z = −0,55), donc au nord à l'identité.
+         * Une rotation de +θ autour de +Y envoie −Z vers l'OUEST (main droite) :
+         * pour tourner dans le sens du relèvement il faut −θ. Avant : +θ, flèches
+         * en miroir est/ouest (un virage à droite plein est pointait plein ouest).
+         */
+        fun arrowYawQuaternion(bearingDeg: Double): Pair<Float, Float> {
+            val half = -Math.toRadians(bearingDeg) / 2.0
+            return Pair(sin(half).toFloat(), cos(half).toFloat())
+        }
+
         fun computeBearing(fromLat: Double, fromLng: Double, toLat: Double, toLng: Double): Float {
             val la1 = Math.toRadians(fromLat); val la2 = Math.toRadians(toLat)
             val dL  = Math.toRadians(toLng - fromLng)

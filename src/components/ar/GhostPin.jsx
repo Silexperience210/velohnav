@@ -5,8 +5,11 @@
 import { C } from "../../constants.js";
 import { AR_RADIUS, LENS_HFOV_DEG, pinX, pinY, relBearing } from "./arProjection.js";
 import { haversine, getBearing } from "../../utils.js";
+import { projectGround } from "./groundProjection.js";
 
-function GhostPin({ ghostPos, gpsPos, heading, currentDelta, hasGhost, bestTime, ghostSource = null, fov = LENS_HFOV_DEG }) {
+// `origin` / `groundCam` : origine recalée et caméra partagées avec le tracé (ARScreen) —
+// le fantôme roule sur la ligne dessinée, pas sur la convention des étiquettes.
+function GhostPin({ ghostPos, gpsPos, heading, currentDelta, hasGhost, bestTime, ghostSource = null, fov = LENS_HFOV_DEG, origin = null, groundCam = null }) {
   // ghostSource: "world" = on court contre le record MONDIAL du segment (Nostr)
   if (!hasGhost || !ghostPos || !gpsPos || heading === null) return null;
   if (ghostPos.finished) return null;
@@ -19,9 +22,10 @@ function GhostPin({ ghostPos, gpsPos, heading, currentDelta, hasGhost, bestTime,
   const rel  = relBearing(bear, heading);
   const inFov = Math.abs(rel) <= fov / 2 + 4;
 
-  // Même projection que les stations : proche → bas, loin → horizon
-  const x = pinX(Math.max(-fov/2, Math.min(fov/2, rel)), fov);
-  const y = pinY(dist, AR_RADIUS);
+  // Au sol, comme le tracé (repli sur la convention des étiquettes sans dimensions d'écran)
+  const g = groundCam && projectGround(origin ?? gpsPos, ghostPos, groundCam);
+  const x = g ? g.x / groundCam.viewW * 100 : pinX(Math.max(-fov/2, Math.min(fov/2, rel)), fov);
+  const y = g ? Math.max(4, Math.min(96, g.y / groundCam.viewH * 100)) : pinY(dist, AR_RADIUS);
 
   // Status delta — couleur
   const isAhead = currentDelta < -2;   // on bat le record de >2s
@@ -32,7 +36,7 @@ function GhostPin({ ghostPos, gpsPos, heading, currentDelta, hasGhost, bestTime,
   return (
     <>
       {/* Pin fantôme dans la scène AR (si visible dans le FOV) */}
-      {showPin && inFov && (
+      {showPin && inFov && (!groundCam || g) && (
         <div style={{
           position:"absolute",
           left:`${Math.max(8, Math.min(92, x))}%`,

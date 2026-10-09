@@ -423,9 +423,14 @@ class ArNavigationViewModel(application: Application) : AndroidViewModel(applica
 
     private fun placeArrow(arView: ARSceneView, earth: Earth, r: NavigationRoute, idx: Int) {
         val step = r.steps.getOrNull(idx) ?: return
+        // La flèche est posée au point de manœuvre (fin de l'étape) et indique la
+        // direction À PRENDRE, celle de l'étape suivante. Avant : relèvement de
+        // step.end vers next.start — le MÊME point pour BRouter, OSRM et Google
+        // (fin d'étape = début de la suivante) → atan2(0, 0) = 0 : toutes les
+        // flèches pointaient au nord.
         val next = r.steps.getOrNull(idx + 1)
         val bearing = if (next != null)
-            GeospatialManager.computeBearing(step.endLat, step.endLng, next.startLat, next.startLng)
+            GeospatialManager.computeBearing(next.startLat, next.startLng, next.endLat, next.endLng)
         else
             GeospatialManager.computeBearing(step.startLat, step.startLng, step.endLat, step.endLng)
 

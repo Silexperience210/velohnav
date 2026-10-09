@@ -430,53 +430,9 @@ describe('nearestStop', () => {
 });
 
 // ── projection AR (BUG-1 fix) ─────────────────────────────────────
-import { projectPoint, detectWrongWay, distanceToRoute } from './components/ar/projection.js';
-
-describe('projectPoint (BUG-1: pas de projection des points derrière)', () => {
-  // Helper : place un point à `dist` mètres dans la direction `bearingDeg`
-  // depuis (lat0, lng0). Approximation plate suffisante pour les tests.
-  const at = (lat0, lng0, bearingDeg, distM) => {
-    const ang = bearingDeg * Math.PI / 180;
-    const dLat = (distM * Math.cos(ang)) / 111111;
-    const dLng = (distM * Math.sin(ang)) / (111111 * Math.cos(lat0 * Math.PI / 180));
-    return { lat: lat0 + dLat, lng: lng0 + dLng };
-  };
-
-  it('projette un point devant (cap N, point au N) au centre', () => {
-    const p = at(49.6, 6.13, 0, 200);
-    const r = projectPoint(49.6, 6.13, 0, p.lat, p.lng, 360, 640);
-    expect(r).not.toBeNull();
-    expect(r.inFov).toBe(true);
-    expect(Math.abs(r.x - 180)).toBeLessThan(5); // centré
-  });
-
-  it('retourne null pour un point derrière (cap N, point au S) — fix BUG-1', () => {
-    const p = at(49.6, 6.13, 180, 200);
-    const r = projectPoint(49.6, 6.13, 0, p.lat, p.lng, 360, 640);
-    expect(r).toBeNull();
-  });
-
-  it('retourne null pour un point à >90° même avec clamp=true', () => {
-    const p = at(49.6, 6.13, 100, 200); // 100° = 10° derrière le E
-    const r = projectPoint(49.6, 6.13, 0, p.lat, p.lng, 360, 640, true);
-    expect(r).toBeNull();
-  });
-
-  it('clamp les points latéraux (>FOV mais <90°) DANS l\'écran', () => {
-    const p = at(49.6, 6.13, 70, 200); // 70° = hors FOV, dans la zone clamp
-    const r = projectPoint(49.6, 6.13, 0, p.lat, p.lng, 360, 640, true);
-    expect(r).not.toBeNull();
-    expect(r.behind).toBe(true);
-    expect(r.x).toBeGreaterThanOrEqual(0);
-    expect(r.x).toBeLessThanOrEqual(360); // jamais hors écran
-  });
-
-  it('point au-delà de PROJ_MAX_DIST (>500m) → null', () => {
-    const p = at(49.6, 6.13, 0, 800);
-    const r = projectPoint(49.6, 6.13, 0, p.lat, p.lng, 360, 640);
-    expect(r).toBeNull();
-  });
-});
+import { detectWrongWay, distanceToRoute } from './components/ar/projection.js';
+// projectPoint a été retirée : le tracé est projeté au sol par groundProjection.js
+// (points derrière → null, découpe au plan proche) — voir groundProjection.test.js.
 
 describe('detectWrongWay (BUG-1: détection mauvais sens)', () => {
   it('détecte route au S quand l\'utilisateur regarde au N', () => {
