@@ -314,3 +314,39 @@ describe("robustesse", () => {
       expect(() => answerLocally(q, { t })).not.toThrow();
   });
 });
+
+// Défaut signalé sur téléphone : « Station la plus proche ? » → « EDELECK (19 km) » alors
+// que l'accueil annonçait « METZER PLAZ, 150 m ». Coordonnées réelles (GBFS Vel'OH!) :
+// la question est traitée ici, sans modèle ; les deux réponses sont justes pour leur
+// point de départ — 150 m est la distance au point de référence du centre-ville
+// (constants.REF), utilisé tant que le GPS n'a pas répondu ; 19 km celle à une position
+// GPS au sud du réseau. Le défaut : la première était présentée comme la distance à
+// l'utilisateur, et l'accueil restait figé dessus.
+describe("station la plus proche : avec et sans position GPS", async () => {
+  const { enrich } = await import("../utils.js");
+  const { REF } = await import("../constants.js");
+  const { default: fr } = await import("../locales/fr.js");
+  const tFr = (k, v = {}) => String(fr[k] ?? k).replace(/\{(\w+)\}/g, (_, n) => v[n] ?? "");
+  const tn = (k, n) => `${n} ${fr[k + (n === 1 ? ".one" : ".many")] ?? k}`;
+  const raw = [
+    { id: 8,   name: "METZER PLAZ", lat: 49.607346, lng: 6.12762,  bikes: 2, elec: 0, docks: 18, status: "OPEN" },
+    { id: 108, name: "EDELECK",     lat: 49.565477, lng: 6.079436, bikes: 3, elec: 0, docks: 12, status: "OPEN" },
+  ];
+  const ask = (pos) => {
+    const stations = enrich(raw, pos);
+    const nearest = stations.find((s) => s.bikes > 0);
+    return answerLocally("Station la plus proche ?", { stations, nearest, t: tFr, tn, gpsPos: pos, located: !!pos });
+  };
+
+  it("sans GPS : distance depuis le centre-ville, dite comme telle", () => {
+    const r = ask(null);
+    expect(r.unknown).toBeUndefined();          // aucun modèle sollicité
+    expect(r.text).toMatch(/^METZER PLAZ \(150 m du centre-ville\)/);
+    expect(enrich(raw, REF)[0].dist).toBe(154);
+  });
+  it("avec GPS à 19 km au sud : EDELECK, et la distance est la vraie", () => {
+    const r = ask({ lat: 49.395, lng: 6.079 });
+    expect(r.text).toMatch(/^EDELECK \(19 km\)/);
+    expect(r.text).not.toMatch(/centre-ville/);
+  });
+});

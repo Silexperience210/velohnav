@@ -43,11 +43,21 @@ function verdict(t, advice, ok, tail) {
   return phrase + " " + tail;
 }
 
+/**
+ * Distance d'un lieu, telle qu'on peut l'affirmer. Sans position GPS (`located: false`),
+ * l'application mesure depuis un point de référence au centre-ville (constants.REF) :
+ * « METZER PLAZ (150 m) » n'était alors que la distance à ce point, présentée comme la
+ * distance à l'utilisateur. On le dit.
+ */
+export const distLabel = (ctx, m) =>
+  ctx.located === false && m != null ? ctx.t("ui.ai.ans.dist_center", { dist: fmtDist(m) }) : fmtDist(m);
+
 /** Détail d'une station, avec compteurs accordés. */
-function details(t, tn, st) {
+function details(ctx, st) {
+  const t = ctx.t, tn = pluralizer(ctx);
   return t("ui.ai.ans.nearest", {
     name: st.name,
-    dist: fmtDist(st.dist),
+    dist: distLabel(ctx, st.dist),
     bikes: tn("ui.ai.unit.bike", st.bikes),
     elec: tn("ui.ai.unit.elec", stationView(st).elec),
     docks: tn("ui.ai.unit.dock", st.docks),
@@ -82,19 +92,19 @@ export function findPlace(words, { stations = [], gpsPos = null }) {
 /** Guidage vers un lieu trouvé : texte + cible de navigation. */
 export function navAnswer(ctx, place) {
   return { text: ctx.t("ui.ai.ans.nav_found", { name: place.name,
-                     dist: place.dist != null ? fmtDist(place.dist) : "—" }),
+                     dist: distLabel(ctx, place.dist) }),
            // Vers un arrêt de transport, on marche ; vers une station, on pédale.
            nav: { lat: place.lat, lng: place.lng, name: place.name,
                   mode: place.kind === "arret" ? "walking" : "bicycling" } };
 }
 
 /** Détail d'une station quelconque : nom, distance, vélos, électriques, bornes. */
-export const stationDetails = (ctx, st) => details(ctx.t, pluralizer(ctx), st);
+export const stationDetails = (ctx, st) => details(ctx, st);
 
 /** Station la plus proche ayant un vélo, avec ses compteurs. */
 export function answerNearest(ctx) {
   const { nearest = null, t } = ctx;
-  return { text: nearest ? details(t, pluralizer(ctx), nearest) : t("ui.ai.ans.no_station") };
+  return { text: nearest ? details(ctx, nearest) : t("ui.ai.ans.no_station") };
 }
 
 /** Où rendre un vélo : il faut des bornes LIBRES (pas forcément la station la plus proche). */
@@ -137,7 +147,7 @@ export function answerWeather(ctx) {
 export function answerCanRide(ctx) {
   const { advice = { mode: "bike", reason: null }, nearest = null, t } = ctx;
   const ok = advice.mode !== "transit";
-  const tail = nearest ? details(t, pluralizer(ctx), nearest) : t("ui.ai.ans.no_station");
+  const tail = nearest ? details(ctx, nearest) : t("ui.ai.ans.no_station");
   return { text: verdict(t, advice, ok, tail) };
 }
 
@@ -198,7 +208,7 @@ export function answerLocally(question, ctx) {
   if (/(ou aller|ou partir|conseil|que faire|recommande|meilleur|what should|advice|recommend|best option)/.test(q)) {
     const ok = advice.mode !== "transit";
     const cible = nearest
-      ? t("ui.ai.ans.where_station", { name: nearest.name, dist: fmtDist(nearest.dist),
+      ? t("ui.ai.ans.where_station", { name: nearest.name, dist: distLabel(ctx, nearest.dist),
                                        bikes: tn("ui.ai.unit.bike", nearest.bikes) })
       : t("ui.ai.ans.no_station");
     return { text: verdict(t, advice, ok, cible) };

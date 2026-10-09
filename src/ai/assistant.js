@@ -14,10 +14,10 @@
 //
 // Module pur (traduction et données injectées), testable sans navigateur.
 import { TRAM, nextDepartures, shortStopName } from "../utils/tram.js";
-import { fmtDist, fmtDuration, walkMinutes, stationView } from "../ui/format.js";
+import { fmtDuration, walkMinutes, stationView } from "../ui/format.js";
 import { readModelOutput } from "./tools.js";
 import {
-  norm, approxDist, upcoming, findPlace, navAnswer, stationDetails,
+  norm, approxDist, upcoming, distLabel, findPlace, navAnswer, stationDetails,
   answerNearest, answerDocks, answerDepartures, answerWeather,
 } from "./localAnswers.js";
 
@@ -130,8 +130,8 @@ function route(ctx, { destination, mode }) {
   // Distance à vol d'oiseau, dite comme telle ; le temps n'est donné qu'à pied
   // (80 m/min, la règle de l'application). Le trajet exact est celui de la navigation.
   return walking
-    ? { text: ctx.t("ui.ai.tool.route_walk", { name: p.name, dist: fmtDist(p.dist), min: fmtDuration(walkMinutes(p.dist)) }), nav }
-    : { text: ctx.t("ui.ai.tool.route_bike", { name: p.name, dist: fmtDist(p.dist) }), nav };
+    ? { text: ctx.t("ui.ai.tool.route_walk", { name: p.name, dist: distLabel(ctx, p.dist), min: fmtDuration(walkMinutes(p.dist)) }), nav }
+    : { text: ctx.t("ui.ai.tool.route_bike", { name: p.name, dist: distLabel(ctx, p.dist) }), nav };
 }
 
 function startNavigation(ctx, { destination, mode }) {

@@ -193,6 +193,10 @@ describe("repli : l'assistant déterministe répond dès que le modèle flanche"
     expect(resolve("**Pourquoi les chiens portent-ils des lunettes ?**  \n*Pour mieux voir !*").text)
       .toBe("Pourquoi les chiens portent-ils des lunettes ?\nPour mieux voir !");
   });
+  it("aucune valeur numérique sans outil : « EDELECK (19 km) » écrit par le modèle n'est jamais montré", () => {
+    expect(resolve("La station la plus proche est EDELECK (19 km), 3 vélos, 12 bornes.")).toMatchObject({ source: "fallback", reason: "number" });
+    expect(resolve("La plus proche est EDELECK, à dix-neuf kilomètres.")).toMatchObject({ source: "fallback" });
+  });
   it("texte libre sans valeur : montré", () => {
     expect(resolve("Bonjour ! Comment puis-je vous aider ?")).toEqual({ text: "Bonjour ! Comment puis-je vous aider ?", source: "model" });
   });

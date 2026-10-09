@@ -9,7 +9,7 @@ import { Icon } from "../ui/icons.jsx";
 import { IconButton, ProgressBar, Spinner, Button } from "../ui/primitives.jsx";
 import { wmo, bikeScore, scoreTone, reasonLabel } from "../ui/weather.js";
 import { fmtDist, stationView, cardinal } from "../ui/format.js";
-import { answerLocally as localAnswer, upcoming } from "../ai/localAnswers.js";
+import { answerLocally as localAnswer, upcoming, distLabel } from "../ai/localAnswers.js";
 
 // Conversation libre : le modèle ne voit AUCUNE donnée et n'en rédige aucune. Il
 // choisit un outil (tools.js) ; l'application valide l'appel, l'exécute sur ses
@@ -145,7 +145,7 @@ function AIScreen({ stations, aiHistory, setAiHistory,
     }
     lines.push(nearest
       ? t("ui.ai.welcome", { avail: stations.filter(s=>s.bikes>0).length, total: stations.length,
-          name: nearest.name, dist: fmtDist(nearest.dist),
+          name: nearest.name, dist: distLabel({ t, located: !!gpsPos }, nearest.dist),
           bikes: tn("ui.ai.unit.bike", nearest.bikes),
           elec: tn("ui.ai.unit.elec", stationView(nearest).elec) })
       : t("map.loading"));
@@ -153,16 +153,20 @@ function AIScreen({ stations, aiHistory, setAiHistory,
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [stations, weather, forecast, gpsPos, lang]);
 
+  // L'accueil n'est pas figé : son texte est celui de initMsg au moment du rendu. Figé,
+  // il gardait la station calculée au premier affichage — souvent avant le GPS, depuis
+  // le point de référence du centre-ville (« METZER PLAZ, 150 m ») — et contredisait les
+  // réponses suivantes, calculées depuis la vraie position (« EDELECK, 19 km »).
   useEffect(()=>{
     if (aiDisplay.length === 0 && aiHistory.length === 0)
-      setAiDisplay([{ role:"ai", text:initMsg, local:true }]);
+      setAiDisplay([{ role:"ai", welcome:true, local:true }]);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initMsg]);
 
   // ── Réponses locales : la logique vit dans src/ai/localAnswers.js (module pur, testé) ──
   // Mêmes données pour les outils du modèle, plus les départs bruts (filtrage par arrêt/mode).
   const answerCtx = useMemo(
-    () => ({ stations, nearest, nearestReturn, deps, weather, forecast, advice, score, gpsPos,
+    () => ({ stations, nearest, nearestReturn, deps, weather, forecast, advice, score, gpsPos, located: !!gpsPos,
              transitStops: busStops, transitDeps: busDeps, t, tn }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [stations, nearest, nearestReturn, deps, weather, forecast, advice, score, gpsPos, busStops, busDeps, lang]);
@@ -283,7 +287,7 @@ function AIScreen({ stations, aiHistory, setAiHistory,
 
         {/* Station la plus proche + navigation en un geste */}
         <section className="vn-dcard">
-          <div className="vn-dcard__label">{t("ui.ai.card.nearest")}</div>
+          <div className="vn-dcard__label">{t(gpsPos ? "ui.ai.card.nearest" : "ui.ai.card.nearest_center")}</div>
           {nv ? (
             <>
               <div className="vn-dcard__row">
@@ -348,7 +352,7 @@ function AIScreen({ stations, aiHistory, setAiHistory,
             {m.role==="ai" && <span className="vn-msg__avatar" aria-hidden="true"><Icon name={m.error ? "alert" : "ai"} size={14} stroke={2}/></span>}
             <div className="vn-msg__bubble">
               <span className="vn-sr">{m.role==="user" ? t("ui.ai.you") : "VELOH·AI"} : </span>
-              {m.text}
+              {m.welcome ? initMsg : m.text}
               {m.nav && (
                 <button type="button" className="vn-navcard" onClick={()=>launchNav(m.nav)}
                   aria-busy={launching || undefined} disabled={launching}>
