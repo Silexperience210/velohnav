@@ -464,6 +464,12 @@ button { background: none; border: 0; cursor: pointer; }
 .vn-msg__bubble { padding: 10px 12px; border-radius: 12px; font-size: 14px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--vn-text); background: var(--vn-s1); border: 1px solid var(--vn-border); border-top-left-radius: 4px; }
 .vn-msg--user .vn-msg__bubble { background: rgba(245,130,13,0.12); border-color: rgba(245,130,13,0.3); border-top-left-radius: 12px; border-top-right-radius: 4px; }
 .vn-msg[data-error] .vn-msg__bubble { border-color: rgba(240,82,74,0.35); color: var(--vn-text2); }
+.vn-diag { display: flex; flex-direction: column; gap: 4px; margin-bottom: 8px; padding-bottom: 8px; border-bottom: 1px solid var(--vn-border); white-space: normal; }
+.vn-diag__title { font-size: 12.5px; font-weight: 600; color: var(--vn-bad); }
+.vn-diag__why { font-size: 12.5px; line-height: 1.45; color: var(--vn-text2); }
+.vn-diag__code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; padding: 1px 5px; border-radius: 5px; background: var(--vn-s2); color: var(--vn-text3); }
+.vn-diag__raw summary { cursor: pointer; font-size: 11.5px; color: var(--vn-text3); }
+.vn-diag__raw pre { margin: 6px 0 0; max-height: 160px; overflow: auto; padding: 8px; border-radius: 8px; background: var(--vn-s2); border: 1px solid var(--vn-border); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--vn-text2); }
 .vn-typing { display: flex; gap: 5px; align-items: center; height: 40px; }
 .vn-typing span { width: 6px; height: 6px; border-radius: 50%; background: var(--vn-text3); animation: vn-typing 1.2s var(--vn-ease) infinite; }
 .vn-typing span:nth-child(2) { animation-delay: 0.15s; }

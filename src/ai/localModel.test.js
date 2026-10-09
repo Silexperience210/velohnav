@@ -196,4 +196,35 @@ describe("façade : un chargement ne peut plus rester figé", () => {
     w.emit({ type: "result", id: req.id, text: "Bonjour !<|im_end|>" });
     await expect(reply).resolves.toBe("Bonjour !");
   });
+
+  it("generateDetailed rend aussi la sortie BRUTE, marqueurs compris", async () => {
+    store.set("velohnav_ai_webgpu_ko", "1");
+    const loading = mod.loadModel();
+    await flush();
+    const w = FakeWorker.all[0];
+    w.emit({ type: "ready" });
+    await loading;
+    const reply = mod.generateDetailed("sys", [{ role: "user", content: "Je suis Silex" }]);
+    await vi.advanceTimersByTimeAsync(0);
+    const req = w.sent.at(-1);
+    w.emit({ type: "result", id: req.id, text: "<|tool_call_start|>[weather()<|im_end|>" });
+    await expect(reply).resolves.toEqual({
+      raw: "<|tool_call_start|>[weather()<|im_end|>",
+      text: "<|tool_call_start|>[weather()",
+    });
+  });
+
+  it("erreur du moteur pendant la génération : rejetée avec son message, pas transformée en silence", async () => {
+    store.set("velohnav_ai_webgpu_ko", "1");
+    const loading = mod.loadModel();
+    await flush();
+    const w = FakeWorker.all[0];
+    w.emit({ type: "ready" });
+    await loading;
+    const reply = mod.generateDetailed("sys", [{ role: "user", content: "Je suis Silex" }]).then(() => "resolved", (e) => e);
+    await vi.advanceTimersByTimeAsync(0);
+    const msg = "failed to call OrtRun(). Sub requires f16 but the device does not support it.";
+    w.emit({ type: "result", id: w.sent.at(-1).id, error: msg });
+    expect(await reply).toMatchObject({ code: "generate", detail: msg });
+  });
 });

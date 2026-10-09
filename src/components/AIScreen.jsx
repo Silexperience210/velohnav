@@ -2,9 +2,9 @@ import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { t, tn, useI18n } from "../i18n.js";
 import { launchNativeArNav } from "../utils.js";
 import { fetchWeather, getWeatherAdvice } from "../hooks/useWeather.js";
-import { loadModel, unloadModel, generate, chatModelMB } from "../ai/localModel.js";
+import { loadModel, unloadModel, generateDetailed, chatModelMB } from "../ai/localModel.js";
 import { TOOLS } from "../ai/tools.js";
-import { systemPrompt, resolveModelOutput } from "../ai/assistant.js";
+import { systemPrompt, resolveModelOutput, explainFallback } from "../ai/assistant.js";
 import { Icon } from "../ui/icons.jsx";
 import { IconButton, ProgressBar, Spinner, Button } from "../ui/primitives.jsx";
 import { wmo, bikeScore, scoreTone, reasonLabel } from "../ui/weather.js";
@@ -200,24 +200,34 @@ function AIScreen({ stations, aiHistory, setAiHistory,
 
     setBusy(true);
     const hist = [...aiHistory,{role:"user",content:q}].slice(-CHAT_TURNS);
-    let reply;
+    let reply, raw = "", failed = null;
     try {
       // IA locale, zéro réseau. 96 jetons : un appel d'outil en prend une vingtaine.
-      const raw = await generate(systemPrompt(t), hist, { tools: TOOLS, maxNewTokens: 96 });
-      reply = resolveModelOutput(raw, { ...answerCtx, now: new Date() }, local);
+      const out = await generateDetailed(systemPrompt(t), hist, { tools: TOOLS, maxNewTokens: 96 });
+      raw = out.raw;
+      reply = resolveModelOutput(out.text, { ...answerCtx, now: new Date() }, local);
     } catch(e) {
       if (e?.code === "generate_timeout") {   // worker arrêté : le dire, plutôt qu'un « prêt » mensonger
         setModelState("error");
         setModelError(describeModelError(e));
       }
-      // Échec ou silence du modèle : l'assistant déterministe répond quand même.
-      reply = { ...local, source: "fallback", reason: e?.code || e?.message || "error" };
+      // Échec du modèle : l'assistant déterministe répond quand même — mais on le dit.
+      failed = e;
+      reply = { ...local, source: "fallback", reason: e?.code || "generate" };
     }
-    if (reply.source === "fallback") console.info(`[IA] repli sur l'assistant local (${reply.reason})`);
+    if (reply.source === "fallback") console.info(`[IA] repli sur l'assistant local (${reply.reason})`, failed?.detail || raw);
     // Seul le texte libre du modèle nourrit l'historique : les réponses d'outils
     // contiennent des valeurs qu'il pourrait recopier de travers au tour suivant.
     if (reply.source === "model") setAiHistory([...hist,{role:"assistant",content:reply.text}]);
-    setAiDisplay(d=>[...d,{role:"ai",text:reply.text,nav:reply.nav,local:reply.source!=="model"}]);
+    // Repli alors que le modèle est prêt : ne plus le taire. La bulle dit que le modèle a
+    // échoué ou répondu quelque chose d'inutilisable, pourquoi, et montre ce qu'il a produit.
+    // Le texte d'aide « Sans modèle… » mentirait (le modèle est chargé) : il est remplacé.
+    const diag = reply.source === "fallback"
+      ? { ...explainFallback(reply.reason), failed: !!failed,
+          output: failed ? (failed.detail || failed.message || String(failed)) : raw }
+      : null;
+    const shown = diag && local.unknown ? t("ui.ai.ans.help_model") : reply.text;
+    setAiDisplay(d=>[...d,{role:"ai",text:shown,nav:reply.nav,local:reply.source!=="model",error:!!diag,diag}]);
     setBusy(false);
   },[input,busy,aiHistory,answerCtx,modelState,chatOn,answerLocally,setAiHistory,setAiDisplay]);
 
@@ -361,6 +371,18 @@ function AIScreen({ stations, aiHistory, setAiHistory,
             {m.role==="ai" && <span className="vn-msg__avatar" aria-hidden="true"><Icon name={m.error ? "alert" : "ai"} size={14} stroke={2}/></span>}
             <div className="vn-msg__bubble">
               <span className="vn-sr">{m.role==="user" ? t("ui.ai.you") : "VELOH·AI"} : </span>
+              {m.diag && (
+                <div className="vn-diag">
+                  <strong className="vn-diag__title">{t(m.diag.failed ? "ui.ai.diag.title_error" : "ui.ai.diag.title_rejected")}</strong>
+                  <span className="vn-diag__why">
+                    {t(m.diag.key, { tool: m.diag.tool })} <code className="vn-diag__code">{m.diag.code}</code>
+                  </span>
+                  <details className="vn-diag__raw" open={!m.diag.hideRaw || undefined}>
+                    <summary>{t(m.diag.failed ? "ui.ai.diag.detail" : m.diag.hideRaw ? "ui.ai.diag.raw_hidden" : "ui.ai.diag.raw")}</summary>
+                    <pre>{m.diag.output || t("ui.ai.diag.raw_empty")}</pre>
+                  </details>
+                </div>
+              )}
               {m.welcome ? initMsg : m.text}
               {m.nav && (
                 <button type="button" className="vn-navcard" onClick={()=>launchNav(m.nav)}

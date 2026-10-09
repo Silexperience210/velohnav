@@ -268,6 +268,16 @@ export function generationOptions(opts = {}) {
  * @returns {Promise<string>} texte produit après le prompt, jetons d'appel d'outil compris
  */
 export async function generate(system, history, opts = {}) {
+  return (await generateDetailed(system, history, opts)).text;
+}
+
+/**
+ * Comme generate, mais rend aussi la sortie BRUTE du modèle (avant cleanReply,
+ * marqueurs compris). Sans elle, une réponse rejetée ne pouvait pas être montrée :
+ * personne ne savait ce que le modèle avait réellement produit.
+ * @returns {Promise<{raw: string, text: string}>}
+ */
+export async function generateDetailed(system, history, opts = {}) {
   await loadModel();
   const messages = [
     ...(system ? [{ role: "system", content: system }] : []),
@@ -290,5 +300,5 @@ export async function generate(system, history, opts = {}) {
     "generate",
     () => killWorker(new ModelError("generate_timeout", { seconds })),
   );
-  return cleanReply(full);
+  return { raw: String(full ?? ""), text: cleanReply(full) };
 }

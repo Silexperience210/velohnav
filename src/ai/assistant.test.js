@@ -3,7 +3,9 @@
 // l'assistant déterministe dès que le modèle échoue ou dit n'importe quoi.
 import { describe, it, expect, vi } from "vitest";
 import { TOOLS, TOOL_NAMES, parseToolCalls, validateCall, readModelOutput } from "./tools.js";
-import { executeTool, checkFreeText, resolveModelOutput, systemPrompt } from "./assistant.js";
+import { executeTool, checkFreeText, resolveModelOutput, systemPrompt, explainFallback } from "./assistant.js";
+import fr from "../locales/fr.js";
+import en from "../locales/en.js";
 import { answerLocally } from "./localAnswers.js";
 
 // Traduction factice : on vérifie les DONNÉES transmises aux phrases, pas la prose.
@@ -218,5 +220,45 @@ describe("repli : l'assistant déterministe répond dès que le modèle flanche"
     expect(TOOLS.map((x) => Object.keys(x.function.parameters.properties))).toEqual([
       ["name", "need"], ["limit"], ["mode", "stop"], [], ["destination", "mode"], ["destination", "mode"],
     ]);
+  });
+});
+
+describe("explainFallback : un repli avec le modèle prêt se dit, avec sa raison", () => {
+  // Toutes les raisons que produisent resolveModelOutput, validateCall et la façade.
+  const reasons = [
+    "empty", "too-long", "markup", "number", "unit", "script", "fragment", "repetition",
+    "several-calls", "unparsable-call", "malformed", "bad-args", "unknown-tool:fly", "unknown-arg:x",
+    "bad-value:mode", "missing:destination", "no-data:route", "generate", "generate_timeout",
+  ];
+  it("chaque raison connue a une explication propre, traduite en français et en anglais", () => {
+    for (const r of reasons) {
+      const e = explainFallback(r);
+      expect(e.key, r).not.toBe("ui.ai.diag.why.other");
+      expect(fr[e.key], r).toBeTruthy();
+      expect(en[e.key], r).toBeTruthy();
+      expect(e.code).toBe(r);   // le code exact reste visible
+    }
+    for (const k of ["ui.ai.ans.help_model", "ui.ai.diag.title_error", "ui.ai.diag.title_rejected",
+                     "ui.ai.diag.raw", "ui.ai.diag.raw_hidden", "ui.ai.diag.raw_empty", "ui.ai.diag.detail", "ui.ai.diag.why.other"]) {
+      expect(fr[k], k).toBeTruthy();
+      expect(en[k], k).toBeTruthy();
+    }
+  });
+  it("raison inconnue : dite comme telle, jamais masquée", () => {
+    expect(explainFallback("quelque-chose")).toMatchObject({ key: "ui.ai.diag.why.other", code: "quelque-chose" });
+    expect(explainFallback(undefined)).toMatchObject({ key: "ui.ai.diag.why.error", code: "generate" });
+  });
+  it("outil sans donnée : l'outil est nommé", () => {
+    expect(explainFallback("no-data:find_station")).toMatchObject({ key: "ui.ai.diag.why.no_data", tool: "find_station" });
+  });
+  it("valeur inventée : la sortie brute reste consultable mais repliée", () => {
+    expect(explainFallback("number").hideRaw).toBe(true);
+    expect(explainFallback("unit").hideRaw).toBe(true);
+    expect(explainFallback("markup").hideRaw).toBe(false);
+  });
+  it("le texte d'aide affiché quand le modèle est prêt ne prétend pas qu'il n'y a pas de modèle", () => {
+    expect(fr["ui.ai.ans.help_model"]).not.toMatch(/sans modèle|activez/i);
+    expect(en["ui.ai.ans.help_model"]).not.toMatch(/without a model|enable/i);
+    expect(fr["ui.ai.ans.help_model"]).not.toMatch(/\d/);
   });
 });

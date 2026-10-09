@@ -234,3 +234,35 @@ export function resolveModelOutput(raw, ctx, fallback) {
   const chk = checkFreeText(text);
   return chk.ok ? { text, source: "model" } : fall(chk.reason);
 }
+
+// ── Repli alors que le modèle est prêt : le dire ────────────────────
+
+// Raisons de validation d'un appel d'outil (tools.validateCall / readModelOutput).
+const CALL_REASONS = new Set([
+  "several-calls", "unparsable-call", "malformed", "bad-args", "unknown-tool", "unknown-arg", "bad-value", "missing",
+]);
+const WHY = {
+  empty: "empty", "too-long": "too_long", markup: "markup", number: "number", unit: "unit", script: "script",
+  fragment: "fragment", repetition: "repetition", "no-data": "no_data", generate: "error", generate_timeout: "timeout",
+};
+
+/**
+ * Pourquoi la réponse du modèle n'a pas été montrée, en clé traduisible.
+ * Avant, le repli était muet : la bulle disait « Sans modèle… » alors que le modèle
+ * était chargé, et personne ne pouvait savoir s'il avait échoué ou été rejeté.
+ * @param {string} reason raison rendue par resolveModelOutput, ou code d'erreur (ModelError)
+ * @returns {{ key: string, code: string, tool?: string, hideRaw: boolean }}
+ *   `hideRaw` : la sortie contient une valeur que le modèle a
+ *   inventée (aucun outil ne la lui a donnée) — elle reste consultable, repliée.
+ */
+export function explainFallback(reason) {
+  const code = String(reason || "generate");
+  const [family, detail] = code.split(":");
+  const why = WHY[family] ?? (CALL_REASONS.has(family) ? "call" : "other");
+  return {
+    key: `ui.ai.diag.why.${why}`,
+    code,
+    ...(family === "no-data" && detail ? { tool: detail } : {}),
+    hideRaw: why === "number" || why === "unit",
+  };
+}
