@@ -1,32 +1,22 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { t, tn, useI18n } from "../i18n.js";
-import { TRAM, nextDepartures, shortStopName } from "../utils/tram.js";
-import { fDist, bTag, getHistory, launchNativeArNav } from "../utils.js";
+import { launchNativeArNav } from "../utils.js";
 import { fetchWeather, getWeatherAdvice } from "../hooks/useWeather.js";
-import { formatDeparturesForAI } from "../hooks/useTransit.js";
 import { loadModel, unloadModel, generate, chatModelMB } from "../ai/localModel.js";
+import { TOOLS } from "../ai/tools.js";
+import { systemPrompt, resolveModelOutput } from "../ai/assistant.js";
 import { Icon } from "../ui/icons.jsx";
 import { IconButton, ProgressBar, Spinner, Button } from "../ui/primitives.jsx";
 import { wmo, bikeScore, scoreTone, reasonLabel } from "../ui/weather.js";
 import { fmtDist, stationView, cardinal } from "../ui/format.js";
-import { answerLocally as localAnswer, upcoming, approxDist } from "../ai/localAnswers.js";
+import { answerLocally as localAnswer, upcoming } from "../ai/localAnswers.js";
 
-// ── Détection balise NAV dans la réponse IA ───────────────────────
-// L'assistant répond [NAV:lat,lng,nom,mode] pour lancer l'AR navigation.
-// Ce chemin ne sert plus qu'à la conversation libre : le guidage courant passe
-// par le bouton de la carte station, sans modèle.
-const NAV_RE = /\[NAV:([\d.]+),([\d.]+),([^,\]]+)(?:,(bicycling|walking))?\]/i;
-
-function parseNavCommand(text) {
-  const m = text.match(NAV_RE);
-  if (!m) return null;
-  return { lat: parseFloat(m[1]), lng: parseFloat(m[2]),
-           name: m[3].trim(), mode: m[4] || "bicycling" };
-}
-
-function stripNavTag(text) {
-  return text.replace(NAV_RE, "").trim();
-}
+// Conversation libre : le modèle ne voit AUCUNE donnée et n'en rédige aucune. Il
+// choisit un outil (tools.js) ; l'application valide l'appel, l'exécute sur ses
+// données et écrit la réponse (assistant.js). Le guidage passe par l'outil
+// start_navigation (l'ancienne balise [NAV:lat,lng,…] obligeait le modèle à recopier
+// des coordonnées). Historique limité aux derniers échanges en texte libre.
+const CHAT_TURNS = 6;
 
 // Échec du modèle → phrase explicite (cause + quoi faire), suivie du détail technique.
 function describeModelError(e) {
@@ -169,76 +159,14 @@ function AIScreen({ stations, aiHistory, setAiHistory,
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initMsg]);
 
-  // ── Système prompt (uniquement pour la conversation libre) ────────
-  const systemPrompt = useMemo(()=>{
-    const hist = getHistory().slice(0,5);
-    const histTxt = hist.length
-      ? `\nStations récemment visitées : ${hist.map(h=>h.name).join(", ")}.`
-      : "";
-
-    // Arrêts T1 proches + prochains départs théoriques (horaire GTFS embarqué)
-    const nearTram = gpsPos
-      ? TRAM.stops.filter(s=>approxDist(s, gpsPos) < 600).map(s=>{
-          const d = Math.round(approxDist(s, gpsPos));
-          const { dirs } = nextDepartures(s.idx, new Date(), { limit: 2 });
-          const deps = [...dirs[0], ...dirs[1]].map(x=>`${shortStopName(x.headsign)} ${x.time}`).join(", ");
-          return `${s.name} (${d}m${deps ? ` — ${deps}` : ""})`;
-        })
-      : [];
-    const tramNear = nearTram.length ? `\nArrêts tram T1 proches (départs selon l'horaire) : ${nearTram.join(" ; ")}.` : "";
-
-    const meteoTxt = weather
-      ? `\nMÉTÉO ACTUELLE : ${wmo(weather.code).label} | ${weather.temp}°C | Pluie: ${weather.rain}mm/h | Vent: ${weather.wind}km/h ${cardinal(weather.windDir)} | Score vélo: ${score}/10`
-      : "\nMétéo : données non disponibles.";
-
-    const fcTxt = forecast?.length
-      ? `\nPRÉVISIONS : ${forecast.map(f=>`+${f.h}h: ${f.temp}°C, pluie ${f.rain}mm (${f.rainProb}% proba), vent ${f.wind}km/h`).join(" | ")}`
-      : "";
-
-    const gpsTxt = gpsPos
-      ? `\nPosition GPS : ${gpsPos.lat.toFixed(5)}, ${gpsPos.lng.toFixed(5)}`
-      : "";
-
-    let busTxt = "";
-    if (busStops.length > 0) {
-      busTxt = busStops.slice(0, 2).map(stop => {
-        const d = busDeps[stop.id];
-        return d?.length ? formatDeparturesForAI(stop.name, d) : "";
-      }).filter(Boolean).join("");
-      if (!busTxt) busTxt = `\n(Arrêts proches détectés : ${busStops.slice(0,3).map(s=>s.name).join(", ")} — départs en cours de chargement)`;
-    } else {
-      busTxt = `\n(Aucun arrêt de bus/tram détecté à proximité pour l'instant.)`;
-    }
-
-    return `Tu es VELOH·AI, assistant mobilité VelohNav pour Luxembourg.
-${t("ui.ai.sys_lang")}
-${meteoTxt}${fcTxt}${gpsTxt}
-
-STATIONS VEL'OH (par distance) :
-${stations.map(s=>`• ${s.name} | ${s.bikes}🚲 (⚡${s.elec}élec 🔧${s.meca}méca) | ${s.docks} docks | ${fDist(s.dist)} | ${bTag(s)}`).join("\n")}${histTxt}${tramNear}
-
-TRAM T1 — Findel/Aéroport ↔ Gasperich/Stadion (24 arrêts, 16km, GRATUIT) :
-Arrêts : ${TRAM.stops.map(s=>shortStopName(s.name)).join(" · ")}
-Correspondances train : Rout Bréck-Pafendall (funiculaire), Gare Centrale, Howald
-${busTxt ? `\n🚌 BUS RGTR — départs temps réel aux arrêts proches :${busTxt}\n(Les transports publics au Luxembourg sont GRATUITS depuis 2020 pour tous.)` : ""}
-
-NAVIGATION AR : Si l'utilisateur demande à être guidé vers une destination (station Vel'OH, arrêt tram, lieu),
-tu DOIS terminer ta réponse par une balise de navigation :
-[NAV:latitude,longitude,NomDestination,mode]
-Exemples :
-  → guider vers station Hamilius en vélo : [NAV:49.6118,6.1299,Hamilius Vel'OH,bicycling]
-  → guider vers Gare Centrale à pied : [NAV:49.5998,6.1340,Gare Centrale,walking]
-  → guider vers Luxexpo en vélo : [NAV:49.6354,6.1759,Luxexpo,bicycling]
-N'utilise cette balise QUE si l'utilisateur veut explicitement être guidé/naviguer/aller quelque part.
-Ne l'utilise pas pour de simples informations ou conseils.`;
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  },[stations, weather, forecast, gpsPos, busStops, busDeps, lang]);
-
   // ── Réponses locales : la logique vit dans src/ai/localAnswers.js (module pur, testé) ──
-  const answerLocally = useCallback(
-    q => localAnswer(q, { stations, nearest, nearestReturn, deps, weather, forecast, advice, score, gpsPos, t, tn }),
+  // Mêmes données pour les outils du modèle, plus les départs bruts (filtrage par arrêt/mode).
+  const answerCtx = useMemo(
+    () => ({ stations, nearest, nearestReturn, deps, weather, forecast, advice, score, gpsPos,
+             transitStops: busStops, transitDeps: busDeps, t, tn }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [stations, nearest, nearestReturn, deps, weather, forecast, advice, score, gpsPos, lang]);
+    [stations, nearest, nearestReturn, deps, weather, forecast, advice, score, gpsPos, busStops, busDeps, lang]);
+  const answerLocally = useCallback(q => localAnswer(q, answerCtx), [answerCtx]);
 
   // ── Envoi : réponse locale d'abord, modèle seulement si activé ────
   const sendText = useCallback(async(text)=>{
@@ -258,26 +186,27 @@ Ne l'utilise pas pour de simples informations ou conseils.`;
     }
 
     setBusy(true);
-    const hist = [...aiHistory,{role:"user",content:q}].slice(-20);
+    const hist = [...aiHistory,{role:"user",content:q}].slice(-CHAT_TURNS);
+    let reply;
     try {
-      const raw   = await generate(systemPrompt, hist); // IA locale, zéro réseau
-      const nav   = parseNavCommand(raw);
-      const reply = stripNavTag(raw);
-      setAiHistory([...hist,{role:"assistant",content:raw}]);
-      setAiDisplay(d=>[...d,{role:"ai",text:reply, nav}]);
+      // IA locale, zéro réseau. 96 jetons : un appel d'outil en prend une vingtaine.
+      const raw = await generate(systemPrompt(t), hist, { tools: TOOLS, maxNewTokens: 96 });
+      reply = resolveModelOutput(raw, { ...answerCtx, now: new Date() }, local);
     } catch(e) {
       if (e?.code === "generate_timeout") {   // worker arrêté : le dire, plutôt qu'un « prêt » mensonger
         setModelState("error");
         setModelError(describeModelError(e));
       }
-      const msg = e?.code ? describeModelError(e)
-        : modelState==="error"
-        ? t("ai.model_error").replace(/^⚠\s*/, "")
-        : t("ui.ai.err.gen", { msg: e?.message ?? t("ui.ai.err.unknown") });
-      setAiDisplay(d=>[...d,{role:"ai",text:msg, error:true}]);
+      // Échec ou silence du modèle : l'assistant déterministe répond quand même.
+      reply = { ...local, source: "fallback", reason: e?.code || e?.message || "error" };
     }
+    if (reply.source === "fallback") console.info(`[IA] repli sur l'assistant local (${reply.reason})`);
+    // Seul le texte libre du modèle nourrit l'historique : les réponses d'outils
+    // contiennent des valeurs qu'il pourrait recopier de travers au tour suivant.
+    if (reply.source === "model") setAiHistory([...hist,{role:"assistant",content:reply.text}]);
+    setAiDisplay(d=>[...d,{role:"ai",text:reply.text,nav:reply.nav,local:reply.source!=="model"}]);
     setBusy(false);
-  },[input,busy,aiHistory,systemPrompt,modelState,chatOn,answerLocally,setAiHistory,setAiDisplay]);
+  },[input,busy,aiHistory,answerCtx,modelState,chatOn,answerLocally,setAiHistory,setAiDisplay]);
 
   // ── Lancer la nav AR (bouton de la carte station, sans modèle) ────
   const [launching, setLaunching] = useState(false);

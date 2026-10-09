@@ -3,8 +3,8 @@
 // Principe : le modèle ne calcule plus rien, il DEMANDE. Mesuré : même des modèles
 // plus gros inventent des compteurs de vélos et des horaires de bus quand on leur
 // donne les données en vrac dans le prompt. Ici le modèle n'écrit qu'un nom d'outil
-// et des arguments ; l'application exécute l'outil sur ses propres données
-// (toolExec.js) et rédige la réponse elle-même, avec t(). Un chiffre affiché ne
+// et des arguments ; l'application valide l'appel (validateCall), exécute l'outil sur
+// ses propres données (assistant.js) et rédige la réponse elle-même, avec t(). Un chiffre affiché ne
 // passe donc jamais par le modèle.
 //
 // Module PUR : aucune dépendance au navigateur, testable tel quel.
@@ -26,7 +26,7 @@ export const TOOLS = Object.freeze([
     }),
   fn("list_stations",
     "List the closest Vel'OH! stations with their bikes and docks.",
-    { limit: { type: "integer", description: "How many stations (1-5)" } }),
+    { limit: { type: "integer", minimum: 1, maximum: 5, description: "How many stations (1-5)" } }),
   fn("next_departures",
     "Next public transport departures (bus or tram) at a stop near the user, real-time when available. Not for travel time.",
     { mode: { type: "string", enum: ["bus", "tram"] }, stop: { type: "string", description: "Stop name, if the user gave one" } }),
@@ -150,6 +150,7 @@ export function pythonCalls(src) {
       while (i < s.length && s[i] !== q) {
         if (s[i] === "\\" && i + 1 < s.length) { v += s[i + 1]; i += 2; } else v += s[i++];
       }
+      if (i >= s.length) return undefined;   // chaîne jamais refermée (sortie coupée)
       i++;
       return v;
     }
@@ -167,10 +168,11 @@ export function pythonCalls(src) {
     if (s[i] !== "(") break;
     i++;
     const args = {};
+    let closed = false;   // « ) » atteinte sans erreur : sinon l'appel est mal formé
     for (;;) {
       ws();
       if (i >= s.length) break;
-      if (s[i] === ")") { i++; break; }
+      if (s[i] === ")") { i++; closed = true; break; }
       const k = ident();
       if (!k) { i = s.length; break; }
       while (i < s.length && /\s/.test(s[i])) i++;
@@ -181,35 +183,42 @@ export function pythonCalls(src) {
       if (v === undefined) { i = s.length; break; }
       args[k] = v;
     }
-    out.push({ name: name.split(".").pop(), args });
+    // Un appel tronqué ou contenant autre chose que des littéraux est rendu MARQUÉ
+    // (validateCall le rejette) plutôt qu'avec des arguments partiels.
+    out.push(closed ? { name: name.split(".").pop(), args } : { name: name.split(".").pop(), args, malformed: true });
   }
   return out;
 }
 
+// Longueur maximale d'un nom (station, arrêt, lieu) : au-delà, ce n'est plus un nom.
+const MAX_STRING = 60;
+
 /**
- * Valide un appel contre son schéma : outil connu, arguments requis présents,
- * valeurs énumérées reconnues (synonymes tolérés), arguments inconnus retirés.
+ * Valide un appel contre son schéma. STRICT : le modèle se trompe souvent (6/12 au banc),
+ * et un appel douteux ne doit rien déclencher. Rejeté si :
+ *   - l'outil est inconnu, ou les arguments ne sont pas un objet ;
+ *   - un argument n'existe pas dans le schéma (argument inventé) ;
+ *   - une valeur n'a pas le bon type, sort de son énumération (synonymes courants
+ *     tolérés : « walk », « e-bike »…) ou de ses bornes (minimum / maximum) ;
+ *   - une chaîne est vide, trop longue ou contient du balisage ;
+ *   - un argument requis manque.
+ * Un appel rejeté est ignoré : l'application répond alors sans le modèle.
  * @returns {{ ok: true, name: string, args: object } | { ok: false, reason: string }}
  */
 export function validateCall(call) {
   const def = call && BY_NAME.get(call.name);
   if (!def) return { ok: false, reason: `unknown-tool:${call?.name ?? "?"}` };
+  if (call.malformed) return { ok: false, reason: "malformed" };
+  const raw = call.args ?? {};
+  if (typeof raw !== "object" || Array.isArray(raw)) return { ok: false, reason: "bad-args" };
   const props = def.parameters.properties;
   const args = {};
-  for (const [k, spec] of Object.entries(props)) {
-    let v = call.args?.[k];
-    if (v === undefined || v === null || v === "") continue;
-    if (spec.enum) {
-      const low = String(v).toLowerCase().trim();
-      v = spec.enum.includes(low) ? low : spec.enum.includes(ENUM_ALIASES[low]) ? ENUM_ALIASES[low] : undefined;
-      if (v === undefined) continue; // valeur fantaisiste : on l'ignore plutôt que de refuser l'appel
-    } else if (spec.type === "integer") {
-      v = Math.round(Number(v));
-      if (!Number.isFinite(v)) continue;
-    } else if (spec.type === "string") {
-      v = String(v).trim().slice(0, 80);
-      if (!v) continue;
-    }
+  for (const [k, v0] of Object.entries(raw)) {
+    const spec = props[k];
+    if (!spec) return { ok: false, reason: `unknown-arg:${k}` };
+    if (v0 === undefined || v0 === null || v0 === "") continue;   // absent = valeur par défaut
+    const v = checkValue(spec, v0);
+    if (v === undefined) return { ok: false, reason: `bad-value:${k}` };
     args[k] = v;
   }
   for (const k of def.parameters.required) {
@@ -218,13 +227,45 @@ export function validateCall(call) {
   return { ok: true, name: call.name, args };
 }
 
-/** Premier appel valide d'une sortie brute, ou null (le modèle a répondu en texte). */
-export function firstValidCall(text) {
-  for (const c of parseToolCalls(text)) {
-    const v = validateCall(c);
-    if (v.ok) return v;
+/** Valeur conforme au schéma (normalisée), ou undefined si elle ne l'est pas. */
+function checkValue(spec, v) {
+  if (spec.enum) {
+    if (typeof v !== "string") return undefined;
+    const low = v.toLowerCase().trim();
+    if (spec.enum.includes(low)) return low;
+    return spec.enum.includes(ENUM_ALIASES[low]) ? ENUM_ALIASES[low] : undefined;
   }
-  return null;
+  if (spec.type === "integer") {
+    const n = typeof v === "number" ? v : typeof v === "string" && /^\s*-?\d+\s*$/.test(v) ? Number(v) : NaN;
+    if (!Number.isInteger(n)) return undefined;
+    if (spec.minimum !== undefined && n < spec.minimum) return undefined;
+    if (spec.maximum !== undefined && n > spec.maximum) return undefined;
+    return n;
+  }
+  if (spec.type === "string") {
+    if (typeof v !== "string") return undefined;
+    const t = v.trim();
+    if (!t || t.length > MAX_STRING || /[<>{}[\]|\\\u0000-\u001f]/.test(t)) return undefined;
+    return t;
+  }
+  return undefined;
+}
+
+/**
+ * Lecture d'une sortie brute du modèle, sans rien exécuter :
+ *   - { kind: "call", call }        un et un seul appel, valide ;
+ *   - { kind: "invalid", reason }   tentative d'appel inutilisable (inconnu, mal formé,
+ *                                   arguments faux, plusieurs appels à la fois) ;
+ *   - { kind: "text", text }        pas d'appel : le modèle a répondu en texte.
+ */
+export function readModelOutput(text) {
+  const s = String(text ?? "");
+  const calls = parseToolCalls(s);
+  const attempted = calls.length > 0 || /<\|tool_call_start\|>|<tool_call>/.test(s);
+  if (!attempted) return { kind: "text", text: stripToolMarkup(s) };
+  if (calls.length !== 1) return { kind: "invalid", reason: calls.length ? "several-calls" : "unparsable-call" };
+  const v = validateCall(calls[0]);
+  return v.ok ? { kind: "call", call: { name: v.name, args: v.args } } : { kind: "invalid", reason: v.reason };
 }
 
 /** Texte du modèle débarrassé de tout fragment d'appel d'outil (pour l'afficher). */
