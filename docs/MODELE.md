@@ -240,3 +240,30 @@ cas d'échec, l'erreur ou la sortie exacte de chaque tentative.
 - Le banc en v4 a tourné dans un dossier jetable (`~/.cache/velohnav-v4`) : le dépôt reste en 3.8.1.
 - Pas de q4f16 ni de WebGPU au banc. Les scores valent pour la variante q4.
 - Pas de prompt optimisé par modèle : même consigne système pour tous.
+
+## Moteur natif (llama.cpp, Vulkan) : où on en est (10/10/2026)
+
+Décision du propriétaire : le GPU de son téléphone doit exécuter le modèle. WebGPU ne
+l'atteint pas (q4f16 échoue au démarrage, voir plus haut) : le moteur natif est la voie
+principale.
+
+- **écrit** : sources C++ (`android/app/src/main/cpp`), JNI, service isolé « :llm » (un
+  plantage du pilote GPU ne tue que ce processus), greffon Capacitor `LocalLlm` (status,
+  download vérifié SHA-256, devices, load, warm, generate, cancel, unload).
+- **compile pour Android** : `./gradlew :app:externalNativeBuildDebug -PvhNative=1` →
+  `libvh_llm.so`, 25,3 Mo non compressés, 8,1 Mo compressés. Vérifié le 10/10, après
+  correction de la chaîne d'outils de l'outil hôte des nuanceurs (`vulkan-shaders-gen`) :
+  le fichier de chaîne d'outils doit fixer `CMAKE_MAKE_PROGRAM` en ENTRÉE DE CACHE
+  (`set(… CACHE FILEPATH … FORCE)`) — un `set()` simple ne suffit pas, et le ninja du SDK
+  n'est pas dans le PATH de Gradle. Gradle ne reconfigure pas un dossier `.cxx` déjà
+  construit : il faut l'écarter pour que le nouveau fichier de chaîne d'outils soit écrit.
+- **mesuré sur PC** (banc `scripts/bench-native`) : processeur 104,1 j/s, Vulkan
+  (RTX 3060) 396,1 j/s de génération, réponses en français 8/10 dans les deux cas, essai à
+  vide concluant. Même gabarit, même consigne et même lecture de sortie que l'application.
+- **pas embarqué dans l'APK livrée** : rien n'appelle encore le greffon depuis `src/`, et
+  8,1 Mo compressés feraient passer l'APK de 51 Mo à ~59 Mo, au-delà de la limite de 50 Mo
+  de Telegram. La construction native est donc demandée explicitement (`-PvhNative=1`).
+- **reste à faire** : brancher le greffon dans la chaîne de l'IA (une marche « GPU natif »
+  au-dessus de WebGPU), dire la voie retenue à l'écran, puis mesurer les jetons/s SUR le
+  téléphone. Aucune mesure de téléphone n'est possible ici — et donc, aujourd'hui, aucun
+  élément ne prouve que le GPU de son appareil exécute le modèle.
