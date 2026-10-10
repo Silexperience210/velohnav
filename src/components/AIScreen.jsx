@@ -3,6 +3,7 @@ import { t, tn, useI18n } from "../i18n.js";
 import { launchNativeArNav } from "../utils.js";
 import { fetchWeather, getWeatherAdvice } from "../hooks/useWeather.js";
 import { loadModel, unloadModel, generateDetailed, chatModelMB, modelReport, forgetFailures } from "../ai/localModel.js";
+import { gpuSetAside } from "../ai/modelPolicy.js";
 import { systemPrompt, resolveModelOutput, explainFallback } from "../ai/assistant.js";
 import { Icon } from "../ui/icons.jsx";
 import { IconButton, ProgressBar, Spinner, Button } from "../ui/primitives.jsx";
@@ -32,6 +33,14 @@ const whereLabel = (engine, dtype) => t("ui.ai.model.where", {
 });
 const attemptLabel = (id) => { const [dtype, engine] = String(id).split("/"); return whereLabel(engine, dtype); };
 
+// Pourquoi le GPU ne sert pas, en clair (gpuSetAside, modelPolicy.js). Version du
+// navigateur jointe à « WebGPU absent » : c'est elle qui décide (WebView du système).
+const browserVersion = () => (/(Chrome|Firefox|Version)\/[\d.]+/.exec(globalThis.navigator?.userAgent || "")?.[0] || "?");
+const gpuAsideLabel = (aside) => aside.reasons.map(r => t(`ui.ai.model.gpu.${r.kind}`, {
+  what: r.ids.map(id => t(`ui.ai.model.dtype.${id.split("/")[0]}`)).join(", "),
+  detail: r.detail, ua: browserVersion(),
+})).join(" ; ");
+
 // Taille réelle du modèle conversationnel, annoncée AVANT tout téléchargement :
 // rien ne part sans que l'utilisateur l'ait décidé.
 // Taille annoncée : celle de la variante que l'appareil sait réellement faire tourner
@@ -55,6 +64,7 @@ function AIScreen({ stations, aiHistory, setAiHistory,
   const [modelError, setModelError] = useState("");   // message réel, affiché en cas d'échec
   const [modelPhase, setModelPhase] = useState(null);  // { phase: download|init, device, engine, attempt, mb }
   const [modelInfo, setModelInfo] = useState(null);    // modelReport() : tentatives faites
+  const gpuAside = useMemo(() => gpuSetAside(modelInfo), [modelInfo]);
   const [modelErrCode, setModelErrCode] = useState(null);
   const [loadSeq, setLoadSeq] = useState(0);             // incrémenté par « Réessayer »
   // La conversation libre est DÉSACTIVÉE par défaut : le modèle pèse ~300 Mo,
@@ -465,6 +475,12 @@ function AIScreen({ stations, aiHistory, setAiHistory,
                 ? t("ui.ai.model.ready_on", { where: whereLabel(modelInfo.chosen.engine, modelInfo.chosen.dtype) })
                 : t("ui.ai.model.ready")}
           </div>
+          {/* Prêt hors du GPU : pourquoi, lisible à l'écran (sans cela, impossible de le savoir sur l'appareil) */}
+          {chatOn && modelState==="ready" && gpuAside?.reasons.length > 0 && (
+            <div style={{ fontSize:10.5, color:"var(--vn-text3)", lineHeight:1.45, overflowWrap:"anywhere" }}>
+              {t("ui.ai.model.gpu_aside", { why: gpuAsideLabel(gpuAside) })}
+            </div>
+          )}
           {/* Bascule interne (GPU → tentative suivante) : dite comme une information, pas comme une erreur */}
           {chatOn && modelState==="loading" && modelInfo?.tried?.length > 0 && modelPhase?.attempt && (
             <div style={{ fontSize:10.5, color:"var(--vn-text3)", lineHeight:1.45 }}>
@@ -475,6 +491,12 @@ function AIScreen({ stations, aiHistory, setAiHistory,
         {chatOn && modelState==="error" && (
           <Button size="sm" variant="secondary" icon="refresh"
             onClick={()=>{ if (modelErrCode === "all_failed") forgetFailures(); setLoadSeq(n=>n+1); }}>{t("ui.ai.model.retry")}</Button>
+        )}
+        {chatOn && modelState==="ready" && gpuAside?.retry && (
+          <Button size="sm" variant="secondary" icon="refresh"
+            onClick={()=>{ forgetFailures(); setLoadSeq(n=>n+1); }}>
+            {gpuAside.downloadMB > 0 ? t("ui.ai.model.gpu_retry_dl", { mb: gpuAside.downloadMB }) : t("ui.ai.model.gpu_retry")}
+          </Button>
         )}
         {chatOn && modelState==="loading" && (
           <div style={{ width:64 }}>

@@ -483,3 +483,48 @@ export function withTimeout(promise, ms, label = "operation", onTimeout) {
   });
   return Promise.race([Promise.resolve(promise), guard]).finally(() => clearTimeout(timer));
 }
+
+// ── Le GPU mis de côté : le dire ────────────────────────────────
+//
+// Retour du téléphone : « prêt · q4 · processeur · calcul 32 bits », et rien sur la
+// raison. L'échelle la connaît (tentative écartée d'avance par la sonde, échouée à ce
+// chargement, ou mémorisée en échec d'un lancement précédent) : elle doit se lire à
+// l'écran, sans quoi personne ne peut dire pourquoi le GPU ne sert pas.
+const SKIP_KIND = Object.freeze({
+  "no-webgpu": "no_webgpu", "no-adapter": "no_adapter", "software-adapter": "software", "no-shader-f16": "no_f16",
+});
+
+/**
+ * Pourquoi aucune tentative GPU n'a été retenue.
+ * @param {{ chosen: object|null, tried?: {id,code,detail}[], skipped?: {id,reason}[] }} report modelReport()
+ * @returns {null | { reasons: { ids: string[], kind: string, detail: string }[], retry: boolean, downloadMB: number }}
+ *   null : le GPU est retenu, ou rien n'est encore retenu. `kind` : no_webgpu, no_adapter,
+ *   software, no_f16, limits, device, failed (à ce chargement), failed_before (lancement
+ *   précédent). Raisons identiques regroupées. `retry` : un échec mémorisé ou constaté
+ *   peut être rejoué (« Réessayer le GPU ») ; `downloadMB` : ce que ce nouvel essai
+ *   téléchargerait (q4f16 n'est pas en cache s'il a été purgé ; q4 l'est, il sert au processeur).
+ */
+export function gpuSetAside(report) {
+  if (!report?.chosen || report.chosen.device === "webgpu") return null;
+  const reasons = [];
+  let retry = false, downloadMB = 0;
+  for (const a of ATTEMPTS.filter((x) => x.engine.device === "webgpu")) {
+    const t = report.tried?.find((x) => x.id === a.id);
+    const s = report.skipped?.find((x) => x.id === a.id);
+    let kind, detail;
+    if (t) { kind = "failed"; detail = t.detail || t.code; }
+    else if (!s) continue;
+    else if (s.reason.startsWith("failed-before")) { kind = "failed_before"; detail = s.reason.replace(/^failed-before:\s*/, ""); }
+    else if (SKIP_KIND[s.reason]) { kind = SKIP_KIND[s.reason]; detail = ""; }
+    else if (s.reason.startsWith("device")) { kind = "device"; detail = s.reason.replace(/^device:\s*/, ""); }
+    else { kind = "limits"; detail = s.reason; }
+    if (kind === "failed" || kind === "failed_before") {
+      retry = true;
+      if (a.variant.dtype !== report.chosen.dtype) downloadMB += a.variant.mb;
+    }
+    const same = reasons.find((r) => r.kind === kind && r.detail === detail);
+    if (same) same.ids.push(a.id);
+    else reasons.push({ ids: [a.id], kind, detail: String(detail).slice(0, 240) });
+  }
+  return { reasons, retry, downloadMB };
+}

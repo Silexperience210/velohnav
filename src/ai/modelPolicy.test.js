@@ -2,7 +2,7 @@ import { describe, it, expect, vi, afterEach } from "vitest";
 import {
   VARIANTS, LARGEST_TENSOR_BYTES, LIMITS, assessWebGPU, watchdog,
   initialProgress, progressReducer, withTimeout, selfTestVerdict, variantFor,
-  ATTEMPTS, ENGINES, planAttempts, classifyFailure, deviceFingerprint, failureRecord, attemptById,
+  ATTEMPTS, ENGINES, planAttempts, classifyFailure, deviceFingerprint, failureRecord, attemptById, gpuSetAside,
 } from "./modelPolicy.js";
 
 // Sonde d'un GPU capable de porter q4f16, modifiée cas par cas.
@@ -358,5 +358,43 @@ describe("délai d'expiration", () => {
     await withTimeout(Promise.resolve("ok"), 10_000, "x", onTimeout);
     await vi.advanceTimersByTimeAsync(20_000);
     expect(onTimeout).not.toHaveBeenCalled();
+  });
+});
+
+describe("GPU mis de côté : la raison se lit (retour du téléphone : « processeur », sans pourquoi)", () => {
+  const cpu = { id: "q4/wasm", dtype: "q4", device: "wasm", engine: "wasm", mb: 294 };
+  it("GPU retenu, ou rien de retenu : rien à dire", () => {
+    expect(gpuSetAside({ chosen: { id: "q4f16/webgpu", device: "webgpu" } })).toBeNull();
+    expect(gpuSetAside({ chosen: null })).toBeNull();
+    expect(gpuSetAside(null)).toBeNull();
+  });
+  it("pas de WebGPU : une seule raison pour les deux tentatives GPU, rien à rejouer", () => {
+    const { skipped } = planAttempts({ probe: null });
+    expect(gpuSetAside({ chosen: cpu, tried: [], skipped })).toEqual({
+      reasons: [{ ids: ["q4f16/webgpu", "q4/webgpu"], kind: "no_webgpu", detail: "" }], retry: false, downloadMB: 0,
+    });
+  });
+  it("GPU sans fp16 dont le q4 a échoué à ce démarrage : chaque raison, erreur exacte, rejouable sans téléchargement", () => {
+    const probe = { adapter: true, features: [], limits: { maxBufferSize: 2 ** 30, maxStorageBufferBindingSize: 2 ** 30 }, device: { ok: true } };
+    const { skipped } = planAttempts({ probe });
+    const r = gpuSetAside({ chosen: cpu, skipped, tried: [{ id: "q4/webgpu", code: "init", detail: "OrtRun: Sub requires f16" }] });
+    expect(r.reasons).toEqual([
+      { ids: ["q4f16/webgpu"], kind: "no_f16", detail: "" },
+      { ids: ["q4/webgpu"], kind: "failed", detail: "OrtRun: Sub requires f16" },
+    ]);
+    expect(r).toMatchObject({ retry: true, downloadMB: 0 });
+  });
+  it("échecs mémorisés d'un lancement précédent : dits comme tels, et rejouer q4f16 annonce son téléchargement", () => {
+    const probe = { adapter: true, features: ["shader-f16"], limits: { maxBufferSize: 2 ** 30, maxStorageBufferBindingSize: 2 ** 30 }, device: { ok: true } };
+    const { skipped } = planAttempts({ probe, failed: { "q4f16/webgpu": "init_timeout", "q4/webgpu": "init_timeout" } });
+    const r = gpuSetAside({ chosen: cpu, skipped, tried: [] });
+    expect(r.reasons).toEqual([{ ids: ["q4f16/webgpu", "q4/webgpu"], kind: "failed_before", detail: "init_timeout" }]);
+    expect(r).toMatchObject({ retry: true, downloadMB: VARIANTS.webgpu.mb });
+  });
+  it("device refusé, limites trop basses : catégorie et détail", () => {
+    const refused = planAttempts({ probe: { adapter: true, features: [], limits: { maxBufferSize: 2 ** 30, maxStorageBufferBindingSize: 2 ** 30 }, device: { ok: false, error: "OperationError" } } });
+    expect(gpuSetAside({ chosen: cpu, skipped: refused.skipped }).reasons.at(-1)).toEqual({ ids: ["q4/webgpu"], kind: "device", detail: "OperationError" });
+    const small = planAttempts({ probe: { adapter: true, features: ["shader-f16"], limits: { maxBufferSize: 2 ** 24, maxStorageBufferBindingSize: 2 ** 24 }, device: { ok: true } } });
+    expect(gpuSetAside({ chosen: cpu, skipped: small.skipped }).reasons[0]).toMatchObject({ kind: "limits", detail: expect.stringMatching(/maxBufferSize 16 MiB/) });
   });
 });
