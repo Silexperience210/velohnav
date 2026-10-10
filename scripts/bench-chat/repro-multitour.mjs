@@ -9,7 +9,6 @@ register("data:text/javascript," + encodeURIComponent(`
     return next(url, ctx);
   }`));
 const { AutoTokenizer, AutoModelForCausalLM, env } = await import("@huggingface/transformers");
-const { TOOLS } = await import("../../src/ai/tools.js");
 const { systemPrompt } = await import("../../src/ai/assistant.js");
 const { cleanReply } = await import("../../src/ai/localModel.js");
 const { MODEL } = await import("../../src/ai/modelPolicy.js");
@@ -24,7 +23,7 @@ const model = await AutoModelForCausalLM.from_pretrained(MODEL.id, { dtype: "q4"
 
 const ask = async (history, label) => {
   const inputs = tok.apply_chat_template([{ role: "system", content: systemPrompt(t) }, ...history],
-    { tools: TOOLS, add_generation_prompt: true, return_dict: true });
+    { add_generation_prompt: true, return_dict: true });
   const t0 = Date.now();
   const out = await model.generate({ ...inputs, max_new_tokens: 256, do_sample: false });
   const n = inputs.input_ids.dims.at(-1);

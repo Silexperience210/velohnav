@@ -14,7 +14,7 @@ register("data:text/javascript," + encodeURIComponent(`
     return next(url, ctx);
   }`));
 const { AutoTokenizer, AutoModelForCausalLM, env } = await import("@huggingface/transformers");
-const { TOOLS, readModelOutput } = await import("../../src/ai/tools.js");
+const { readModelOutput } = await import("../../src/ai/tools.js");
 const { systemPrompt, resolveModelOutput, checkFreeText, plainText } = await import("../../src/ai/assistant.js");
 const { answerLocally } = await import("../../src/ai/localAnswers.js");
 const { cleanReply, generationOptions } = await import("../../src/ai/localModel.js");
@@ -42,7 +42,7 @@ for (const q of CONVERSATION) {
   if (local.unknown !== true) { console.log(`« ${q} » → reconnu sans modèle, ignoré`); continue; }
   const hist = [...aiHistory, { role: "user", content: q }].slice(-CHAT_TURNS);
   const inputs = tok.apply_chat_template([{ role: "system", content: systemPrompt(t) }, ...hist],
-    { tools: TOOLS, add_generation_prompt: true, return_dict: true });
+    { add_generation_prompt: true, return_dict: true });
   const t0 = Date.now();
   const out = await model.generate({ ...inputs, ...options });
   const n = inputs.input_ids.dims.at(-1);

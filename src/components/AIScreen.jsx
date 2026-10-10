@@ -3,7 +3,6 @@ import { t, tn, useI18n } from "../i18n.js";
 import { launchNativeArNav } from "../utils.js";
 import { fetchWeather, getWeatherAdvice } from "../hooks/useWeather.js";
 import { loadModel, unloadModel, generateDetailed, chatModelMB, modelReport, forgetFailures } from "../ai/localModel.js";
-import { TOOLS } from "../ai/tools.js";
 import { systemPrompt, resolveModelOutput, explainFallback } from "../ai/assistant.js";
 import { Icon } from "../ui/icons.jsx";
 import { IconButton, ProgressBar, Spinner, Button } from "../ui/primitives.jsx";
@@ -201,7 +200,7 @@ function AIScreen({ stations, aiHistory, setAiHistory,
   // Mêmes données pour les outils du modèle, plus les départs bruts (filtrage par arrêt/mode).
   const answerCtx = useMemo(
     () => ({ stations, nearest, nearestReturn, deps, weather, forecast, advice, score, gpsPos, located: !!gpsPos,
-             transitStops: busStops, transitDeps: busDeps, t, tn }),
+             transitStops: busStops, transitDeps: busDeps, t, tn, lang }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [stations, nearest, nearestReturn, deps, weather, forecast, advice, score, gpsPos, busStops, busDeps, lang]);
   const answerLocally = useCallback(q => localAnswer(q, answerCtx), [answerCtx]);
@@ -228,7 +227,7 @@ function AIScreen({ stations, aiHistory, setAiHistory,
     let reply, raw = "", failed = null;
     try {
       // IA locale, zéro réseau. 96 jetons : un appel d'outil en prend une vingtaine.
-      const out = await generateDetailed(systemPrompt(t), hist, { tools: TOOLS, maxNewTokens: 96 });
+      const out = await generateDetailed(systemPrompt(t), hist, { maxNewTokens: 96 });
       raw = out.raw;
       reply = resolveModelOutput(out.text, { ...answerCtx, now: new Date() }, local);
     } catch(e) {

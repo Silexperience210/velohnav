@@ -1,9 +1,8 @@
 // Page du banc « conversation libre » (voir run.mjs). Utilise le VRAI worker de
 // l'application (src/ai/modelWorker.js) et le vrai chemin d'affichage
-// (systemPrompt, TOOLS, cleanReply, resolveModelOutput) : seule change la
+// (systemPrompt avec ses outils, cleanReply, resolveModelOutput) : seule change la
 // configuration de génération comparée.
 import { VARIANTS } from "../../src/ai/modelPolicy.js";
-import { TOOLS } from "../../src/ai/tools.js";
 import { systemPrompt, resolveModelOutput } from "../../src/ai/assistant.js";
 import { answerLocally } from "../../src/ai/localAnswers.js";
 import { cleanReply, generationOptions } from "../../src/ai/localModel.js";
@@ -33,7 +32,7 @@ const generate = (messages, options) => new Promise((res) => {
   const id = ++seq;
   const h = ({ data }) => { if (data.type === "result" && data.id === id) { w.removeEventListener("message", h); res(data); } };
   w.addEventListener("message", h);
-  w.postMessage({ type: "generate", id, messages, tools: TOOLS, options });
+  w.postMessage({ type: "generate", id, messages, options });
 });
 
 try {

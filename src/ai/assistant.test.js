@@ -3,7 +3,7 @@
 // l'assistant déterministe dès que le modèle échoue ou dit n'importe quoi.
 import { describe, it, expect, vi } from "vitest";
 import { TOOLS, TOOL_NAMES, parseToolCalls, validateCall, readModelOutput } from "./tools.js";
-import { executeTool, checkFreeText, resolveModelOutput, systemPrompt, explainFallback } from "./assistant.js";
+import { executeTool, checkFreeText, resolveModelOutput, systemPrompt, explainFallback, replyLanguage } from "./assistant.js";
 import fr from "../locales/fr.js";
 import en from "../locales/en.js";
 import { answerLocally } from "./localAnswers.js";
@@ -39,7 +39,52 @@ describe("outils exposés au modèle", () => {
     }
   });
   it("la consigne interdit au modèle d'avancer une valeur", () => {
-    expect(systemPrompt(t)).toMatch(/Never state a number/);
+    expect(systemPrompt(tr(fr))).toMatch(/N'écris jamais de nombre/);
+    expect(systemPrompt(tr(en))).toMatch(/Never write a number/);
+  });
+});
+
+// Vraie traduction (et non la factice) : la consigne et la langue sont de la prose.
+const tr = (dict) => (k, p = {}) => String(dict[k] ?? k).replace(/\{(\w+)\}/g, (_, n) => p[n] ?? "");
+
+describe("langue de réponse (retour du téléphone : réponse en anglais dans une application française)", () => {
+  it("la consigne est dans la langue de l'interface, et la langue SUIT la liste des outils", () => {
+    const s = systemPrompt(tr(fr));
+    expect(s.startsWith(fr["ui.ai.sys"])).toBe(true);
+    const tools = s.indexOf("List of tools: [");
+    expect(tools).toBeGreaterThan(0);
+    expect(s.lastIndexOf(fr["ui.ai.sys_lang"])).toBeGreaterThan(tools);
+    expect(s.endsWith(fr["ui.ai.sys_lang"])).toBe(true);
+    expect(systemPrompt(tr(en)).endsWith(en["ui.ai.sys_lang"])).toBe(true);
+  });
+  it("liste des outils au format du gabarit du modèle (tojson à la Python), chaque outil une fois", () => {
+    const s = systemPrompt(tr(fr));
+    expect(s).toContain('{"type": "function", "function": {"name": "find_station", ');
+    for (const name of TOOL_NAMES) expect(s.split(`"name": "${name}"`).length - 1, name).toBe(1);
+  });
+  it("reconnaît le français et l'anglais des sorties réelles du banc", () => {
+    expect(replyLanguage("Hello! How can I assist you today?")).toBe("en");
+    expect(replyLanguage("I don't speak French, but I can help you.")).toBe("en");
+    expect(replyLanguage("Bonjour ! Comment puis-je vous aider aujourd'hui ?")).toBe("fr");
+    expect(replyLanguage("Je peux t'aider à résoudre ton problème !")).toBe("fr");
+    expect(replyLanguage("Hello! Bien sûr, je parle français. Comment puis-je vous aider aujourd'hui ?")).toBe("fr");
+  });
+  it("indécidable : texte trop court ou sans mot-outil — rien n'est rejeté sur ce motif", () => {
+    expect(replyLanguage("Coucou ! Bon voyage !")).toBe("?");
+    expect(replyLanguage("Pourquoi ?")).toBe("?");
+  });
+  it("une réponse anglaise dans l'interface française n'est pas montrée : repli, raison dite", () => {
+    expect(checkFreeText("Hello! How can I assist you today?", "fr")).toEqual({ ok: false, reason: "language" });
+    expect(checkFreeText("Bonjour ! Comment puis-je vous aider aujourd'hui ?", "fr").ok).toBe(true);
+    expect(checkFreeText("Bonjour ! Comment puis-je vous aider aujourd'hui ?", "en")).toEqual({ ok: false, reason: "language" });
+    const r = resolveModelOutput("Hello! How can I assist you today?<|im_end|>", { ...ctx, lang: "fr" }, help);
+    expect(r).toMatchObject({ source: "fallback", reason: "language" });
+    expect(explainFallback(r.reason).key).toBe("ui.ai.diag.why.language");
+    expect(fr["ui.ai.diag.why.language"]).toBeTruthy();
+    expect(en["ui.ai.diag.why.language"]).toBeTruthy();
+  });
+  it("sans langue connue (appel ancien), le texte n'est pas jugé sur sa langue", () => {
+    expect(checkFreeText("Hello! How can I assist you today?").ok).toBe(true);
   });
 });
 

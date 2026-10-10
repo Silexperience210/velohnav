@@ -15,20 +15,31 @@
 // Module pur (traduction et données injectées), testable sans navigateur.
 import { TRAM, nextDepartures, shortStopName } from "../utils/tram.js";
 import { fmtDuration, walkMinutes, stationView } from "../ui/format.js";
-import { readModelOutput } from "./tools.js";
+import { readModelOutput, TOOLS } from "./tools.js";
 import {
   norm, approxDist, upcoming, distLabel, findPlace, navAnswer, stationDetails,
   answerNearest, answerDocks, answerDepartures, answerWeather,
 } from "./localAnswers.js";
 
+// tojson du gabarit de LFM2.5 : séparateurs « , » et « : » espacés, comme en Python.
+const tojson = (v) => (Array.isArray(v) ? "[" + v.map(tojson).join(", ") + "]"
+  : v && typeof v === "object" ? "{" + Object.entries(v).map(([k, x]) => JSON.stringify(k) + ": " + tojson(x)).join(", ") + "}"
+  : JSON.stringify(v));
+
 /**
- * Consigne système. Celle du banc d'essai (les scores mesurés valent pour elle),
- * plus l'interdiction d'avancer une valeur et la langue de réponse.
+ * Consigne système, outils compris, dans la langue de l'interface.
+ *
+ * Retour du téléphone : à « tu parles français ? », le modèle a répondu en anglais qu'il
+ * ne savait pas. La consigne était en anglais, la langue en dernière phrase, et le gabarit
+ * du modèle ajoutait ENSUITE la liste des outils (≈ 600 jetons d'anglais) : la langue se
+ * retrouvait loin du tour à produire. Banc (scripts/bench-chat/langue.mjs, q4, glouton) :
+ * 10 réponses françaises sur 17. La liste des outils est donc écrite ici, au format exact
+ * du gabarit (« List of tools: [...] », vérifié identique), et la langue la SUIT :
+ * 16/18, et 8 outils justes sur 11 au lieu de 7. Les appels passent donc SANS l'option
+ * `tools` (le gabarit l'ajouterait une seconde fois).
  */
-export function systemPrompt(t) {
-  return "You are the assistant of a bike navigation app in Luxembourg. Call a tool when one matches the question. "
-    + "Never state a number, time, distance or count yourself: only tools know them. "
-    + t("ui.ai.sys_lang");
+export function systemPrompt(t, tools = TOOLS) {
+  return t("ui.ai.sys") + "\nList of tools: [" + tools.map(tojson).join(", ") + "]\n" + t("ui.ai.sys_lang");
 }
 
 // ── Exécution des outils ─────────────────────────────────────────────
@@ -186,7 +197,7 @@ export const MAX_FREE_TEXT = 500;
  * une boucle ou rien du tout.
  * @returns {{ ok: boolean, reason: string }}
  */
-export function checkFreeText(text) {
+export function checkFreeText(text, lang = null) {
   const s = String(text ?? "").trim();
   if (s.length < 2) return { ok: false, reason: "empty" };
   if (s.length > MAX_FREE_TEXT) return { ok: false, reason: "too-long" };
@@ -197,6 +208,11 @@ export function checkFreeText(text) {
   // La consigne demande du français (ou de l'anglais) : une lettre d'une autre écriture
   // trahit une génération qui a dérivé.
   if (/(?=\p{L})\P{Script=Latin}/u.test(s)) return { ok: false, reason: "script" };
+  // Langue : un texte reconnu comme l'AUTRE langue de l'application n'est pas montré
+  // (au banc, « Salut » ou « Merci » obtenaient encore parfois « Hello! How can I assist
+  // you today? »). Un texte indécidable (« Coucou ! Bon voyage ! ») passe.
+  const said = lang ? replyLanguage(s) : "?";
+  if (said !== "?" && said !== lang) return { ok: false, reason: "language" };
   // Fragment : moins de deux mots, ou des guillemets collés entre deux lettres.
   if ((s.match(/\p{L}{2,}/gu) || []).length < 2 || /\p{L}["“”]\p{L}/u.test(s)) return { ok: false, reason: "fragment" };
   // Boucle : la même suite de quatre mots trois fois ou plus.
@@ -209,6 +225,38 @@ export function checkFreeText(text) {
     seen.set(k, n);
   }
   return { ok: true, reason: "ok" };
+}
+
+// Mots-outils fréquents, propres à une langue (les mots communs aux deux — « on »,
+// « a », « me »… — sont écartés : ils ne départagent rien).
+const FUNCTION_WORDS = {
+  fr: new Set(("je tu il elle nous vous ils elles le la les un une des du de et est sont suis es "
+    + "pas ne que qui quoi pour avec dans sur ce cette ces mon ma mes ton ta tes votre vos au aux "
+    + "mais ou donc oui non bonjour merci peux puis veux sais parle comment pourquoi tres bien "
+    + "aussi avez vais etre fait faire voici quel quelle").split(" ")),
+  en: new Set(("i you he she we they it the an and is are am was not don't can't cannot that "
+    + "what who which for with this these my your our their of to in at do does how why "
+    + "yes no hello hi thanks thank please can could would will speak sorry here there very "
+    + "help have has be just").split(" ")),
+};
+
+/**
+ * Langue d'un texte libre du modèle, par ses mots-outils : "fr", "en", ou "?" si le
+ * texte est trop court ou trop mêlé pour trancher (rien n'est alors rejeté sur ce motif).
+ * @returns {"fr" | "en" | "?"}
+ */
+export function replyLanguage(text) {
+  const words = norm(String(text ?? "")).replace(/[’]/g, "'").split(/[^a-z']+/)
+    .flatMap((w) => (FUNCTION_WORDS.en.has(w) ? [w] : w.split("'"))).filter(Boolean);
+  let fr = 0, en = 0;
+  for (const w of words) {
+    if (FUNCTION_WORDS.fr.has(w)) fr++;
+    else if (FUNCTION_WORDS.en.has(w)) en++;
+  }
+  if (fr + en < 2) return "?";
+  if (fr >= 2 * en) return "fr";
+  if (en >= 2 * fr) return "en";
+  return "?";
 }
 
 /** Le modèle écrit volontiers du Markdown (**gras**, # titres) : la bulle affiche du texte brut. */
@@ -231,7 +279,7 @@ export function resolveModelOutput(raw, ctx, fallback) {
     return r?.text ? { ...r, source: "tool", tool: out.call.name } : fall(`no-data:${out.call.name}`);
   }
   const text = plainText(out.text);
-  const chk = checkFreeText(text);
+  const chk = checkFreeText(text, ctx.lang ?? null);
   return chk.ok ? { text, source: "model" } : fall(chk.reason);
 }
 
@@ -242,7 +290,7 @@ const CALL_REASONS = new Set([
   "several-calls", "unparsable-call", "malformed", "bad-args", "unknown-tool", "unknown-arg", "bad-value", "missing",
 ]);
 const WHY = {
-  empty: "empty", "too-long": "too_long", markup: "markup", number: "number", unit: "unit", script: "script",
+  empty: "empty", "too-long": "too_long", language: "language", markup: "markup", number: "number", unit: "unit", script: "script",
   fragment: "fragment", repetition: "repetition", "no-data": "no_data", generate: "error", generate_timeout: "timeout",
   webgpu_generate: "error",
 };

@@ -7,7 +7,6 @@
 // continuer seule. Rien d'autre n'est simulé.
 import { loadModel, generateDetailed, modelReport } from "../../src/ai/localModel.js";
 import { systemPrompt } from "../../src/ai/assistant.js";
-import { TOOLS } from "../../src/ai/tools.js";
 import fr from "../../src/locales/fr.js";
 
 const t = (k, p = {}) => String(fr[k] ?? k).replace(/\{(\w+)\}/g, (_, n) => p[n] ?? "");
@@ -36,7 +35,7 @@ try {
   await loadModel(() => {}, (p) => phases.push(p));
   const loadMs = Math.round(performance.now() - t0);
   const t1 = performance.now();
-  const out = await generateDetailed(systemPrompt(t), [{ role: "user", content: "Je suis Silex" }], { tools: TOOLS, maxNewTokens: 96 });
+  const out = await generateDetailed(systemPrompt(t), [{ role: "user", content: "Je suis Silex" }], { maxNewTokens: 96 });
   await send({ type: "ladder", ok: true, loadMs, genMs: Math.round(performance.now() - t1), raw: out.raw,
                report: modelReport(), phases, stored: localStorage.getItem("velohnav_ai_attempts_ko") });
 } catch (e) {

@@ -13,7 +13,6 @@ register("data:text/javascript," + encodeURIComponent(`
     return next(url, ctx);
   }`));
 const { AutoTokenizer, AutoModelForCausalLM, env } = await import("@huggingface/transformers");
-const { TOOLS } = await import("../../src/ai/tools.js");
 const { systemPrompt, resolveModelOutput } = await import("../../src/ai/assistant.js");
 const { answerLocally } = await import("../../src/ai/localAnswers.js");
 const { cleanReply } = await import("../../src/ai/localModel.js");
@@ -37,7 +36,7 @@ for (const cfg of CONFIGS.filter((c) => !configs || configs.split(",").includes(
     if (answerLocally(q, { t, stations: [] }).unknown !== true) throw new Error(`question traitée sans modèle : ${q}`);
     // Exactement ce que fait le worker (modelWorker.complete) avec les options de localModel.generate.
     const inputs = tok.apply_chat_template([{ role: "system", content: systemPrompt(t) }, { role: "user", content: q }],
-      { tools: TOOLS, add_generation_prompt: true, return_dict: true });
+      { add_generation_prompt: true, return_dict: true });
     const out = await model.generate({ ...inputs, max_new_tokens: 96, ...cfg.options });
     const n = inputs.input_ids.dims.at(-1);
     const raw = tok.decode(out.slice(null, [n, null])[0], { skip_special_tokens: false });
