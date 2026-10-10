@@ -3,6 +3,8 @@ node_modules/
 
 # build outputs
 dist/
+# Banc du moteur natif : binaire hôte recompilé par scripts/bench-native/build.sh
+scripts/bench-native/vh_llm_bench
 
 # android build
 android/build/
