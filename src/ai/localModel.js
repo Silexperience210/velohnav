@@ -371,6 +371,19 @@ export function unloadModel() {
   else if (worker) killWorker(new ModelError("cancelled"));
 }
 
+/**
+ * Calcule à l'avance l'état du modèle sur la consigne système, pendant que l'utilisateur
+ * tape (processeur seulement ; le worker l'ignore sur WebGPU). À rappeler quand la
+ * consigne change (langue). Sans effet si le modèle n'est pas prêt ; jamais d'erreur :
+ * au pire la première question calcule la consigne elle-même.
+ * @param {string} system
+ * @param {object[]} [tools] comme generate : schémas passés au gabarit
+ */
+export function warmUp(system, tools) {
+  if (!ready || !worker || !system) return;
+  worker.postMessage({ type: "warm", system, tools });
+}
+
 // Le gabarit de conversation n'est plus écrit ici à la main (il était propre à Qwen) :
 // le worker applique celui du tokenizer du modèle (apply_chat_template), seul à
 // connaître ses jetons de rôle et sa façon de présenter les outils.

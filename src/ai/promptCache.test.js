@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { reusablePrefix, prefixMessages, shareable, copyCache } from "./promptCache.js";
+import { reusablePrefix, sameIds, prefixMessages, shareable, copyCache } from "./promptCache.js";
 
 class FakeCache {
   constructor(entries) { Object.assign(this, entries); }
@@ -27,6 +27,15 @@ describe("reusablePrefix", () => {
   it("0 sans préfixe", () => {
     expect(reusablePrefix([1, 2], [])).toBe(0);
     expect(reusablePrefix([1, 2], null)).toBe(0);
+  });
+});
+
+describe("sameIds", () => {
+  it("vrai seulement pour les mêmes jetons dans le même ordre", () => {
+    expect(sameIds(BigInt64Array.from([1n, 2n]), BigInt64Array.from([1n, 2n]))).toBe(true);
+    expect(sameIds([1, 2], [1, 2, 3])).toBe(false);   // un préfixe plus court n'est pas le même
+    expect(sameIds([1, 3], [1, 2])).toBe(false);
+    expect(sameIds(null, [1])).toBe(false);
   });
 });
 

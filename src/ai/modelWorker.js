@@ -17,7 +17,7 @@
 // ortEngine.js n'est PAS importé ici : il lit le moteur à son évaluation, qui doit venir
 // après le choix (il est importé par transformers.js, via le plugin).
 import { LIMITS, MODEL, SELF_TEST, hubFileUrl, cacheHeaders, withTimeout, ENGINES, ENGINE_SLOT } from "./modelPolicy.js";
-import { reusablePrefix, prefixMessages, shareable, copyCache } from "./promptCache.js";
+import { reusablePrefix, sameIds, prefixMessages, shareable, copyCache } from "./promptCache.js";
 
 const MODEL_ID = MODEL.id;
 // Copie embarquée éventuelle (public/models/ via scripts/fetch-model.sh).
@@ -39,6 +39,11 @@ let generator = null;
 let prefix = null;
 
 const post = (msg) => self.postMessage(msg);
+
+// Le modèle ne fait qu'une chose à la fois : un calcul anticipé de la consigne (warm)
+// et une question arrivés ensemble s'entrelaceraient à chaque `await` de generate().
+let queue = Promise.resolve();
+const serial = (fn) => (queue = queue.then(fn, fn));
 
 // Journal d'onnxruntime : ses erreurs WebGPU (validation, shader non compilable, « Sub
 // requires f16 ») partent en console.error/warn, et l'exception qui remonte se réduit
@@ -241,13 +246,20 @@ self.onmessage = async ({ data }) => {
     }
     return;
   }
+  if (msg.type === "warm") {
+    // Un échec ici n'est pas grave : la question suivante calculera la consigne elle-même.
+    await serial(() => warm(msg).catch((e) => console.warn("[IA] calcul anticipé de la consigne impossible :", e?.message || e)));
+    return;
+  }
   if (msg.type === "generate") {
-    try {
-      if (!generator) throw new Error("model not loaded");
-      post({ type: "result", id: msg.id, text: await complete(msg) });
-    } catch (e) {
-      post({ type: "result", id: msg.id, error: String(e?.message || e) });
-    }
+    await serial(async () => {
+      try {
+        if (!generator) throw new Error("model not loaded");
+        post({ type: "result", id: msg.id, text: await complete(msg) });
+      } catch (e) {
+        post({ type: "result", id: msg.id, error: String(e?.message || e) });
+      }
+    });
   }
 };
 
@@ -271,13 +283,15 @@ async function selfTestRun() {
  * produit après le prompt, jetons spéciaux conservés — <|tool_call_start|> marque un
  * appel d'outil, il ne faut pas le perdre au décodage.
  */
+const chatTemplate = (tools) => (msgs, generation) => generator.tokenizer.apply_chat_template(msgs, {
+  ...(tools?.length ? { tools } : {}),
+  add_generation_prompt: generation,
+  return_dict: true,
+});
+
 async function complete({ messages, tools, options }) {
   const tok = generator.tokenizer;
-  const template = (msgs, generation) => tok.apply_chat_template(msgs, {
-    ...(tools?.length ? { tools } : {}),
-    add_generation_prompt: generation,
-    return_dict: true,
-  });
+  const template = chatTemplate(tools);
   const inputs = template(messages, true);
   const past = await prefixState(messages, inputs.input_ids.data, template);
   const out = await generator.model.generate({ ...inputs, ...options, ...(past ? { past_key_values: past } : {}) });
@@ -288,26 +302,45 @@ async function complete({ messages, tools, options }) {
 /**
  * Copie de l'état du modèle à la fin de la consigne système (+ outils), calculé une
  * fois puis réutilisé : seule la suite du prompt est calculée à chaque question.
- * Mesuré (scripts/bench-chat/prefixe.mjs, q4, processeur) : sortie gloutonne identique
- * sur 5/5 questions, 48,8 s → 7,6 s. Recalculé si la consigne ou les outils changent
- * (langue, par exemple) ; aucun cache si le gabarit ne produit pas un vrai préfixe.
+ * Mesuré (scripts/bench-chat/prefixe.mjs, q4, processeur, prompt de l'application) :
+ * sortie gloutonne identique sur 5/5 questions, 30,4 s → 9,7 s ; dans le moteur WASM
+ * (wasm-node.mjs), une réponse de 16 jetons passe de 52,7 s à 25,6 s. Recalculé si la
+ * consigne ou les outils changent (langue) ; aucun cache si le gabarit ne produit pas
+ * un vrai préfixe.
  */
 async function prefixState(messages, full, template) {
   const head = prefixMessages(messages);
   if (prefix === false || !head) return null;
   if (!prefix || !reusablePrefix(full, prefix.ids)) {
-    const pre = template(head, false);
-    if (!reusablePrefix(full, pre.input_ids.data)) return null;
-    // Un seul jeton généré : l'état rendu est celui d'après le préfixe, avant ce jeton.
-    const { past_key_values: cache } = await generator.model.generate({
-      ...pre, max_new_tokens: 1, do_sample: false, return_dict_in_generate: true,
-    });
-    if (!shareable(cache)) {
-      await cache.dispose();
-      prefix = false;
-      return null;
-    }
-    prefix = { ids: pre.input_ids.data, cache };
+    const ids = await computePrefix(head, template);
+    if (!ids || !reusablePrefix(full, ids)) return null;
   }
   return copyCache(prefix.cache);
+}
+
+/** Calcule l'état à la fin de `head` (consigne seule) ; rend ses jetons, ou null. */
+async function computePrefix(head, template) {
+  const pre = template(head, false);
+  if (prefix && sameIds(pre.input_ids.data, prefix.ids)) return prefix.ids;   // déjà calculé
+  // Un seul jeton généré : l'état rendu est celui d'après le préfixe, avant ce jeton.
+  const { past_key_values: cache } = await generator.model.generate({
+    ...pre, max_new_tokens: 1, do_sample: false, return_dict_in_generate: true,
+  });
+  if (!shareable(cache)) {
+    await cache.dispose();
+    prefix = false;
+    return null;
+  }
+  prefix = { ids: pre.input_ids.data, cache };
+  return prefix.ids;
+}
+
+/**
+ * Calcul anticipé de l'état de la consigne, dès le modèle prêt (ou la langue changée) :
+ * pendant que l'utilisateur tape. Sans lui, la première question paie ce calcul — 29 s
+ * dans le moteur WASM sur un PC de bureau, davantage sur un téléphone.
+ */
+async function warm({ system, tools }) {
+  if (prefix === false || !generator || !system) return;
+  await computePrefix([{ role: "system", content: system }], chatTemplate(tools));
 }

@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { t, tn, useI18n } from "../i18n.js";
 import { launchNativeArNav } from "../utils.js";
 import { fetchWeather, getWeatherAdvice } from "../hooks/useWeather.js";
-import { loadModel, unloadModel, generateDetailed, chatModelMB, modelReport, forgetFailures } from "../ai/localModel.js";
+import { loadModel, unloadModel, generateDetailed, warmUp, chatModelMB, modelReport, forgetFailures } from "../ai/localModel.js";
 import { gpuSetAside } from "../ai/modelPolicy.js";
 import { systemPrompt, resolveModelOutput, explainFallback } from "../ai/assistant.js";
 import { Icon } from "../ui/icons.jsx";
@@ -177,6 +177,9 @@ function AIScreen({ stations, aiHistory, setAiHistory,
     return ()=>{ dead = true; unloadModel(); };
   },[chatOn, loadSeq]);
   useEffect(()=>{ if (!chatOn) setModelState("off"); },[chatOn]);
+  // Consigne calculée d'avance (processeur) : la première question ne paie plus ce calcul.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(()=>{ if (modelState === "ready") warmUp(systemPrompt(t)); },[modelState, lang]);
 
   // ── Message d'accueil proactif (localisé, sans emoji) ─────────────
   const initMsg = useMemo(()=>{

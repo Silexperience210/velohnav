@@ -23,6 +23,13 @@ export function reusablePrefix(full, prefix) {
   return prefix.length;
 }
 
+/** Mêmes jetons, dans le même ordre (le préfixe demandé est-il déjà calculé ?). */
+export function sameIds(a, b) {
+  if (!a || !b || a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
+
 /** Messages du préfixe : la consigne système seule, ou rien. */
 export const prefixMessages = (messages) => (messages?.[0]?.role === "system" && messages.length > 1 ? [messages[0]] : null);
 

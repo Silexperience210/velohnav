@@ -11,7 +11,6 @@ register("data:text/javascript," + encodeURIComponent(`
     return next(url, ctx);
   }`));
 const { AutoTokenizer, AutoModelForCausalLM, env } = await import("@huggingface/transformers");
-const { TOOLS } = await import("../../src/ai/tools.js");
 const { systemPrompt } = await import("../../src/ai/assistant.js");
 const { generationOptions } = await import("../../src/ai/localModel.js");
 const { MODEL } = await import("../../src/ai/modelPolicy.js");
@@ -24,9 +23,10 @@ env.localModelPath = `${process.env.HOME}/.cache/vn-models/`;
 const t = (k, p = {}) => String(fr[k] ?? k).replace(/\{(\w+)\}/g, (_, n) => p[n] ?? "");
 const tok = await AutoTokenizer.from_pretrained(MODEL.id);
 const model = await AutoModelForCausalLM.from_pretrained(MODEL.id, { dtype, device, session_options: { intraOpNumThreads: 1 } });
-const tools = TOOLS;
+// Comme AIScreen : les outils sont décrits dans la consigne, pas passés au gabarit.
+const tools = undefined;
 const system = { role: "system", content: systemPrompt(t) };
-const enc = (messages, gen) => tok.apply_chat_template(messages, { tools, add_generation_prompt: gen, return_dict: true });
+const enc = (messages, gen) => tok.apply_chat_template(messages, { ...(tools ? { tools } : {}), add_generation_prompt: gen, return_dict: true });
 
 // Même construction que modelWorker.complete : état pris à la fin du préfixe.
 let a = performance.now();

@@ -75,5 +75,19 @@ async function run(label, messages, n) {
     + `décodage ${((total - prefill) / Math.max(1, gen - 1)).toFixed(0)} ms/jeton sur ${gen} jetons, total ${(total / 1000).toFixed(1)} s`);
 }
 await run("court (sans outils)", [{ role: "user", content: "Bonjour" }], 16);
-if (profile !== "1") await run("application (consigne + outils)", [{ role: "system", content: systemPrompt(t) }, { role: "user", content: "Bonjour" }], 16);
+if (profile !== "1") {
+  const app = [{ role: "system", content: systemPrompt(t) }, { role: "user", content: "Bonjour" }];
+  await run("application (consigne + outils)", app, 16);
+  // Même question, état de la consigne en cache (promptCache.js, comme modelWorker.complete).
+  const { prefixMessages, reusablePrefix, copyCache } = await import("../../src/ai/promptCache.js");
+  const pre = tok.apply_chat_template(prefixMessages(app), { add_generation_prompt: false, return_dict: true });
+  let a = performance.now();
+  const { past_key_values: cache } = await model.generate({ ...pre, max_new_tokens: 1, do_sample: false, return_dict_in_generate: true });
+  console.log(`préfixe : ${pre.input_ids.dims.at(-1)} jetons calculés une fois en ${((performance.now() - a) / 1000).toFixed(1)} s`);
+  const inputs = tok.apply_chat_template(app, { add_generation_prompt: true, return_dict: true });
+  console.log(`réutilisable : ${reusablePrefix(inputs.input_ids.data, pre.input_ids.data)} jetons`);
+  a = performance.now();
+  await model.generate({ ...inputs, past_key_values: copyCache(cache), max_new_tokens: 16, min_new_tokens: 16, do_sample: false });
+  console.log(`application, consigne en cache : 16 jetons en ${((performance.now() - a) / 1000).toFixed(1)} s`);
+}
 server.close();
