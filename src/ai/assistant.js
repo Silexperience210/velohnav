@@ -22,9 +22,7 @@ import {
 } from "./localAnswers.js";
 
 // tojson du gabarit de LFM2.5 : séparateurs « , » et « : » espacés, comme en Python.
-const tojson = (v) => (Array.isArray(v) ? "[" + v.map(tojson).join(", ") + "]"
-  : v && typeof v === "object" ? "{" + Object.entries(v).map(([k, x]) => JSON.stringify(k) + ": " + tojson(x)).join(", ") + "}"
-  : JSON.stringify(v));
+import { pyJson as tojson } from "./chatTemplate.js";
 
 /**
  * Consigne système, outils compris, dans la langue de l'interface.

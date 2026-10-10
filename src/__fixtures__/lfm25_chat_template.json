@@ -1,0 +1,301 @@
+[
+ {
+  "name": "consigne de l'application + question",
+  "messages": [
+   {
+    "role": "system",
+    "content": "Tu es l'assistant d'une application de vélo au Luxembourg. Tu parles français et tu réponds TOUJOURS en français, même si on t'écrit en anglais. Appelle un outil quand la question correspond. N'écris jamais de nombre, d'heure ni de distance : seuls les outils les connaissent. Réponds en une ou deux phrases.\nList of tools: [{\"type\": \"function\", \"function\": {\"name\": \"find_station\", \"description\": \"Vel'OH! bike-share station: bikes, e-bikes and free docks. With name: that station. Without name: the nearest one having what the user needs.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"name\": {\"type\": \"string\", \"description\": \"Station name if the user gave one, e.g. Gare, Hamilius\"}, \"need\": {\"type\": \"string\", \"enum\": [\"bike\", \"ebike\", \"dock\"], \"description\": \"bike to take a bike, ebike for an electric bike, dock to return or park a bike\"}}, \"required\": []}}}, {\"type\": \"function\", \"function\": {\"name\": \"list_stations\", \"description\": \"List the closest Vel'OH! stations with their bikes and docks.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"limit\": {\"type\": \"integer\", \"minimum\": 1, \"maximum\": 5, \"description\": \"How many stations (1-5)\"}}, \"required\": []}}}, {\"type\": \"function\", \"function\": {\"name\": \"next_departures\", \"description\": \"Next public transport departures (bus or tram) at a stop near the user, real-time when available. Not for travel time.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"mode\": {\"type\": \"string\", \"enum\": [\"bus\", \"tram\"]}, \"stop\": {\"type\": \"string\", \"description\": \"Stop name, if the user gave one\"}}, \"required\": []}}}, {\"type\": \"function\", \"function\": {\"name\": \"weather\", \"description\": \"Current weather, rain forecast for the next hours and the cycling score (is it a good time to ride).\", \"parameters\": {\"type\": \"object\", \"properties\": {}, \"required\": []}}}, {\"type\": \"function\", \"function\": {\"name\": \"route\", \"description\": \"How far and how long it takes to get to a place by bike or on foot.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"destination\": {\"type\": \"string\", \"description\": \"Place name\"}, \"mode\": {\"type\": \"string\", \"enum\": [\"bicycling\", \"walking\"]}}, \"required\": [\"destination\"]}}}, {\"type\": \"function\", \"function\": {\"name\": \"start_navigation\", \"description\": \"Start AR turn-by-turn guidance to a place, when the user asks to be guided, taken or brought somewhere.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"destination\": {\"type\": \"string\", \"description\": \"Place name\"}, \"mode\": {\"type\": \"string\", \"enum\": [\"bicycling\", \"walking\"]}}, \"required\": [\"destination\"]}}}]\nRéponds toujours en français."
+   },
+   {
+    "role": "user",
+    "content": "bonjour"
+   }
+  ],
+  "addGenerationPrompt": true,
+  "expected": "<|startoftext|><|im_start|>system\nTu es l'assistant d'une application de vélo au Luxembourg. Tu parles français et tu réponds TOUJOURS en français, même si on t'écrit en anglais. Appelle un outil quand la question correspond. N'écris jamais de nombre, d'heure ni de distance : seuls les outils les connaissent. Réponds en une ou deux phrases.\nList of tools: [{\"type\": \"function\", \"function\": {\"name\": \"find_station\", \"description\": \"Vel'OH! bike-share station: bikes, e-bikes and free docks. With name: that station. Without name: the nearest one having what the user needs.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"name\": {\"type\": \"string\", \"description\": \"Station name if the user gave one, e.g. Gare, Hamilius\"}, \"need\": {\"type\": \"string\", \"enum\": [\"bike\", \"ebike\", \"dock\"], \"description\": \"bike to take a bike, ebike for an electric bike, dock to return or park a bike\"}}, \"required\": []}}}, {\"type\": \"function\", \"function\": {\"name\": \"list_stations\", \"description\": \"List the closest Vel'OH! stations with their bikes and docks.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"limit\": {\"type\": \"integer\", \"minimum\": 1, \"maximum\": 5, \"description\": \"How many stations (1-5)\"}}, \"required\": []}}}, {\"type\": \"function\", \"function\": {\"name\": \"next_departures\", \"description\": \"Next public transport departures (bus or tram) at a stop near the user, real-time when available. Not for travel time.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"mode\": {\"type\": \"string\", \"enum\": [\"bus\", \"tram\"]}, \"stop\": {\"type\": \"string\", \"description\": \"Stop name, if the user gave one\"}}, \"required\": []}}}, {\"type\": \"function\", \"function\": {\"name\": \"weather\", \"description\": \"Current weather, rain forecast for the next hours and the cycling score (is it a good time to ride).\", \"parameters\": {\"type\": \"object\", \"properties\": {}, \"required\": []}}}, {\"type\": \"function\", \"function\": {\"name\": \"route\", \"description\": \"How far and how long it takes to get to a place by bike or on foot.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"destination\": {\"type\": \"string\", \"description\": \"Place name\"}, \"mode\": {\"type\": \"string\", \"enum\": [\"bicycling\", \"walking\"]}}, \"required\": [\"destination\"]}}}, {\"type\": \"function\", \"function\": {\"name\": \"start_navigation\", \"description\": \"Start AR turn-by-turn guidance to a place, when the user asks to be guided, taken or brought somewhere.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"destination\": {\"type\": \"string\", \"description\": \"Place name\"}, \"mode\": {\"type\": \"string\", \"enum\": [\"bicycling\", \"walking\"]}}, \"required\": [\"destination\"]}}}]\nRéponds toujours en français.<|im_end|>\n<|im_start|>user\nbonjour<|im_end|>\n<|im_start|>assistant\n"
+ },
+ {
+  "name": "multi-tours",
+  "messages": [
+   {
+    "role": "system",
+    "content": "Tu es l'assistant d'une application de vélo au Luxembourg. Tu parles français et tu réponds TOUJOURS en français, même si on t'écrit en anglais. Appelle un outil quand la question correspond. N'écris jamais de nombre, d'heure ni de distance : seuls les outils les connaissent. Réponds en une ou deux phrases.\nList of tools: [{\"type\": \"function\", \"function\": {\"name\": \"find_station\", \"description\": \"Vel'OH! bike-share station: bikes, e-bikes and free docks. With name: that station. Without name: the nearest one having what the user needs.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"name\": {\"type\": \"string\", \"description\": \"Station name if the user gave one, e.g. Gare, Hamilius\"}, \"need\": {\"type\": \"string\", \"enum\": [\"bike\", \"ebike\", \"dock\"], \"description\": \"bike to take a bike, ebike for an electric bike, dock to return or park a bike\"}}, \"required\": []}}}, {\"type\": \"function\", \"function\": {\"name\": \"list_stations\", \"description\": \"List the closest Vel'OH! stations with their bikes and docks.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"limit\": {\"type\": \"integer\", \"minimum\": 1, \"maximum\": 5, \"description\": \"How many stations (1-5)\"}}, \"required\": []}}}, {\"type\": \"function\", \"function\": {\"name\": \"next_departures\", \"description\": \"Next public transport departures (bus or tram) at a stop near the user, real-time when available. Not for travel time.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"mode\": {\"type\": \"string\", \"enum\": [\"bus\", \"tram\"]}, \"stop\": {\"type\": \"string\", \"description\": \"Stop name, if the user gave one\"}}, \"required\": []}}}, {\"type\": \"function\", \"function\": {\"name\": \"weather\", \"description\": \"Current weather, rain forecast for the next hours and the cycling score (is it a good time to ride).\", \"parameters\": {\"type\": \"object\", \"properties\": {}, \"required\": []}}}, {\"type\": \"function\", \"function\": {\"name\": \"route\", \"description\": \"How far and how long it takes to get to a place by bike or on foot.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"destination\": {\"type\": \"string\", \"description\": \"Place name\"}, \"mode\": {\"type\": \"string\", \"enum\": [\"bicycling\", \"walking\"]}}, \"required\": [\"destination\"]}}}, {\"type\": \"function\", \"function\": {\"name\": \"start_navigation\", \"description\": \"Start AR turn-by-turn guidance to a place, when the user asks to be guided, taken or brought somewhere.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"destination\": {\"type\": \"string\", \"description\": \"Place name\"}, \"mode\": {\"type\": \"string\", \"enum\": [\"bicycling\", \"walking\"]}}, \"required\": [\"destination\"]}}}]\nRéponds toujours en français."
+   },
+   {
+    "role": "user",
+    "content": "Je suis Silex"
+   },
+   {
+    "role": "assistant",
+    "content": "Enchanté !"
+   },
+   {
+    "role": "user",
+    "content": "il pleut ?"
+   }
+  ],
+  "addGenerationPrompt": true,
+  "expected": "<|startoftext|><|im_start|>system\nTu es l'assistant d'une application de vélo au Luxembourg. Tu parles français et tu réponds TOUJOURS en français, même si on t'écrit en anglais. Appelle un outil quand la question correspond. N'écris jamais de nombre, d'heure ni de distance : seuls les outils les connaissent. Réponds en une ou deux phrases.\nList of tools: [{\"type\": \"function\", \"function\": {\"name\": \"find_station\", \"description\": \"Vel'OH! bike-share station: bikes, e-bikes and free docks. With name: that station. Without name: the nearest one having what the user needs.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"name\": {\"type\": \"string\", \"description\": \"Station name if the user gave one, e.g. Gare, Hamilius\"}, \"need\": {\"type\": \"string\", \"enum\": [\"bike\", \"ebike\", \"dock\"], \"description\": \"bike to take a bike, ebike for an electric bike, dock to return or park a bike\"}}, \"required\": []}}}, {\"type\": \"function\", \"function\": {\"name\": \"list_stations\", \"description\": \"List the closest Vel'OH! stations with their bikes and docks.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"limit\": {\"type\": \"integer\", \"minimum\": 1, \"maximum\": 5, \"description\": \"How many stations (1-5)\"}}, \"required\": []}}}, {\"type\": \"function\", \"function\": {\"name\": \"next_departures\", \"description\": \"Next public transport departures (bus or tram) at a stop near the user, real-time when available. Not for travel time.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"mode\": {\"type\": \"string\", \"enum\": [\"bus\", \"tram\"]}, \"stop\": {\"type\": \"string\", \"description\": \"Stop name, if the user gave one\"}}, \"required\": []}}}, {\"type\": \"function\", \"function\": {\"name\": \"weather\", \"description\": \"Current weather, rain forecast for the next hours and the cycling score (is it a good time to ride).\", \"parameters\": {\"type\": \"object\", \"properties\": {}, \"required\": []}}}, {\"type\": \"function\", \"function\": {\"name\": \"route\", \"description\": \"How far and how long it takes to get to a place by bike or on foot.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"destination\": {\"type\": \"string\", \"description\": \"Place name\"}, \"mode\": {\"type\": \"string\", \"enum\": [\"bicycling\", \"walking\"]}}, \"required\": [\"destination\"]}}}, {\"type\": \"function\", \"function\": {\"name\": \"start_navigation\", \"description\": \"Start AR turn-by-turn guidance to a place, when the user asks to be guided, taken or brought somewhere.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"destination\": {\"type\": \"string\", \"description\": \"Place name\"}, \"mode\": {\"type\": \"string\", \"enum\": [\"bicycling\", \"walking\"]}}, \"required\": [\"destination\"]}}}]\nRéponds toujours en français.<|im_end|>\n<|im_start|>user\nJe suis Silex<|im_end|>\n<|im_start|>assistant\nEnchanté !<|im_end|>\n<|im_start|>user\nil pleut ?<|im_end|>\n<|im_start|>assistant\n"
+ },
+ {
+  "name": "réflexion retirée des anciens tours",
+  "messages": [
+   {
+    "role": "user",
+    "content": "a"
+   },
+   {
+    "role": "assistant",
+    "content": "<think>x</think> b"
+   },
+   {
+    "role": "user",
+    "content": "c"
+   },
+   {
+    "role": "assistant",
+    "content": "<think>y</think>d"
+   }
+  ],
+  "addGenerationPrompt": true,
+  "expected": "<|startoftext|><|im_start|>user\na<|im_end|>\n<|im_start|>assistant\nb<|im_end|>\n<|im_start|>user\nc<|im_end|>\n<|im_start|>assistant\n<think>y</think>d<|im_end|>\n<|im_start|>assistant\n"
+ },
+ {
+  "name": "option tools du gabarit",
+  "messages": [
+   {
+    "role": "system",
+    "content": "Sois bref."
+   },
+   {
+    "role": "user",
+    "content": "vélo ?"
+   }
+  ],
+  "tools": [
+   {
+    "type": "function",
+    "function": {
+     "name": "find_station",
+     "description": "Vel'OH! bike-share station: bikes, e-bikes and free docks. With name: that station. Without name: the nearest one having what the user needs.",
+     "parameters": {
+      "type": "object",
+      "properties": {
+       "name": {
+        "type": "string",
+        "description": "Station name if the user gave one, e.g. Gare, Hamilius"
+       },
+       "need": {
+        "type": "string",
+        "enum": [
+         "bike",
+         "ebike",
+         "dock"
+        ],
+        "description": "bike to take a bike, ebike for an electric bike, dock to return or park a bike"
+       }
+      },
+      "required": []
+     }
+    }
+   },
+   {
+    "type": "function",
+    "function": {
+     "name": "list_stations",
+     "description": "List the closest Vel'OH! stations with their bikes and docks.",
+     "parameters": {
+      "type": "object",
+      "properties": {
+       "limit": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 5,
+        "description": "How many stations (1-5)"
+       }
+      },
+      "required": []
+     }
+    }
+   },
+   {
+    "type": "function",
+    "function": {
+     "name": "next_departures",
+     "description": "Next public transport departures (bus or tram) at a stop near the user, real-time when available. Not for travel time.",
+     "parameters": {
+      "type": "object",
+      "properties": {
+       "mode": {
+        "type": "string",
+        "enum": [
+         "bus",
+         "tram"
+        ]
+       },
+       "stop": {
+        "type": "string",
+        "description": "Stop name, if the user gave one"
+       }
+      },
+      "required": []
+     }
+    }
+   },
+   {
+    "type": "function",
+    "function": {
+     "name": "weather",
+     "description": "Current weather, rain forecast for the next hours and the cycling score (is it a good time to ride).",
+     "parameters": {
+      "type": "object",
+      "properties": {},
+      "required": []
+     }
+    }
+   },
+   {
+    "type": "function",
+    "function": {
+     "name": "route",
+     "description": "How far and how long it takes to get to a place by bike or on foot.",
+     "parameters": {
+      "type": "object",
+      "properties": {
+       "destination": {
+        "type": "string",
+        "description": "Place name"
+       },
+       "mode": {
+        "type": "string",
+        "enum": [
+         "bicycling",
+         "walking"
+        ]
+       }
+      },
+      "required": [
+       "destination"
+      ]
+     }
+    }
+   },
+   {
+    "type": "function",
+    "function": {
+     "name": "start_navigation",
+     "description": "Start AR turn-by-turn guidance to a place, when the user asks to be guided, taken or brought somewhere.",
+     "parameters": {
+      "type": "object",
+      "properties": {
+       "destination": {
+        "type": "string",
+        "description": "Place name"
+       },
+       "mode": {
+        "type": "string",
+        "enum": [
+         "bicycling",
+         "walking"
+        ]
+       }
+      },
+      "required": [
+       "destination"
+      ]
+     }
+    }
+   }
+  ],
+  "addGenerationPrompt": true,
+  "expected": "<|startoftext|><|im_start|>system\nSois bref.\nList of tools: [{\"type\": \"function\", \"function\": {\"name\": \"find_station\", \"description\": \"Vel'OH! bike-share station: bikes, e-bikes and free docks. With name: that station. Without name: the nearest one having what the user needs.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"name\": {\"type\": \"string\", \"description\": \"Station name if the user gave one, e.g. Gare, Hamilius\"}, \"need\": {\"type\": \"string\", \"enum\": [\"bike\", \"ebike\", \"dock\"], \"description\": \"bike to take a bike, ebike for an electric bike, dock to return or park a bike\"}}, \"required\": []}}}, {\"type\": \"function\", \"function\": {\"name\": \"list_stations\", \"description\": \"List the closest Vel'OH! stations with their bikes and docks.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"limit\": {\"type\": \"integer\", \"minimum\": 1, \"maximum\": 5, \"description\": \"How many stations (1-5)\"}}, \"required\": []}}}, {\"type\": \"function\", \"function\": {\"name\": \"next_departures\", \"description\": \"Next public transport departures (bus or tram) at a stop near the user, real-time when available. Not for travel time.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"mode\": {\"type\": \"string\", \"enum\": [\"bus\", \"tram\"]}, \"stop\": {\"type\": \"string\", \"description\": \"Stop name, if the user gave one\"}}, \"required\": []}}}, {\"type\": \"function\", \"function\": {\"name\": \"weather\", \"description\": \"Current weather, rain forecast for the next hours and the cycling score (is it a good time to ride).\", \"parameters\": {\"type\": \"object\", \"properties\": {}, \"required\": []}}}, {\"type\": \"function\", \"function\": {\"name\": \"route\", \"description\": \"How far and how long it takes to get to a place by bike or on foot.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"destination\": {\"type\": \"string\", \"description\": \"Place name\"}, \"mode\": {\"type\": \"string\", \"enum\": [\"bicycling\", \"walking\"]}}, \"required\": [\"destination\"]}}}, {\"type\": \"function\", \"function\": {\"name\": \"start_navigation\", \"description\": \"Start AR turn-by-turn guidance to a place, when the user asks to be guided, taken or brought somewhere.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"destination\": {\"type\": \"string\", \"description\": \"Place name\"}, \"mode\": {\"type\": \"string\", \"enum\": [\"bicycling\", \"walking\"]}}, \"required\": [\"destination\"]}}}]<|im_end|>\n<|im_start|>user\nvélo ?<|im_end|>\n<|im_start|>assistant\n"
+ },
+ {
+  "name": "tools sans consigne",
+  "messages": [
+   {
+    "role": "user",
+    "content": "vélo ?"
+   }
+  ],
+  "tools": [
+   {
+    "type": "function",
+    "function": {
+     "name": "find_station",
+     "description": "Vel'OH! bike-share station: bikes, e-bikes and free docks. With name: that station. Without name: the nearest one having what the user needs.",
+     "parameters": {
+      "type": "object",
+      "properties": {
+       "name": {
+        "type": "string",
+        "description": "Station name if the user gave one, e.g. Gare, Hamilius"
+       },
+       "need": {
+        "type": "string",
+        "enum": [
+         "bike",
+         "ebike",
+         "dock"
+        ],
+        "description": "bike to take a bike, ebike for an electric bike, dock to return or park a bike"
+       }
+      },
+      "required": []
+     }
+    }
+   },
+   {
+    "type": "function",
+    "function": {
+     "name": "list_stations",
+     "description": "List the closest Vel'OH! stations with their bikes and docks.",
+     "parameters": {
+      "type": "object",
+      "properties": {
+       "limit": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 5,
+        "description": "How many stations (1-5)"
+       }
+      },
+      "required": []
+     }
+    }
+   }
+  ],
+  "addGenerationPrompt": true,
+  "expected": "<|startoftext|><|im_start|>system\nList of tools: [{\"type\": \"function\", \"function\": {\"name\": \"find_station\", \"description\": \"Vel'OH! bike-share station: bikes, e-bikes and free docks. With name: that station. Without name: the nearest one having what the user needs.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"name\": {\"type\": \"string\", \"description\": \"Station name if the user gave one, e.g. Gare, Hamilius\"}, \"need\": {\"type\": \"string\", \"enum\": [\"bike\", \"ebike\", \"dock\"], \"description\": \"bike to take a bike, ebike for an electric bike, dock to return or park a bike\"}}, \"required\": []}}}, {\"type\": \"function\", \"function\": {\"name\": \"list_stations\", \"description\": \"List the closest Vel'OH! stations with their bikes and docks.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"limit\": {\"type\": \"integer\", \"minimum\": 1, \"maximum\": 5, \"description\": \"How many stations (1-5)\"}}, \"required\": []}}}]<|im_end|>\n<|im_start|>user\nvélo ?<|im_end|>\n<|im_start|>assistant\n"
+ },
+ {
+  "name": "sans invite de génération",
+  "messages": [
+   {
+    "role": "system",
+    "content": "Tu es l'assistant d'une application de vélo au Luxembourg. Tu parles français et tu réponds TOUJOURS en français, même si on t'écrit en anglais. Appelle un outil quand la question correspond. N'écris jamais de nombre, d'heure ni de distance : seuls les outils les connaissent. Réponds en une ou deux phrases.\nList of tools: [{\"type\": \"function\", \"function\": {\"name\": \"find_station\", \"description\": \"Vel'OH! bike-share station: bikes, e-bikes and free docks. With name: that station. Without name: the nearest one having what the user needs.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"name\": {\"type\": \"string\", \"description\": \"Station name if the user gave one, e.g. Gare, Hamilius\"}, \"need\": {\"type\": \"string\", \"enum\": [\"bike\", \"ebike\", \"dock\"], \"description\": \"bike to take a bike, ebike for an electric bike, dock to return or park a bike\"}}, \"required\": []}}}, {\"type\": \"function\", \"function\": {\"name\": \"list_stations\", \"description\": \"List the closest Vel'OH! stations with their bikes and docks.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"limit\": {\"type\": \"integer\", \"minimum\": 1, \"maximum\": 5, \"description\": \"How many stations (1-5)\"}}, \"required\": []}}}, {\"type\": \"function\", \"function\": {\"name\": \"next_departures\", \"description\": \"Next public transport departures (bus or tram) at a stop near the user, real-time when available. Not for travel time.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"mode\": {\"type\": \"string\", \"enum\": [\"bus\", \"tram\"]}, \"stop\": {\"type\": \"string\", \"description\": \"Stop name, if the user gave one\"}}, \"required\": []}}}, {\"type\": \"function\", \"function\": {\"name\": \"weather\", \"description\": \"Current weather, rain forecast for the next hours and the cycling score (is it a good time to ride).\", \"parameters\": {\"type\": \"object\", \"properties\": {}, \"required\": []}}}, {\"type\": \"function\", \"function\": {\"name\": \"route\", \"description\": \"How far and how long it takes to get to a place by bike or on foot.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"destination\": {\"type\": \"string\", \"description\": \"Place name\"}, \"mode\": {\"type\": \"string\", \"enum\": [\"bicycling\", \"walking\"]}}, \"required\": [\"destination\"]}}}, {\"type\": \"function\", \"function\": {\"name\": \"start_navigation\", \"description\": \"Start AR turn-by-turn guidance to a place, when the user asks to be guided, taken or brought somewhere.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"destination\": {\"type\": \"string\", \"description\": \"Place name\"}, \"mode\": {\"type\": \"string\", \"enum\": [\"bicycling\", \"walking\"]}}, \"required\": [\"destination\"]}}}]\nRéponds toujours en français."
+   }
+  ],
+  "addGenerationPrompt": false,
+  "expected": "<|startoftext|><|im_start|>system\nTu es l'assistant d'une application de vélo au Luxembourg. Tu parles français et tu réponds TOUJOURS en français, même si on t'écrit en anglais. Appelle un outil quand la question correspond. N'écris jamais de nombre, d'heure ni de distance : seuls les outils les connaissent. Réponds en une ou deux phrases.\nList of tools: [{\"type\": \"function\", \"function\": {\"name\": \"find_station\", \"description\": \"Vel'OH! bike-share station: bikes, e-bikes and free docks. With name: that station. Without name: the nearest one having what the user needs.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"name\": {\"type\": \"string\", \"description\": \"Station name if the user gave one, e.g. Gare, Hamilius\"}, \"need\": {\"type\": \"string\", \"enum\": [\"bike\", \"ebike\", \"dock\"], \"description\": \"bike to take a bike, ebike for an electric bike, dock to return or park a bike\"}}, \"required\": []}}}, {\"type\": \"function\", \"function\": {\"name\": \"list_stations\", \"description\": \"List the closest Vel'OH! stations with their bikes and docks.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"limit\": {\"type\": \"integer\", \"minimum\": 1, \"maximum\": 5, \"description\": \"How many stations (1-5)\"}}, \"required\": []}}}, {\"type\": \"function\", \"function\": {\"name\": \"next_departures\", \"description\": \"Next public transport departures (bus or tram) at a stop near the user, real-time when available. Not for travel time.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"mode\": {\"type\": \"string\", \"enum\": [\"bus\", \"tram\"]}, \"stop\": {\"type\": \"string\", \"description\": \"Stop name, if the user gave one\"}}, \"required\": []}}}, {\"type\": \"function\", \"function\": {\"name\": \"weather\", \"description\": \"Current weather, rain forecast for the next hours and the cycling score (is it a good time to ride).\", \"parameters\": {\"type\": \"object\", \"properties\": {}, \"required\": []}}}, {\"type\": \"function\", \"function\": {\"name\": \"route\", \"description\": \"How far and how long it takes to get to a place by bike or on foot.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"destination\": {\"type\": \"string\", \"description\": \"Place name\"}, \"mode\": {\"type\": \"string\", \"enum\": [\"bicycling\", \"walking\"]}}, \"required\": [\"destination\"]}}}, {\"type\": \"function\", \"function\": {\"name\": \"start_navigation\", \"description\": \"Start AR turn-by-turn guidance to a place, when the user asks to be guided, taken or brought somewhere.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"destination\": {\"type\": \"string\", \"description\": \"Place name\"}, \"mode\": {\"type\": \"string\", \"enum\": [\"bicycling\", \"walking\"]}}, \"required\": [\"destination\"]}}}]\nRéponds toujours en français.<|im_end|>\n"
+ },
+ {
+  "name": "rôle tool",
+  "messages": [
+   {
+    "role": "user",
+    "content": "q"
+   },
+   {
+    "role": "assistant",
+    "content": "<|tool_call_start|>[weather()]<|tool_call_end|>"
+   },
+   {
+    "role": "tool",
+    "content": "{\"ok\": true}"
+   }
+  ],
+  "addGenerationPrompt": true,
+  "expected": "<|startoftext|><|im_start|>user\nq<|im_end|>\n<|im_start|>assistant\n<|tool_call_start|>[weather()]<|tool_call_end|><|im_end|>\n<|im_start|>tool\n{\"ok\": true}<|im_end|>\n<|im_start|>assistant\n"
+ }
+]
