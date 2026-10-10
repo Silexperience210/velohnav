@@ -57,6 +57,14 @@ android {
                               "-DVH_SPIRV_HEADERS_DIR=${project.findProperty('VH_SPIRV_HEADERS_DIR') ?: ''}"
                 }
             }
+            // Le moteur natif n'existe qu'en arm64-v8a : embarquer en plus x86, x86_64 et
+            // armeabi-v7a (bibliothèques précompilées ARCore/filament) coûtait ~7 Mo
+            // compressés sans servir aucun téléphone. La construction native est donc
+            // arm64 seule — de toute façon liée à un appareil réel. Sans -PvhNative, la
+            // construction reste multi-ABI comme avant.
+            ndk {
+                abiFilters 'arm64-v8a'
+            }
         }
     }
 

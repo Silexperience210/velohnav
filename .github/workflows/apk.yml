@@ -99,9 +99,13 @@ jobs:
       - name: NDK 28 + CMake 3.31 (moteur natif)
         if: steps.native.outputs.flag != ''
         run: |
-          set -euo pipefail
+          set -uo pipefail
           SDKMANAGER="$(command -v sdkmanager || echo "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager")"
-          yes | "$SDKMANAGER" --install "ndk;28.2.13676358" "cmake;3.31.6" > /dev/null
+          # `yes |` alimente l'acceptation des licences : sdkmanager ferme le tube en
+          # sortant, donc `yes` meurt en 141 « Broken pipe » — échec parasite avec
+          # pipefail. L'installation est vérifiée juste après par les ls -d.
+          yes | "$SDKMANAGER" --install "ndk;28.2.13676358" "cmake;3.31.6" > /dev/null 2>&1 || true
+          set -e
           ls -d "$ANDROID_HOME/ndk/28.2.13676358" "$ANDROID_HOME/cmake/3.31.6"
 
       # Keystore de debug FIXE (optionnel). Sans lui, le runner en génère un neuf
