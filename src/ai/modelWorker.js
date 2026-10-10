@@ -28,7 +28,6 @@ const CACHE_NAME = "transformers-cache";
 // Imports littéraux : Vite doit voir chaque moteur pour embarquer son binaire.
 const ENGINE_MODULES = {
   [ENGINES.webgpu.module]: () => import("onnxruntime-web/webgpu"),
-  [ENGINES.jsep.module]: () => import("onnxruntime-web/all"),
   [ENGINES.wasm.module]: () => import("onnxruntime-web/wasm"),
 };
 

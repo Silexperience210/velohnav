@@ -79,22 +79,21 @@ export const VARIANTS = Object.freeze({
 export const ENGINE_SLOT = Symbol.for("velohnav.ort-engine");
 
 /**
- * Moteurs onnxruntime-web, un par build (chacun a son binaire WASM) :
- *  - webgpu : l'EP WebGPU natif (build « asyncify »), celui qu'importe transformers.js.
- *    Son binaire n'a PAS de noyau processeur GatherBlockQuantized : il ne sait faire
- *    tourner ce modèle que sur le GPU ;
- *  - jsep : l'EP WebGPU historique, écrit en JavaScript (build « all », binaire
- *    .jsep.wasm). Seconde implémentation WebGPU, indépendante de la première : autres
- *    shaders, autre gestion des tampons. Un pilote mobile qui refuse l'une peut accepter
- *    l'autre — c'est la raison de sa présence ; ce n'est PAS mesuré sur téléphone ;
- *  - wasm : processeur seul (build « wasm »), noyaux GatherBlockQuantized présents.
+ * Moteurs onnxruntime-web, un par build (chacun a son binaire WASM, embarqué dans l'APK) :
+ *  - webgpu : l'EP WebGPU natif (build « asyncify », 26,9 Mo), celui qu'importe
+ *    transformers.js. Son binaire n'a PAS de noyau processeur GatherBlockQuantized : il
+ *    ne sait faire tourner ce modèle que sur le GPU ;
+ *  - wasm : processeur seul (build « wasm », 14,3 Mo), noyaux GatherBlockQuantized présents.
  * Relevé dans les binaires d'onnxruntime-web 1.31 : GatherBlockQuantized<uint8, int64>
  * (indices int64 du modèle) existe dans ort-wasm-simd-threaded.wasm, pas dans
  * .asyncify.wasm.
+ *
+ * Le build « all » (EP WebGPU JSEP, binaire .jsep.wasm de 28,4 Mo) n'est PAS embarqué :
+ * seconde implémentation WebGPU, jamais mesurée sur téléphone, elle portait l'APK
+ * au-delà de 50 Mo (limite d'envoi Telegram). Un seul moteur par voie : GPU, processeur.
  */
 export const ENGINES = Object.freeze({
   webgpu: Object.freeze({ id: "webgpu", module: "webgpu", device: "webgpu" }),
-  jsep:   Object.freeze({ id: "jsep",   module: "all",    device: "webgpu" }),
   wasm:   Object.freeze({ id: "wasm",   module: "wasm",   device: "wasm" }),
 });
 
@@ -196,13 +195,12 @@ const mib = (n) => (typeof n === "number" ? `${Math.round(n / 1048576)} MiB` : "
 // préférence, du plus léger au plus sûr, établi au banc (docs/MODELE.md) :
 //
 //   q4f16 / EP WebGPU natif   255 Mo, le plus rapide quand le GPU calcule en fp16
-//   q4f16 / EP WebGPU JSEP    mêmes fichiers, autre implémentation WebGPU
 //   q4    / EP WebGPU natif   294 Mo, calcul fp32 : n'exige pas shader-f16
-//   q4    / EP WebGPU JSEP    mêmes fichiers
 //   q4    / processeur        mêmes fichiers : le repli, qui ne demande rien au GPU
 //
-// Les deux moteurs GPU d'un même dtype partagent leurs fichiers. q4 sert au GPU comme au processeur : passer d'une tentative à la suivante ne retélécharge jamais un
-// fichier déjà en cache. Seul le passage q4f16 → q4 télécharge (294 Mo).
+// q4 sert au GPU comme au processeur : passer d'une tentative à la suivante ne
+// retélécharge jamais un fichier déjà en cache. Seul le passage q4f16 → q4 télécharge
+// (294 Mo).
 //
 // fp16 (725 Mo, model_fp16) n'est PAS dans l'échelle : pic mémoire estimé 2,5 Go
 // (MEMORY.peakFactor), hors de portée des téléphones visés (1,4 Go libres chez le
@@ -211,9 +209,7 @@ const mib = (n) => (typeof n === "number" ? `${Math.round(n / 1048576)} MiB` : "
 const attempt = (variant, engine) => Object.freeze({ id: `${variant.dtype}/${engine.id}`, variant, engine });
 export const ATTEMPTS = Object.freeze([
   attempt(VARIANTS.webgpu, ENGINES.webgpu),
-  attempt(VARIANTS.webgpu, ENGINES.jsep),
   attempt(VARIANTS.webgpuQ4, ENGINES.webgpu),
-  attempt(VARIANTS.webgpuQ4, ENGINES.jsep),
   attempt(VARIANTS.wasm, ENGINES.wasm),
 ]);
 export const attemptById = (id) => ATTEMPTS.find((a) => a.id === id) || null;
@@ -221,6 +217,9 @@ export const attemptById = (id) => ATTEMPTS.find((a) => a.id === id) || null;
 /**
  * Version de l'échelle : un échec mémorisé ne vaut que pour la même échelle, le même
  * modèle et le même GPU. Changer de moteur ou d'export redonne sa chance à chacun.
+ * Le retrait du moteur JSEP ne la change PAS : les tentatives restantes sont identiques,
+ * et rejouer un échec q4f16 déjà constaté retéléchargerait 255 Mo pour rien. Les
+ * échecs « …/jsep » mémorisés sont simplement ignorés (absents de ATTEMPTS).
  */
 export const LADDER_VERSION = 3;
 

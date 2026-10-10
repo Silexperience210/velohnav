@@ -81,8 +81,10 @@ describe("sonde WebGPU : la présence d'un adaptateur ne suffit pas", () => {
 const ids = (plan) => plan.queue.map((a) => a.id);
 
 describe("échelle des tentatives : le GPU d'abord, le processeur toujours en dernier", () => {
-  it("ordre : q4f16 (natif, JSEP), q4 (natif, JSEP), puis processeur", () => {
-    expect(ATTEMPTS.map((a) => a.id)).toEqual(["q4f16/webgpu", "q4f16/jsep", "q4/webgpu", "q4/jsep", "q4/wasm"]);
+  it("ordre : q4f16 sur le GPU, q4 sur le GPU, puis processeur — un seul moteur par voie", () => {
+    expect(ATTEMPTS.map((a) => a.id)).toEqual(["q4f16/webgpu", "q4/webgpu", "q4/wasm"]);
+    // le moteur JSEP (build « all », 28,4 Mo) n'est plus embarqué : aucune tentative ne le demande
+    expect(Object.keys(ENGINES).sort()).toEqual(["wasm", "webgpu"]);
   });
 
   it("GPU complet : toute l'échelle est tentée, dans l'ordre", () => {
@@ -91,11 +93,8 @@ describe("échelle des tentatives : le GPU d'abord, le processeur toujours en de
 
   it("vrai GPU sans shader-f16 (mesuré sur RTX 3060 / Chrome 151) : q4 sur le GPU d'abord, q4f16 écarté et dit pourquoi", () => {
     const p = planAttempts({ probe: goodProbe({ features: ["subgroups"] }) });
-    expect(ids(p)).toEqual(["q4/webgpu", "q4/jsep", "q4/wasm"]);
-    expect(p.skipped).toEqual([
-      { id: "q4f16/webgpu", reason: "no-shader-f16" },
-      { id: "q4f16/jsep", reason: "no-shader-f16" },
-    ]);
+    expect(ids(p)).toEqual(["q4/webgpu", "q4/wasm"]);
+    expect(p.skipped).toEqual([{ id: "q4f16/webgpu", reason: "no-shader-f16" }]);
   });
 
   it("pas de WebGPU, adaptateur logiciel ou device refusé : processeur seul", () => {
@@ -105,7 +104,7 @@ describe("échelle des tentatives : le GPU d'abord, le processeur toujours en de
   });
 
   it("tentatives déjà en échec ici : sautées, avec leur raison", () => {
-    const p = planAttempts({ probe: goodProbe(), failed: { "q4f16/webgpu": "Sub requires f16", "q4f16/jsep": "self-test no-word" } });
+    const p = planAttempts({ probe: goodProbe(), failed: { "q4f16/webgpu": "Sub requires f16" } });
     expect(ids(p)[0]).toBe("q4/webgpu");
     expect(p.skipped[0]).toEqual({ id: "q4f16/webgpu", reason: "failed-before: Sub requires f16" });
   });
@@ -119,9 +118,9 @@ describe("échelle des tentatives : le GPU d'abord, le processeur toujours en de
     expect(planAttempts({ probe: goodProbe(), failed }).queue).toEqual([]);
   });
 
-  it("les tentatives d'un même dtype partagent leurs fichiers ; q4 sert au GPU et au processeur", () => {
+  it("q4 sert au GPU et au processeur : mêmes fichiers", () => {
     expect(VARIANTS.webgpuQ4.files).toEqual(VARIANTS.wasm.files);
-    expect(attemptById("q4f16/webgpu").variant.files).toEqual(attemptById("q4f16/jsep").variant.files);
+    expect(attemptById("q4/webgpu").variant.files).toEqual(attemptById("q4/wasm").variant.files);
     expect(variantFor("webgpu", "q4")).toBe(VARIANTS.webgpuQ4);
     expect(variantFor("webgpu")).toBe(VARIANTS.webgpu);
     expect(variantFor("wasm", "q4")).toBe(VARIANTS.wasm);
@@ -149,13 +148,20 @@ describe("échecs mémorisés : liés au modèle, à l'échelle et au GPU", () =
     expect(failureRecord({ stored, fingerprint: "autre" })).toEqual({});
   });
 
+  it("échecs « …/jsep » mémorisés avant le retrait de ce moteur : sans effet sur l'échelle", () => {
+    const stored = JSON.stringify({ fingerprint: fp, failed: { "q4f16/jsep": "x", "q4/jsep": "y" } });
+    const p = planAttempts({ probe: goodProbe(), failed: failureRecord({ stored, fingerprint: fp }) });
+    expect(ids(p)).toEqual(["q4f16/webgpu", "q4/webgpu", "q4/wasm"]);
+    expect(p.skipped).toEqual([]);
+  });
+
   it("stockage illisible : rien de mémorisé", () => {
     expect(failureRecord({ stored: "{", fingerprint: fp })).toEqual({});
   });
 
-  it("ancien « fp16 en échec » : q4f16 écarté sous les deux moteurs (fichiers purgés, pas de second téléchargement)", () => {
+  it("ancien « fp16 en échec » : q4f16 écarté (fichiers purgés, pas de second téléchargement)", () => {
     const f = failureRecord({ stored: null, legacyF16: "Sub requires f16", fingerprint: fp });
-    expect(Object.keys(f).sort()).toEqual(["q4f16/jsep", "q4f16/webgpu"]);
+    expect(Object.keys(f)).toEqual(["q4f16/webgpu"]);
     expect(planAttempts({ probe: goodProbe(), failed: f }).queue[0].id).toBe("q4/webgpu");
   });
 });
@@ -275,15 +281,14 @@ describe("après l'échec d'une tentative : la suivante part d'elle-même", () =
     }
   });
 
-  it("q4f16 purgé seulement quand ses DEUX moteurs ont échoué", () => {
-    expect(classifyFailure({ attempt: A("q4f16/webgpu"), phase: "init" }).purgeDtype).toBeNull();
-    expect(classifyFailure({ attempt: A("q4f16/jsep"), phase: "init", failed: { "q4f16/webgpu": "x" } }).purgeDtype).toBe("q4f16");
+  it("q4f16 purgé dès que sa tentative GPU a échoué (plus aucune ne s'en sert)", () => {
+    expect(classifyFailure({ attempt: A("q4f16/webgpu"), phase: "init" }).purgeDtype).toBe("q4f16");
   });
 
   it("q4 jamais purgé : le processeur s'en sert", () => {
-    const failed = { "q4/webgpu": "x", "q4/jsep": "x" };
+    const failed = { "q4/webgpu": "x" };
     expect(classifyFailure({ attempt: A("q4/wasm"), phase: "init", failed }).purgeDtype).toBeNull();
-    expect(classifyFailure({ attempt: A("q4/jsep"), phase: "init", failed: { "q4/webgpu": "x" } }).purgeDtype).toBeNull();
+    expect(classifyFailure({ attempt: A("q4/webgpu"), phase: "init" }).purgeDtype).toBeNull();
   });
 
   it("une coupure réseau ne condamne rien et arrête l'échelle (reprise au même endroit)", () => {

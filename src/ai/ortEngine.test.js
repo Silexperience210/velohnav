@@ -13,10 +13,17 @@ describe("plugin ortEngine : transformers.js reçoit le moteur choisi par le wor
 
   it("les imports du worker (un build par moteur) ne sont pas touchés", () => {
     const p = ortEngine();
-    for (const id of ["onnxruntime-web/webgpu", "onnxruntime-web/all", "onnxruntime-web/wasm"]) {
+    for (const id of ["onnxruntime-web/webgpu", "onnxruntime-web/wasm"]) {
       expect(p.resolveId(id, "/app/src/ai/modelWorker.js")).toBeNull();
     }
     expect(p.resolveId("onnxruntime-web/wasm", TF)).toBeNull();
+  });
+
+  it("le build échoue sur les builds « all » / par défaut : leur binaire JSEP (28 Mo) n'entre pas dans l'APK", () => {
+    for (const id of ["onnxruntime-web", "onnxruntime-web/all"]) {
+      expect(() => ortEngine().resolveId(id, "/app/src/ai/modelWorker.js")).toThrow(/JSEP/);
+      expect(() => ortEngine().resolveId(id, TF)).toThrow(/JSEP/);
+    }
   });
 
   it("le build échoue si transformers.js n'importe plus ce module (redirection perdue en silence)", () => {
