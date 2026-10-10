@@ -196,7 +196,9 @@ const mib = (n) => (typeof n === "number" ? `${Math.round(n / 1048576)} MiB` : "
 //
 //   q4f16 / EP WebGPU natif   255 Mo, le plus rapide quand le GPU calcule en fp16
 //   q4    / EP WebGPU natif   294 Mo, calcul fp32 : n'exige pas shader-f16
+//   q4    / GPU « sur »       mêmes fichiers, noyaux suspects évités (voir plus bas)
 //   q4    / processeur        mêmes fichiers : le repli, qui ne demande rien au GPU
+// Sur Adreno, les q4 GPU passent avant q4f16 (orderFor).
 //
 // q4 sert au GPU comme au processeur : passer d'une tentative à la suivante ne
 // retélécharge jamais un fichier déjà en cache. Seul le passage q4f16 → q4 télécharge
@@ -206,12 +208,80 @@ const mib = (n) => (typeof n === "number" ? `${Math.round(n / 1048576)} MiB` : "
 // (MEMORY.peakFactor), hors de portée des téléphones visés (1,4 Go libres chez le
 // propriétaire), et le décodage d'un petit modèle sur GPU mobile est borné par la
 // bande passante mémoire : 2,8 fois plus de poids à lire par jeton.
-const attempt = (variant, engine) => Object.freeze({ id: `${variant.dtype}/${engine.id}`, variant, engine });
+//
+// Réglages GPU (`gpu` de chaque tentative WebGPU), appliqués par le worker au device
+// et à la session — voir gpuDeviceRequest et gpuSessionOptions :
+//  - TOUJOURS sans « subgroups » : depuis onnxruntime-web 1.30, MatMulNBits (93 nœuds
+//    sur ce modèle, tous les produits 4 bits) prend une voie subgroupShuffle sur tout
+//    GPU non NVIDIA ayant cette fonction. Sur Adreno, elle rend des valeurs fausses
+//    (Adreno 660, Chrome 154) ou fait planter le compilateur de shaders (Adreno 750,
+//    Chrome 153/154) — relevé public, musetric#975 et #990 : sans subgroups, sortie
+//    conforme au processeur. C'est le symptôme du téléphone du propriétaire (Adreno,
+//    WebView 153) : q4f16 et q4 se chargent sur le GPU, puis « Bonjour » donne « 鹰 » et
+//    « 龙 ». Prix connu : jusqu'à ~30 % sur ce noyau ; NVIDIA n'empruntait pas la voie.
+//  - « sur » (repli GPU) : en plus, les Transpose du modèle (20, blocs conv) sur le
+//    processeur et la disposition NCHW (aucune transposition insérée autour des Conv).
+//    Le noyau Transpose à tuile partagée (tile_size + 1, présent dans ce build) perd une
+//    partie de sa sortie sur Adreno 660/730 (musetric#975, onnxsim#1993). Coûte des
+//    allers-retours GPU ↔ processeur par jeton : bien moins que le processeur seul.
+const attempt = (variant, engine, mode = "") => Object.freeze({
+  id: `${variant.dtype}/${engine.id}${mode ? `/${mode}` : ""}`, variant, engine,
+  ...(engine.device === "webgpu" ? { gpu: Object.freeze({ mode: mode || "base" }) } : {}),
+});
 export const ATTEMPTS = Object.freeze([
   attempt(VARIANTS.webgpu, ENGINES.webgpu),
   attempt(VARIANTS.webgpuQ4, ENGINES.webgpu),
+  attempt(VARIANTS.webgpuQ4, ENGINES.webgpu, "sur"),
   attempt(VARIANTS.wasm, ENGINES.wasm),
 ]);
+
+/**
+ * Transpose du graphe (blocs conv de LFM2.5, mêmes noms en q4 et q4f16), relevés dans
+ * model_q4.onnx et model_q4f16.onnx à la révision épinglée.
+ */
+export const TRANSPOSE_NODES = Object.freeze([0, 1, 3, 4, 6, 7, 9, 11, 13, 15]
+  .flatMap((l) => [`/model/layers.${l}/conv/Transpose_1`, `/model/layers.${l}/conv/Transpose_2`]));
+
+// Limites demandées au device : celles qu'onnxruntime demande lui-même pour son device
+// (au maximum de l'adaptateur), plus la taille des tampons.
+const GPU_LIMITS = Object.freeze([
+  "maxBufferSize", "maxStorageBufferBindingSize", "maxComputeWorkgroupStorageSize",
+  "maxComputeInvocationsPerWorkgroup", "maxComputeWorkgroupSizeX", "maxComputeWorkgroupSizeY",
+  "maxComputeWorkgroupSizeZ", "maxComputeWorkgroupsPerDimension", "maxStorageBuffersPerShaderStage",
+]);
+
+/**
+ * Demande de device WebGPU pour onnxruntime : toutes les fonctions de l'adaptateur SAUF
+ * les subgroups (voir plus haut), limites au maximum.
+ * @param {Iterable<string>} features adapter.features
+ * @param {Record<string, number>} limits adapter.limits
+ * @returns {{ requiredFeatures: string[], requiredLimits: Record<string, number>, dropped: string[] }}
+ */
+export function gpuDeviceRequest(features, limits) {
+  const all = [...(features || [])];
+  const requiredLimits = {};
+  for (const k of GPU_LIMITS) if (Number.isFinite(limits?.[k])) requiredLimits[k] = limits[k];
+  return {
+    requiredFeatures: all.filter((f) => !/subgroup/i.test(f)),
+    requiredLimits,
+    dropped: all.filter((f) => /subgroup/i.test(f)),
+  };
+}
+
+/**
+ * Options du fournisseur WebGPU d'onnxruntime pour une tentative (device fourni par le
+ * worker). q4f16 : accumulation des produits en fp32 — le fp16 des GPU mobiles perd les
+ * petites valeurs (sous-normaux lus comme zéro sur Adreno 660/750, musetric#975).
+ */
+export function gpuSessionOptions(a, device) {
+  const ep = { name: "webgpu", device };
+  if (a.variant.dtype === "q4f16") ep.enableMatmulFp32Accumulation = true;
+  if (a.gpu?.mode === "sur") {
+    ep.preferredLayout = "NCHW";
+    ep.forceCpuNodeNames = [...TRANSPOSE_NODES];
+  }
+  return { executionProviders: [ep] };
+}
 export const attemptById = (id) => ATTEMPTS.find((a) => a.id === id) || null;
 
 /**
@@ -221,7 +291,11 @@ export const attemptById = (id) => ATTEMPTS.find((a) => a.id === id) || null;
  * et rejouer un échec q4f16 déjà constaté retéléchargerait 255 Mo pour rien. Les
  * échecs « …/jsep » mémorisés sont simplement ignorés (absents de ATTEMPTS).
  */
-export const LADDER_VERSION = 3;
+//
+// 4 : device GPU sans subgroups et réglage « sur ». Les échecs GPU mémorisés l'avaient
+// été AVEC subgroups (« 鹰 », « 龙 » sur le téléphone) : ils ne disent plus rien, chaque
+// tentative GPU est rejouée une fois.
+export const LADDER_VERSION = 4;
 
 /**
  * Empreinte de l'appareil pour les échecs mémorisés : modèle, échelle, et GPU annoncé.
@@ -231,6 +305,29 @@ export function deviceFingerprint(probe) {
   const i = probe?.info || {};
   const gpu = probe?.adapter ? [i.vendor, i.architecture, i.device, i.description].filter(Boolean).join("/") || "gpu" : "no-gpu";
   return `${MODEL.revision.slice(0, 8)}|${LADDER_VERSION}|${gpu}`;
+}
+
+/** GPU Qualcomm (Adreno), d'après ce qu'annonce l'adaptateur. */
+export const isAdreno = (probe) => {
+  const i = probe?.info || {};
+  return /qualcomm|adreno/i.test(`${i.vendor} ${i.architecture} ${i.description}`);
+};
+
+/**
+ * Ordre des tentatives selon le GPU. Sur Adreno, q4 (calcul 32 bits) passe AVANT q4f16 :
+ * le fp16 y a des défauts relevés (sous-normaux à zéro, produits sous 2^-14 nuls :
+ * musetric#975), et q4 est déjà en cache (il sert au processeur) — rien à télécharger
+ * pour les deux premiers essais GPU (q4, puis q4 « sur ») ; q4f16 (255 Mo) ne se
+ * télécharge que s'ils ont échoué tous deux.
+ */
+function orderFor(probe) {
+  if (!isAdreno(probe)) return ATTEMPTS;
+  const gpu = (a) => a.engine.device === "webgpu";
+  return [
+    ...ATTEMPTS.filter((a) => gpu(a) && a.variant.dtype !== "q4f16"),
+    ...ATTEMPTS.filter((a) => gpu(a) && a.variant.dtype === "q4f16"),
+    ...ATTEMPTS.filter((a) => !gpu(a)),
+  ];
 }
 
 /**
@@ -244,7 +341,7 @@ export function planAttempts({ probe, failed = {} }) {
   const gpuF16 = assessWebGPU(probe);
   const gpuF32 = assessWebGPU(probe, { f16: false });
   const queue = [], skipped = [];
-  for (const a of ATTEMPTS) {
+  for (const a of orderFor(probe)) {
     let why = null;
     if (failed[a.id]) why = `failed-before: ${failed[a.id]}`;
     else if (a.engine.device === "webgpu") {

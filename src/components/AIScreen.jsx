@@ -28,10 +28,11 @@ function describeModelError(e) {
 }
 
 // « GPU · q4f16, calcul 16 bits » : ce qui tourne, en clair.
-const whereLabel = (engine, dtype) => t("ui.ai.model.where", {
+// Réglage GPU « sur » (noyaux suspects évités, modelPolicy.js) : dit, sinon on ne sait pas ce qui tourne.
+const whereLabel = (engine, dtype, mode) => t("ui.ai.model.where", {
   engine: t(`ui.ai.model.engine.${engine}`), dtype: t(`ui.ai.model.dtype.${dtype}`),
-});
-const attemptLabel = (id) => { const [dtype, engine] = String(id).split("/"); return whereLabel(engine, dtype); };
+}) + (mode && mode !== "base" ? ` · ${t(`ui.ai.model.mode.${mode}`)}` : "");
+const attemptLabel = (id) => { const [dtype, engine, mode] = String(id).split("/"); return whereLabel(engine, dtype, mode); };
 
 // Pourquoi le GPU ne sert pas, en clair (gpuSetAside, modelPolicy.js). Version du
 // navigateur jointe à « WebGPU absent » : c'est elle qui décide (WebView du système).
@@ -475,7 +476,7 @@ function AIScreen({ stations, aiHistory, setAiHistory,
               : modelState==="loading" ? t("ui.ai.model.loading", { pct:modelProgress })
               : modelState==="error"   ? `${t("ui.ai.model.error")}${modelError ? " — " + modelError.slice(0, 220) : ""}`
               : modelInfo?.chosen
-                ? t("ui.ai.model.ready_on", { where: whereLabel(modelInfo.chosen.engine, modelInfo.chosen.dtype) })
+                ? t("ui.ai.model.ready_on", { where: whereLabel(modelInfo.chosen.engine, modelInfo.chosen.dtype, modelInfo.chosen.gpuMode) })
                 : t("ui.ai.model.ready")}
           </div>
           {/* Prêt hors du GPU : pourquoi, lisible à l'écran (sans cela, impossible de le savoir sur l'appareil) */}

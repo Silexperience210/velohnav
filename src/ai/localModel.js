@@ -199,7 +199,7 @@ function runAttempt(choose, onProgress, onPhase) {
       const now = Date.now();
       st = { ...st, since: now, lastActivity: now, expect: a.variant.files };   // init seulement quand les POIDS sont là
       onPhase?.({ phase: "download", device: a.engine.device, engine: a.engine.id, attempt: a.id, mb: a.variant.mb });
-      w.postMessage({ type: "load", variant: a.variant, engine: a.engine.id });
+      w.postMessage({ type: "load", variant: a.variant, engine: a.engine.id, attemptId: a.id });
     };
 
     // Le chien de garde : la seule chose qui voit un blocage (une attente qui ne se
@@ -231,7 +231,7 @@ function runAttempt(choose, onProgress, onPhase) {
         w.onmessage = onRuntimeMessage;
         w.onerror = (e) => killWorker(new ModelError("generate", { detail: e?.message || "worker error" }));
         ready = true;
-        done(null, { attempt: att, loadMs: data.loadMs });
+        done(null, { attempt: att, loadMs: data.loadMs, gpu: data.gpu || null });
       } else if (data.type === "error") {
         // Échec à l'import du moteur : propre à la tentative, pas au réseau.
         const phase = data.stage === "engine" ? "engine" : st.phase;
@@ -314,9 +314,12 @@ async function runLadder(onProgress, onPhase, gen) {
       id: r.attempt.id, dtype: r.attempt.variant.dtype, device: r.attempt.engine.device,
       engine: r.attempt.engine.id, mb: r.attempt.variant.mb,
       ...(Number.isFinite(r.loadMs) ? { loadMs: r.loadMs } : {}),
+      // Réglage GPU retenu et fonctions retirées du device (subgroups) : dit à l'écran et au journal
+      ...(r.attempt.gpu ? { gpuMode: r.attempt.gpu.mode, dropped: r.gpu?.dropped || [] } : {}),
     };
     console.info(`[IA] retenu : ${r.attempt.id} (${r.attempt.variant.mb} Mo`
       + `${Number.isFinite(r.loadMs) ? `, prêt en ${(r.loadMs / 1000).toFixed(1)} s` : ""})`
+      + `${r.gpu?.dropped?.length ? ` ; device sans ${r.gpu.dropped.join(", ")}` : ""}`
       + `${report.gpu ? ` ; GPU : ${gpuLine(report.gpu)}` : ""}`
       + `${tried.length ? ` ; avant lui : ${tried.map(attemptLine).join(" ; ")}` : ""}`);
     return;

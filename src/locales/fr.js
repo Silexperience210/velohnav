@@ -329,6 +329,7 @@ export default {
   "ui.ai.model.engine.webgpu": "GPU",
   "ui.ai.model.engine.jsep":   "GPU (JSEP)",
   "ui.ai.model.engine.wasm":   "processeur",
+  "ui.ai.model.mode.sur":     "mode sûr (transpositions sur le processeur)",
   "ui.ai.model.dtype.q4f16":   "q4f16, calcul 16 bits",
   "ui.ai.model.dtype.q4":      "q4, calcul 32 bits",
   "ui.ai.model.fail.setup":            "le moteur IA n'a pas pu démarrer sur cet appareil",

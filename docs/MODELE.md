@@ -194,6 +194,45 @@ Conclusion : sur le processeur, le décodage reste borné par `MatMulNBits` (≈
 jeton et par fil sur PC de bureau). Le vrai gain est le GPU : l'écran dit désormais
 pourquoi il est écarté (« GPU non utilisé — … »), cause à lire sur le téléphone.
 
+## GPU Adreno : « 鹰 », « 龙 » — cause et correctif
+
+Retour du téléphone (Android 14, WebView Chrome 153, Adreno) : « prêt · q4 · processeur »,
+« GPU non utilisé · démarrage q4f16 en échec », essai à vide « 鹰 », « 龙 ». Les deux variantes
+GPU se **chargent** ; c'est leur **calcul** qui est faux : « Bonjour » en glouton donne un
+idéogramme isolé, là où le processeur et un GPU de bureau donnent « Bonjour ! Comment puis- ».
+L'essai à vide ne condamne donc pas une voie utilisable : il rejette une sortie fausse.
+
+Cause la plus probable (publique, non mesurée ici) : depuis onnxruntime-web 1.30, le noyau
+`MatMulNBits` (93 nœuds sur ce modèle, accuracy_level 0, blocs de 32) prend une voie
+`subgroupShuffle` sur tout GPU non NVIDIA exposant `subgroups`. Sur Adreno elle rend des
+valeurs fausses (Adreno 660, Chrome 154 : −2,7 dB contre 78,5 dB attendus) ou fait planter le
+compilateur de shaders (Adreno 750, Chrome 153/154) ; créer le device **sans** `subgroups` la
+corrige (musetric#975, #990). Le build embarqué (1.31.0-dev) contient cette voie, et aussi le
+noyau Transpose à tuile `tile_size + 1`, rapporté faux sur Adreno 660/730.
+
+Correctif (`gpuDeviceRequest`, `gpuSessionOptions`, `orderFor`) :
+- le worker crée lui-même le device WebGPU, avec toutes les fonctions de l'adaptateur sauf
+  `subgroups*`, et le donne à onnxruntime (option `device` du fournisseur) ;
+- nouvelle marche **q4 GPU « sur »** : Transpose (20) sur le processeur et disposition NCHW ;
+- q4f16 : accumulation fp32 (le fp16 Adreno perd les petites valeurs) ;
+- sur Adreno : q4 GPU, puis q4 « sur » (déjà en cache), puis q4f16 (255 Mo), puis processeur ;
+- échelle v4 : les échecs GPU mémorisés avec subgroups sont oubliés, rejoués une fois.
+
+Mesuré ici (RTX 3060, Chrome, `HEADLESS=0 ATTEMPT=… run.mjs webgpu-q4 prefixe`) :
+
+| Tentative | Device | Essai à vide | 3 questions (ms) |
+|---|---|---|---|
+| q4/webgpu | sans subgroups, subgroup-matrix, subgroup-size-control | « Bonjour ! Comment puis- » | 1 507 · 480 · 258 |
+| q4/webgpu/sur | idem, Transpose sur le processeur, NCHW | identique | 854 · 1 073 · 552 |
+| échelle réelle (`PAGE=ladder`) | — | retenu : q4/webgpu (q4f16 écarté : pas de shader-f16) | prêt en 3,6 s |
+
+Sorties identiques mot pour mot ; pour comparaison, le processeur (4 fils) : 4,8 à 11 s.
+
+À vérifier sur le téléphone (rien ne peut l'être ici, NVIDIA n'emprunte pas la voie
+subgroups) : que q4/webgpu passe l'essai à vide sans subgroups ; sinon que « sur » le passe ;
+la vitesse réelle. L'écran dit la tentative retenue (« GPU · q4 », « · mode sûr ») et, en
+cas d'échec, l'erreur ou la sortie exacte de chaque tentative.
+
 ## Ce qui n'a pas été mesuré
 
 - Aucune mesure sur téléphone (mémoire, vitesse, WebGPU). Toutes les mesures RSS viennent de

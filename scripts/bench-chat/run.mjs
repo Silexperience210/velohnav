@@ -42,7 +42,7 @@ const server = http.createServer((req, res) => {
     req.on("data", (c) => { body += c; });
     req.on("end", () => {
       const m = JSON.parse(body);
-      if (m.type === "meta") { meta = m; console.log(`[banc] ${m.device}/${m.dtype} moteur ${m.engine}${m.isolated ? ` (page isolée, ${m.cores} cœurs)` : " (un fil)"} : chargé en ${m.loadMs} ms, essai à vide ${JSON.stringify(m.selfTest)} en ${m.selfTestMs} ms`, JSON.stringify(m.probe)); }
+      if (m.type === "meta") { meta = m; console.log(`[banc] ${m.attempt ? `tentative ${m.attempt}, ` : ""}${m.gpu ? `device GPU ${JSON.stringify(m.gpu)}, ` : ""}${m.device}/${m.dtype} moteur ${m.engine}${m.isolated ? ` (page isolée, ${m.cores} cœurs)` : " (un fil)"} : chargé en ${m.loadMs} ms, essai à vide ${JSON.stringify(m.selfTest)} en ${m.selfTestMs} ms`, JSON.stringify(m.probe)); }
       else if (m.type === "row") {
         rows.push(m);
         console.log(`[${m.cfg}] ${m.q}${m.reachesModel ? "" : "  (reconnu sans modèle)"}\n   brut : ${JSON.stringify(m.raw)}`
@@ -80,7 +80,7 @@ const chrome = spawn(process.env.CHROME || "google-chrome", [
   ...(process.env.HEADLESS === "0" ? ["--ozone-platform-hint=auto"] : ["--headless=new"]), `--user-data-dir=${profile}`, "--no-first-run", "--enable-unsafe-webgpu",
   "--enable-features=Vulkan", "--ignore-gpu-blocklist",
   ...(process.env.CHROME_FLAGS ? process.env.CHROME_FLAGS.split(" ") : []),
-  process.env.PAGE === "ladder" ? `http://127.0.0.1:${port}/ladder.html?${configs}` : `http://127.0.0.1:${port}/index.html?device=${device}${configs === "conversation" || configs === "prefixe" ? `&mode=${configs}` : configs ? `&configs=${configs}` : ""}${process.env.ENGINE ? `&engine=${process.env.ENGINE}` : ""}`,
+  process.env.PAGE === "ladder" ? `http://127.0.0.1:${port}/ladder.html?${configs}` : `http://127.0.0.1:${port}/index.html?device=${device}${configs === "conversation" || configs === "prefixe" ? `&mode=${configs}` : configs ? `&configs=${configs}` : ""}${process.env.ENGINE ? `&engine=${process.env.ENGINE}` : ""}${process.env.ATTEMPT ? `&attempt=${encodeURIComponent(process.env.ATTEMPT)}` : ""}`,
 ], { stdio: "ignore" });
 await finished;
 chrome.kill();

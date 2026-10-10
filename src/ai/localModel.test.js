@@ -117,8 +117,15 @@ describe("façade : l'échelle des tentatives, sans rien demander", () => {
     filesDone(w2);
     await vi.advanceTimersByTimeAsync(181_000);   // bloqué : le chien de garde tranche
     await flush();
-    const w3 = last();
+    // q4 GPU « sur » (Transpose sur le processeur) : sortie fausse, l'essai à vide la rejette
+    const w2b = last();
     expect(w2.terminated).toBe(true);
+    expect(w2b.load).toMatchObject({ engine: "webgpu", attemptId: "q4/webgpu/sur", variant: { dtype: "q4", device: "webgpu" } });
+    filesDone(w2b);
+    w2b.emit({ type: "ready", selfTest: "鹰" });
+    await flush();
+    const w3 = last();
+    expect(w2b.terminated).toBe(true);
     expect(w3.load).toMatchObject({ engine: "wasm", variant: { dtype: "q4", device: "wasm" } });
     filesDone(w3);
     w3.emit({ type: "ready", selfTest: "Bonjour ! Comment puis-", loadMs: 41_000 });
@@ -128,8 +135,9 @@ describe("façade : l'échelle des tentatives, sans rien demander", () => {
     const r = mod.modelReport();
     expect(r.chosen).toMatchObject({ id: "q4/wasm", engine: "wasm", device: "wasm", dtype: "q4", mb: 294, loadMs: 41_000 });
     expect(r.tried.map((x) => [x.id, x.code])).toEqual([
-      ["q4f16/webgpu", "init"], ["q4/webgpu", "init_timeout"],
+      ["q4f16/webgpu", "init"], ["q4/webgpu", "init_timeout"], ["q4/webgpu/sur", "init"],
     ]);
+    expect(r.tried[2].detail).toBe('self-test no-word: "鹰"');
     // le message du moteur ET la ligne de journal qui l'explique sont conservés
     expect(r.tried[0].detail).toContain("Sub requires f16");
     expect(r.tried[0].detail).toContain("shader_helper.cc:416");
@@ -137,7 +145,7 @@ describe("façade : l'échelle des tentatives, sans rien demander", () => {
     expect(mod.chatModelMB()).toBe(294);
     // chaque bascule annoncée à l'interface : quelle tentative, sur quel moteur
     expect(phases.filter((p) => p.phase === "download").map((p) => p.attempt))
-      .toEqual(["q4f16/webgpu", "q4/webgpu", "q4/wasm"]);
+      .toEqual(["q4f16/webgpu", "q4/webgpu", "q4/webgpu/sur", "q4/wasm"]);
     // q4f16 purgé une fois condamné — jamais q4, qui sert au processeur
     expect(console.info).toHaveBeenCalledWith(expect.stringMatching(/^\[IA\] retenu : q4\/wasm/));
   });
@@ -145,7 +153,7 @@ describe("façade : l'échelle des tentatives, sans rien demander", () => {
   it("au lancement suivant : les tentatives en échec ne sont pas rejouées, le processeur part directement", async () => {
     store.set("velohnav_ai_attempts_ko", JSON.stringify({
       fingerprint: (await import("./modelPolicy.js")).deviceFingerprint(GOOD_PROBE),
-      failed: { "q4f16/webgpu": "a", "q4/webgpu": "c" },
+      failed: { "q4f16/webgpu": "a", "q4/webgpu": "c", "q4/webgpu/sur": "d" },
     }));
     const loading = mod.loadModel();
     await flush();
@@ -154,7 +162,7 @@ describe("façade : l'échelle des tentatives, sans rien demander", () => {
     expect(last().load).toMatchObject({ engine: "wasm" });
     last().emit({ type: "ready", selfTest: "Bonjour !" });
     await loading;
-    expect(mod.modelReport().skipped.map((x) => x.id)).toEqual(["q4f16/webgpu", "q4/webgpu"]);
+    expect(mod.modelReport().skipped.map((x) => x.id)).toEqual(["q4f16/webgpu", "q4/webgpu", "q4/webgpu/sur"]);
   });
 
   it("GPU sans shader-f16 (mesuré sur un vrai GPU) : q4 sur le GPU d'emblée, un seul téléchargement", async () => {
@@ -171,7 +179,7 @@ describe("façade : l'échelle des tentatives, sans rien demander", () => {
     const outcome = mod.loadModel().then(() => "resolved", (e) => e);
     await flush();
     last().emit({ type: "probe", probe: GOOD_PROBE });
-    for (let i = 0; i < 3; i++) {
+    for (let i = 0; i < 4; i++) {
       const w = last();
       filesDone(w);
       w.emit({ type: "error", message: `échec ${w.load.variant.dtype}/${w.load.engine}` });
@@ -179,13 +187,13 @@ describe("façade : l'échelle des tentatives, sans rien demander", () => {
     }
     const e = await outcome;
     expect(e).toMatchObject({ name: "ModelError", code: "all_failed" });
-    expect(e.attempts).toHaveLength(3);
+    expect(e.attempts).toHaveLength(4);
     expect(e.detail).toContain("q4/wasm → init (échec q4/wasm)");
-    expect(FakeWorker.all).toHaveLength(3);
+    expect(FakeWorker.all).toHaveLength(4);
     // Rechargement sans « Réessayer » : rien n'est retenté, aucun worker créé
     const again = await mod.loadModel().then(() => "resolved", (x) => x);
     expect(again.code).toBe("all_failed");
-    expect(FakeWorker.all).toHaveLength(3);
+    expect(FakeWorker.all).toHaveLength(4);
     // « Réessayer » après all_failed : les échecs sont oubliés, l'échelle repart du début
     mod.forgetFailures();
     mod.loadModel().catch(() => {});

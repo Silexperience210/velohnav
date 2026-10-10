@@ -328,6 +328,7 @@ export default {
   "ui.ai.model.engine.webgpu": "GPU",
   "ui.ai.model.engine.jsep":   "GPU (JSEP)",
   "ui.ai.model.engine.wasm":   "CPU",
+  "ui.ai.model.mode.sur":     "safe mode (transposes on the CPU)",
   "ui.ai.model.dtype.q4f16":   "q4f16, 16-bit compute",
   "ui.ai.model.dtype.q4":      "q4, 32-bit compute",
   "ui.ai.model.fail.setup":            "the AI engine could not start on this device",

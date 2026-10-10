@@ -43,10 +43,11 @@ try {
   const ready = once("ready");
   const engine = params.get("engine") || (variant.device === "wasm" ? "wasm" : "webgpu");
   const t0load = performance.now();
-  w.postMessage({ type: "load", variant, engine });
+  // ATTEMPT=q4/webgpu/sur (run.mjs) : réglage GPU d'une tentative de l'échelle
+  w.postMessage({ type: "load", variant, engine, attemptId: params.get("attempt") || undefined });
   const r = await ready;
   if (r.type === "error") throw new Error(`${r.message}\n   journal : ${JSON.stringify(r.log)}`);
-  await send({ type: "meta", device: variant.device, dtype: variant.dtype, engine, probe: p, ua: navigator.userAgent,
+  await send({ type: "meta", attempt: params.get("attempt"), gpu: r.gpu, device: variant.device, dtype: variant.dtype, engine, probe: p, ua: navigator.userAgent,
                isolated: self.crossOriginIsolated, cores: navigator.hardwareConcurrency,
                loadMs: Math.round(performance.now() - t0load), selfTest: r.selfTest, selfTestMs: r.selfTestMs });
   // Contexte vide : un outil appelé retombe sur l'assistant déterministe, ce n'est pas l'objet du banc.

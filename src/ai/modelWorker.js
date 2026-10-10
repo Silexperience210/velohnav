@@ -16,7 +16,8 @@
 // le pose sous ENGINE_SLOT, PUIS importe transformers.js, qui le reçoit (ortEngine.js).
 // ortEngine.js n'est PAS importé ici : il lit le moteur à son évaluation, qui doit venir
 // après le choix (il est importé par transformers.js, via le plugin).
-import { LIMITS, MODEL, SELF_TEST, hubFileUrl, cacheHeaders, withTimeout, ENGINES, ENGINE_SLOT } from "./modelPolicy.js";
+import { LIMITS, MODEL, SELF_TEST, hubFileUrl, cacheHeaders, withTimeout, ENGINES, ENGINE_SLOT,
+         attemptById, gpuDeviceRequest, gpuSessionOptions } from "./modelPolicy.js";
 import { reusablePrefix, sameIds, prefixMessages, shareable, copyCache } from "./promptCache.js";
 
 const MODEL_ID = MODEL.id;
@@ -128,7 +129,8 @@ async function probeWebGPU() {
   const info = adapter.info || {};
   const out = {
     adapter: true,
-    info: { vendor: info.vendor || "", architecture: info.architecture || "", device: info.device || "", description: info.description || "" },
+    info: { vendor: info.vendor || "", architecture: info.architecture || "", device: info.device || "", description: info.description || "",
+            subgroupMinSize: info.subgroupMinSize ?? null, subgroupMaxSize: info.subgroupMaxSize ?? null },
     isFallbackAdapter: !!(adapter.info?.isFallbackAdapter ?? adapter.isFallbackAdapter),
     features,
     limits,
@@ -186,7 +188,28 @@ async function prefetchToCache(file, bytes) {
   }
 }
 
-async function load({ variant, engine, modelId }) {
+/**
+ * Device WebGPU fourni à onnxruntime : sans subgroups (gpuDeviceRequest, modelPolicy.js).
+ * Sans lui, onnxruntime crée le sien avec toutes les fonctions de l'adaptateur.
+ * Rend { device, dropped, info } ; ce qui a été retiré est journalisé et remonte.
+ */
+async function gpuDevice() {
+  const adapter = await withTimeout(navigator.gpu.requestAdapter({ powerPreference: "high-performance" }), LIMITS.probeMs, "requestAdapter");
+  if (!adapter) throw new Error("WebGPU: no adapter");
+  const req = gpuDeviceRequest(adapter.features, adapter.limits);
+  const device = await withTimeout(adapter.requestDevice({ requiredFeatures: req.requiredFeatures, requiredLimits: req.requiredLimits }),
+    LIMITS.probeMs, "requestDevice");
+  // Les erreurs de validation WebGPU ne lèvent pas d'exception : elles vont au journal
+  // joint à l'erreur (logTail), seule trace lisible d'un shader refusé sur l'appareil.
+  device.addEventListener?.("uncapturederror", (ev) => console.error(`WebGPU: ${ev.error?.message || ev.error}`));
+  device.lost?.then((l) => console.error(`WebGPU device lost: ${l?.reason} ${l?.message || ""}`));
+  console.info(`[IA] device GPU : ${req.requiredFeatures.join(", ") || "aucune fonction"}${req.dropped.length ? ` ; retirées : ${req.dropped.join(", ")}` : ""}`);
+  return { device, dropped: req.dropped };
+}
+
+let gpuInfo = null;   // { dropped } du device fourni à la session GPU
+
+async function load({ variant, engine, modelId, attemptId }) {
   let rt;
   try {
     rt = await runtime(engine);
@@ -208,7 +231,15 @@ async function load({ variant, engine, modelId }) {
     // de plusieurs centaines de Mo en même temps.
     for (const file of variant.files || [variant.file]) await prefetchToCache(file, variant.bytes?.[file]);
   }
+  let session_options;
+  if (variant.device === "webgpu") {
+    const a = attemptById(attemptId) || { variant, gpu: { mode: "base" } };
+    const { device, dropped } = await gpuDevice();
+    gpuInfo = { dropped, mode: a.gpu?.mode || "base" };
+    session_options = gpuSessionOptions(a, device);
+  }
   generator = await pipeline("text-generation", ref, {
+    ...(session_options ? { session_options } : {}),
     ...(ref === MODEL_ID ? { revision: MODEL.revision } : {}),   // même clé de cache que le pré-chargement
     dtype: variant.dtype,
     device: variant.device,
@@ -240,7 +271,7 @@ self.onmessage = async ({ data }) => {
       const t1 = performance.now();
       const selfTest = await selfTestRun();
       const t2 = performance.now();
-      post({ type: "ready", selfTest, loadMs: Math.round(t2 - t0), selfTestMs: Math.round(t2 - t1) });
+      post({ type: "ready", selfTest, loadMs: Math.round(t2 - t0), selfTestMs: Math.round(t2 - t1), gpu: gpuInfo });
     } catch (e) {
       post({ type: "error", ...errorReport(e) });
     }
