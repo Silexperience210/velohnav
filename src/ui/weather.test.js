@@ -1,4 +1,5 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { setLang, getCurrentLang } from "../i18n.js";
 import { bikeScore, bikeScoreDetail, scoreReasons, reasonLabel } from "./weather.js";
 import { getWeatherAdvice } from "../hooks/useWeather.js";
 
@@ -8,6 +9,12 @@ const fc = (...hours) => hours.map((o, i) => ({ h: i + 1, temp: 14, rain: 0, rai
 const keys = (d) => d.reasons.map((r) => r.key);
 
 describe("note vélo : les prévisions comptent", () => {
+  // Les libellés attendus sont français : on fixe la langue au lieu de dépendre de
+  // celle de la machine (anglaise dans la CI, française en local).
+  let ambient;
+  beforeAll(() => { ambient = getCurrentLang(); setLang("fr"); });
+  afterAll(() => setLang(ambient));
+
   it("cas constaté sur téléphone : pluie légère qui se renforce à 92 % dans l'heure — plus 9,6/10", () => {
     const w = now({ rain: 0.13, code: 61 });
     const f = fc({ rain: 0.8, rainProb: 92 }, { rain: 1.2, rainProb: 85 }, { rain: 0.6, rainProb: 70 });
