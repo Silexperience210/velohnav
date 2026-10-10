@@ -565,6 +565,20 @@ export const SELF_TEST = Object.freeze({
 });
 
 /**
+ * Essai à vide du moteur natif : une vraie génération courte, en français, avec une
+ * consigne. Sur téléphone, l'essai de 6 jetons sans consigne a rendu « 鹰 », « 龙 » sur
+ * le GPU (WebGPU) : un calcul faussé. Ici le GPU doit produire une phrase française
+ * plausible ; jugée par selfTestVerdict.
+ */
+export const NATIVE_SELF_TEST = Object.freeze({
+  messages: Object.freeze([
+    { role: "system", content: "Tu es l'assistant d'une application de vélo. Réponds en français, en une phrase." },
+    { role: "user", content: "Bonjour" },
+  ]),
+  maxNewTokens: 16,
+});
+
+/**
  * Borne une promesse dans le temps. À l'expiration, rejette avec une erreur portant
  * `timedOut: true` ; `onTimeout` permet de libérer la ressource bloquée.
  */
