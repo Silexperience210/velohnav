@@ -17,6 +17,7 @@
 // ortEngine.js n'est PAS importé ici : il lit le moteur à son évaluation, qui doit venir
 // après le choix (il est importé par transformers.js, via le plugin).
 import { LIMITS, MODEL, SELF_TEST, hubFileUrl, cacheHeaders, withTimeout, ENGINES, ENGINE_SLOT } from "./modelPolicy.js";
+import { reusablePrefix, prefixMessages, shareable, copyCache } from "./promptCache.js";
 
 const MODEL_ID = MODEL.id;
 // Copie embarquée éventuelle (public/models/ via scripts/fetch-model.sh).
@@ -33,6 +34,9 @@ const ENGINE_MODULES = {
 
 let tf = null;          // module transformers.js, importé après le choix du moteur
 let generator = null;
+// État du modèle à la fin de la consigne système + outils (promptCache.js) : { ids, cache },
+// ou false quand il ne peut pas être partagé (WebGPU).
+let prefix = null;
 
 const post = (msg) => self.postMessage(msg);
 
@@ -186,6 +190,9 @@ async function load({ variant, engine, modelId }) {
     throw Object.assign(e instanceof Error ? e : new Error(String(e)), { stage: "engine" });
   }
   const { pipeline, env } = rt;
+  // Sur WebGPU, le cache vit dans des tampons GPU que transformers.js détruit en le
+  // remplaçant : il ne peut pas être partagé (promptCache.shareable).
+  prefix = variant.device === "wasm" ? null : false;
   let ref = modelId || MODEL_ID;
   if (!modelId && (await hasLocalModel())) {
     env.allowLocalModels = true;
@@ -266,12 +273,41 @@ async function selfTestRun() {
  */
 async function complete({ messages, tools, options }) {
   const tok = generator.tokenizer;
-  const inputs = tok.apply_chat_template(messages, {
+  const template = (msgs, generation) => tok.apply_chat_template(msgs, {
     ...(tools?.length ? { tools } : {}),
-    add_generation_prompt: true,
+    add_generation_prompt: generation,
     return_dict: true,
   });
-  const out = await generator.model.generate({ ...inputs, ...options });
+  const inputs = template(messages, true);
+  const past = await prefixState(messages, inputs.input_ids.data, template);
+  const out = await generator.model.generate({ ...inputs, ...options, ...(past ? { past_key_values: past } : {}) });
   const n = inputs.input_ids.dims.at(-1);
   return tok.decode(out.slice(null, [n, null])[0], { skip_special_tokens: false });
+}
+
+/**
+ * Copie de l'état du modèle à la fin de la consigne système (+ outils), calculé une
+ * fois puis réutilisé : seule la suite du prompt est calculée à chaque question.
+ * Mesuré (scripts/bench-chat/prefixe.mjs, q4, processeur) : sortie gloutonne identique
+ * sur 5/5 questions, 48,8 s → 7,6 s. Recalculé si la consigne ou les outils changent
+ * (langue, par exemple) ; aucun cache si le gabarit ne produit pas un vrai préfixe.
+ */
+async function prefixState(messages, full, template) {
+  const head = prefixMessages(messages);
+  if (prefix === false || !head) return null;
+  if (!prefix || !reusablePrefix(full, prefix.ids)) {
+    const pre = template(head, false);
+    if (!reusablePrefix(full, pre.input_ids.data)) return null;
+    // Un seul jeton généré : l'état rendu est celui d'après le préfixe, avant ce jeton.
+    const { past_key_values: cache } = await generator.model.generate({
+      ...pre, max_new_tokens: 1, do_sample: false, return_dict_in_generate: true,
+    });
+    if (!shareable(cache)) {
+      await cache.dispose();
+      prefix = false;
+      return null;
+    }
+    prefix = { ids: pre.input_ids.data, cache };
+  }
+  return copyCache(prefix.cache);
 }
