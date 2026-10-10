@@ -1,5 +1,6 @@
 // ── useWeather — hook météo OpenMeteo ─────────────────────────────
 import { useState, useEffect } from "react";
+import { expectedRain, rainPenalty } from "../ui/weather.js";
 
 // WMO weather codes
 const WMO_LABEL = {
@@ -70,7 +71,23 @@ export function windImpact(bearingDeg, windDir, windKmh) {
 
 // Logique de décision : bike | mixed | transit
 // Seuils : pluie > 0.5mm/h | vent > 35km/h | neige | orage
-export function getWeatherAdvice(weather) {
+// forecast (facultatif, +1 h…+3 h) : la prochaine heure peut seulement DURCIR le conseil
+// — pluie probable (≥ 60 %) qui s'installe ou se renforce, vent qui dépasse 35 km/h.
+// Sans prévisions, le conseil est celui de l'instant présent (carte, bandeau).
+export function getWeatherAdvice(weather, forecast = null) {
+  const now = adviceNow(weather);
+  const next = Array.isArray(forecast) ? forecast.find(f => f?.h === 1) : null;
+  if (!weather || !next || now.mode === "transit") return now;
+  const likely = (next.rainProb ?? (next.rain > 0 ? 100 : 0)) >= 60;
+  if (likely && next.rain > 2.0) return { mode:"transit", reason:"pluie forte annoncée" };
+  if (likely && expectedRain(next) > rainPenalty(weather.rain))
+    return { mode:"mixed", reason: weather.rain > 0 ? "pluie qui se renforce" : "pluie annoncée" };
+  if (now.mode === "bike" && next.wind > 35 && next.wind > weather.wind)
+    return { mode:"mixed", reason:"vent qui forcit" };
+  return now;
+}
+
+function adviceNow(weather) {
   if (!weather) return { mode:"bike", reason:null };
   const { rain, wind, code } = weather;
   const isStorm    = code >= 95;

@@ -7,7 +7,7 @@ import { TOOLS } from "../ai/tools.js";
 import { systemPrompt, resolveModelOutput, explainFallback } from "../ai/assistant.js";
 import { Icon } from "../ui/icons.jsx";
 import { IconButton, ProgressBar, Spinner, Button } from "../ui/primitives.jsx";
-import { wmo, bikeScore, scoreTone, reasonLabel } from "../ui/weather.js";
+import { wmo, bikeScoreDetail, scoreReasons, scoreTone, reasonLabel } from "../ui/weather.js";
 import { fmtDist, stationView, cardinal } from "../ui/format.js";
 import { answerLocally as localAnswer, upcoming, distLabel } from "../ai/localAnswers.js";
 
@@ -72,11 +72,12 @@ function AIScreen({ stations, aiHistory, setAiHistory,
         const w = await fetchWeather(gpsPos.lat, gpsPos.lng);
         if (!dead) setLocalWeather(w);
       }
-      // Prévisions horaires 3h (via OpenMeteo hourly)
+      // Prévisions horaires 3h (via OpenMeteo hourly). 5 heures à partir de l'heure en
+      // cours : avec 4, « +3 h » (l'heure qui SUIT maintenant + 3 h) manquait presque toujours.
       try {
         const url = `https://api.open-meteo.com/v1/forecast?latitude=${gpsPos.lat}&longitude=${gpsPos.lng}`
           + `&hourly=temperature_2m,precipitation_probability,precipitation,wind_speed_10m,weather_code`
-          + `&wind_speed_unit=kmh&precipitation_unit=mm&timezone=Europe/Luxembourg&forecast_days=1&forecast_hours=4`;
+          + `&wind_speed_unit=kmh&precipitation_unit=mm&timezone=Europe/Luxembourg&forecast_days=1&forecast_hours=5`;
         const r = await fetch(url);
         const d = await r.json();
         if (!dead && d.hourly) {
@@ -105,8 +106,11 @@ function AIScreen({ stations, aiHistory, setAiHistory,
       gpsPos?.lng ? Math.round(gpsPos.lng*100) : null]);
 
   // Mémoïsés : sinon ces objets changent à chaque rendu et invalident les callbacks.
-  const score  = useMemo(()=>bikeScore(weather), [weather]);
-  const advice = useMemo(()=>getWeatherAdvice(weather), [weather]);
+  // La note et le conseil tiennent compte des prévisions : 9,6/10 sous une pluie
+  // légère annoncée à 92 % en renforcement dans l'heure était un mauvais conseil.
+  const scoreDetail = useMemo(()=>bikeScoreDetail(weather, forecast), [weather, forecast]);
+  const score  = scoreDetail?.score ?? null;
+  const advice = useMemo(()=>getWeatherAdvice(weather, forecast), [weather, forecast]);
   // Le tri se fait sur la distance : `find` renvoyait la première station de la liste ayant
   // un vélo, donc n'importe laquelle (une station à 19 km au lieu de celle à 150 m).
   const nearest = useMemo(()=>{
@@ -302,6 +306,12 @@ function AIScreen({ stations, aiHistory, setAiHistory,
               <span className="vn-metric vn-metric--elec vn-num">{weather.rain} mm/h</span>
               <span className="vn-metric vn-num">{weather.wind} km/h{weather.windDir != null ? " " + cardinal(weather.windDir) : ""}</span>
               <span className={`vn-metric vn-num ${scoreTone(score)==="good" ? "vn-metric--good" : scoreTone(score)==="bad" ? "vn-metric--bad" : ""}`}>{score}/10</span>
+            </div>
+          )}
+          {/* Ce qui fait la note : chaque pénalité (ou accalmie) nommée, maintenant et prévue */}
+          {weather && scoreDetail?.reasons.length > 0 && (
+            <div style={{ fontSize:10.5, color:"var(--vn-text3)", lineHeight:1.45, marginTop:6 }}>
+              {t("ui.wx.why.title", { score })} : {scoreReasons(scoreDetail).join(" · ")}
             </div>
           )}
         </section>
