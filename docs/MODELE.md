@@ -168,6 +168,32 @@ Ce qui reste supposé (aucune mesure sur téléphone) : la cause exacte sur l'ap
 propriétaire — une erreur de génération WebGPU propre à son GPU (cas le plus cohérent avec
 les mesures) ou une réponse rejetée par `checkFreeText`. L'interface dit désormais laquelle.
 
+## Vitesse sur le processeur : ce qui la limite, mesuré
+
+Retour du téléphone : « prêt · q4 · processeur · calcul 32 bits », génération très lente.
+« Calcul 32 bits » est exact et normal : poids 4 bits, activations fp32 (le WASM n'a pas
+d'arithmétique fp16). La lenteur a trois causes, mesurées sur un PC de bureau :
+
+| Cause | Mesure | Correctif |
+|---|---|---|
+| Consigne + outils recalculés à chaque question (723 jetons sur 733) | 28,9 s avant le premier mot (WASM, 1 fil) | cache de préfixe + calcul anticipé (`promptCache.js`) : réponse de 16 jetons 52,7 s → 25,6 s, sortie identique 5/5 |
+| Un seul fil : WebView non isolée (pas de COOP/COEP) | 4 fils ≈ 3,4× plus rapide dans Chrome (consigne 25,2 → 7,4 s) | en-têtes ajoutés par `IsolatingWebViewClient` |
+| `MatMulNBits` (poids 4 bits) sans noyau WASM : la matrice entière est redéquantifiée à **chaque jeton** | 1 490 ms/jeton en WASM contre 71 ms/jeton en onnxruntime natif (même modèle, 1 fil) ; micro-banc 1024×4608 : 14,5 ms contre 1,0 ms en fp32 ou `MatMulInteger` | **aucun dans les contraintes**, voir ci-dessous |
+
+Piste écartée — réécrire les poids en int8 (`scripts/bench-chat/q4-to-int8.py`,
+`MatMulInteger` a un noyau SIMD WASM) : 13 fois plus rapide (112 ms/jeton), mais le
+modèle devient **inutilisable** (accord top-1 avec q4 : 0 %, sortie « compete for force
+force… »). `DynamicQuantizeLinear` quantifie l'activation sur un seul uint8 par tenseur ;
+les entrées de `down_proj` et `conv/out_proj` ont un rapport max/médiane de 1 000 à 2 500.
+Convertir la seule couche 0 fait déjà tomber l'accord à 80 %. Il faudrait une
+quantification calibrée (SmoothQuant), un fichier hébergé hors du Hub, et 432 Mo de
+poids : le contrôle mémoire (pic estimé 1,6 Go) le refuserait sur le téléphone du
+propriétaire (1 384 Mo libres). Le fp32 (1,45 Go) est exclu pour la même raison.
+
+Conclusion : sur le processeur, le décodage reste borné par `MatMulNBits` (≈ 1,5 s par
+jeton et par fil sur PC de bureau). Le vrai gain est le GPU : l'écran dit désormais
+pourquoi il est écarté (« GPU non utilisé — … »), cause à lire sur le téléphone.
+
 ## Ce qui n'a pas été mesuré
 
 - Aucune mesure sur téléphone (mémoire, vitesse, WebGPU). Toutes les mesures RSS viennent de
