@@ -57,6 +57,13 @@
             android:theme="@style/AppTheme.NoActionBar"
             android:hardwareAccelerated="true" />
 
+        <!-- Moteur conversationnel natif (llama.cpp) : processus séparé, un plantage du
+             pilote GPU n'emporte pas l'application (llm/LlmService.kt). -->
+        <service
+            android:name=".llm.LlmService"
+            android:process=":llm"
+            android:exported="false" />
+
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.fileprovider"

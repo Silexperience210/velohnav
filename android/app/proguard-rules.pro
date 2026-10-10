@@ -59,3 +59,8 @@
 # ── Filament (SceneView renderer) ─────────────────────────────────────────────
 -keep class com.google.android.filament.** { *; }
 -dontwarn com.google.android.filament.**
+
+# Moteur natif (vh_llm_jni.cpp) : les noms des méthodes JNI et le rappel onPiece sont
+# résolus par nom depuis le C++.
+-keep class com.silexperience.velohnav.llm.LlmNative { *; }
+-keep interface com.silexperience.velohnav.llm.LlmNative$PieceSink { *; }
