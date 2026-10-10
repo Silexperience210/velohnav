@@ -33,6 +33,41 @@ android {
         aaptOptions {
             ignoreAssetsPattern '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~:!*.map'
         }
+
+        // Moteur conversationnel natif (llama.cpp, GPU Vulkan) : src/main/cpp.
+        // Construit SEULEMENT sur demande : ./gradlew assembleDebug -PvhNative=1
+        // Par défaut la bibliothèque n'est pas embarquée : elle n'est pas encore branchée
+        // sur l'interface (aucun appel depuis src/), et l'ajouter coûterait ~8 Mo
+        // compressés à une APK déjà proche de la limite d'envoi de 50 Mo. La construction
+        // ci-dessous est celle de l'APK livrée.
+        // arm64 seulement (téléphones récents) ; niveau d'API 28 : ggml-vulkan appelle
+        // vkGetPhysicalDeviceFeatures2, absent de libvulkan.so avant Android 9 — LlmNative
+        // ne charge pas la bibliothèque en dessous. Optimisée même en debug : un -O0 rendrait
+        // la génération plusieurs fois plus lente que la mesure.
+        // Hors ligne : -PVH_LLAMA_DIR=… -PVH_VULKAN_HEADERS_DIR=… -PVH_SPIRV_HEADERS_DIR=…
+        if (project.hasProperty('vhNative')) {
+            externalNativeBuild {
+                cmake {
+                    abiFilters 'arm64-v8a'
+                    arguments "-DANDROID_STL=c++_static",
+                              "-DANDROID_PLATFORM=android-28",
+                              "-DCMAKE_BUILD_TYPE=Release",
+                              "-DVH_LLAMA_DIR=${project.findProperty('VH_LLAMA_DIR') ?: ''}",
+                              "-DVH_VULKAN_HEADERS_DIR=${project.findProperty('VH_VULKAN_HEADERS_DIR') ?: ''}",
+                              "-DVH_SPIRV_HEADERS_DIR=${project.findProperty('VH_SPIRV_HEADERS_DIR') ?: ''}"
+                }
+            }
+        }
+    }
+
+    if (project.hasProperty('vhNative')) {
+        ndkVersion "28.2.13676358"
+        externalNativeBuild {
+            cmake {
+                path "src/main/cpp/CMakeLists.txt"
+                version "3.31.6"
+            }
+        }
     }
 
     buildTypes {
@@ -65,6 +100,12 @@ android {
     packaging {
         resources {
             excludes += '/META-INF/{AL2.0,LGPL2.1}'
+        }
+        // Bibliothèques natives COMPRESSÉES dans l'APK (extraites à l'installation) :
+        // rangées telles quelles, elles pesaient 23,6 Mo, et le moteur llama.cpp en ajoute
+        // 25 (8 compressés). Limite d'envoi Telegram : 50 Mo.
+        jniLibs {
+            useLegacyPackaging true
         }
     }
 }
