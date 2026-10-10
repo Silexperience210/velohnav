@@ -3,8 +3,9 @@
 // avec le worker et le chemin d'affichage de l'application.
 //
 //   PAGE=ladder [HEADLESS=0] node scripts/bench-chat/run.mjs - "f16=1"   (échelle réelle, voir ladder.js)
-//   [HEADLESS=0] [ENGINE=webgpu|jsep|wasm] node scripts/bench-chat/run.mjs [webgpu|wasm] [config,config…|conversation] [dossier-modèle]
+//   [HEADLESS=0] [ENGINE=webgpu|jsep|wasm] node scripts/bench-chat/run.mjs [webgpu|wasm] [config,config…|conversation|prefixe] [dossier-modèle]
 //
+// « prefixe » : calcul anticipé de la consigne (« warm »), puis 3 questions chronométrées.
 // « conversation » : la conversation réelle de cases.CONVERSATION, sur plusieurs tours,
 // avec les options de l'application (voir bench.js).
 //
@@ -79,7 +80,7 @@ const chrome = spawn(process.env.CHROME || "google-chrome", [
   ...(process.env.HEADLESS === "0" ? ["--ozone-platform-hint=auto"] : ["--headless=new"]), `--user-data-dir=${profile}`, "--no-first-run", "--enable-unsafe-webgpu",
   "--enable-features=Vulkan", "--ignore-gpu-blocklist",
   ...(process.env.CHROME_FLAGS ? process.env.CHROME_FLAGS.split(" ") : []),
-  process.env.PAGE === "ladder" ? `http://127.0.0.1:${port}/ladder.html?${configs}` : `http://127.0.0.1:${port}/index.html?device=${device}${configs === "conversation" ? "&mode=conversation" : configs ? `&configs=${configs}` : ""}${process.env.ENGINE ? `&engine=${process.env.ENGINE}` : ""}`,
+  process.env.PAGE === "ladder" ? `http://127.0.0.1:${port}/ladder.html?${configs}` : `http://127.0.0.1:${port}/index.html?device=${device}${configs === "conversation" || configs === "prefixe" ? `&mode=${configs}` : configs ? `&configs=${configs}` : ""}${process.env.ENGINE ? `&engine=${process.env.ENGINE}` : ""}`,
 ], { stdio: "ignore" });
 await finished;
 chrome.kill();

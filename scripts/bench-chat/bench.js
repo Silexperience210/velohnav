@@ -2,7 +2,7 @@
 // l'application (src/ai/modelWorker.js) et le vrai chemin d'affichage
 // (systemPrompt avec ses outils, cleanReply, resolveModelOutput) : seule change la
 // configuration de génération comparée.
-import { VARIANTS } from "../../src/ai/modelPolicy.js";
+import { VARIANTS, SELF_TEST } from "../../src/ai/modelPolicy.js";
 import { systemPrompt, resolveModelOutput } from "../../src/ai/assistant.js";
 import { answerLocally } from "../../src/ai/localAnswers.js";
 import { cleanReply, generationOptions } from "../../src/ai/localModel.js";
@@ -10,6 +10,7 @@ import { readModelOutput } from "../../src/ai/tools.js";
 import fr from "../../src/locales/fr.js";
 import { QUESTIONS, CONFIGS, CONVERSATION } from "./cases.js";
 
+const SELF_TEST_MESSAGES = SELF_TEST.messages;
 const t = (k, p = {}) => String(fr[k] ?? k).replace(/\{(\w+)\}/g, (_, n) => p[n] ?? "");
 const params = new URLSearchParams(location.search);
 // « webgpu », « wasm », ou « <device>-<dtype> » (ex. webgpu-q4) pour essayer une autre quantification.
@@ -50,6 +51,25 @@ try {
                loadMs: Math.round(performance.now() - t0load), selfTest: r.selfTest, selfTestMs: r.selfTestMs });
   // Contexte vide : un outil appelé retombe sur l'assistant déterministe, ce n'est pas l'objet du banc.
   const ctx = { stations: [], t, now: new Date() };
+  if (params.get("mode") === "prefixe") {
+    // Comme AIScreen : « warm » dès le modèle prêt, puis les questions. Un message sans
+    // consigne, mis en file derrière, marque la fin du calcul anticipé.
+    const system = { role: "system", content: systemPrompt(t) };
+    let t0 = performance.now();
+    w.postMessage({ type: "warm", system: system.content });
+    await generate(SELF_TEST_MESSAGES, { max_new_tokens: 1, do_sample: false });
+    const warmMs = Math.round(performance.now() - t0);
+    log(`consigne calculée d'avance en ${warmMs} ms`);
+    for (const q of QUESTIONS.slice(0, Number(params.get("n")) || 3)) {
+      t0 = performance.now();
+      const out = await generate([system, { role: "user", content: q }], generationOptions({ maxNewTokens: 24 }));
+      const ms = Math.round(performance.now() - t0);
+      await send({ type: "row", cfg: `prefixe (anticipé ${warmMs} ms)`, q, reachesModel: true, raw: out.text ?? "", error: out.error, ms });
+      log(`${q} → ${out.error ? "ERREUR " + out.error : out.text} (${ms} ms)`);
+    }
+    await send({ type: "done" });
+    throw null;
+  }
   if (params.get("mode") === "conversation") {
     // Conversation réelle (cases.CONVERSATION), comme AIScreen.sendText : historique de
     // CHAT_TURNS messages où n'entrent que les réponses libres montrées, options de
