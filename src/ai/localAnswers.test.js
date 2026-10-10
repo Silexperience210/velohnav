@@ -350,3 +350,64 @@ describe("station la plus proche : avec et sans position GPS", async () => {
     expect(r.text).not.toMatch(/centre-ville/);
   });
 });
+
+// Signalé sur téléphone : fiche « EDELECK, 19 km » alors que les départs du même écran
+// affichent « Foetz, Am Brill — 200 m ». Preuve par le calcul, sur le flux GBFS réel
+// (fixture cyclocity) et les coordonnées réelles de l'arrêt (Transitous, flux ATP).
+describe("station la plus proche depuis Foetz : flux GBFS réel, liste en désordre", async () => {
+  const { enrich, haversine } = await import("../utils.js");
+  const { parseGBFS, electricTypeIds } = await import("../utils/gbfs.js");
+  const { default: info } = await import("../__fixtures__/gbfs_station_information.json");
+  const { default: status } = await import("../__fixtures__/gbfs_station_status.json");
+  const { default: types } = await import("../__fixtures__/gbfs_vehicle_types.json");
+  const { default: fr } = await import("../locales/fr.js");
+  const tFr = (k, v = {}) => String(fr[k] ?? k).replace(/\{(\w+)\}/g, (_, n) => v[n] ?? "");
+  const tn = (k, n) => `${n} ${fr[k + (n === 1 ? ".one" : ".many")] ?? k}`;
+  const AM_BRILL = { lat: 49.52114, lng: 6.010636 };   // « Foetz, Am Brill », arrêt ATP 000220802003
+  const raw = parseGBFS(info, status, electricTypeIds(types));
+  // Désordre déterministe : la liste ne doit rien devoir à l'ordre du flux ni à celui d'enrich
+  const shuffle = (l) => l.map((s, i) => [(((i + 1) * 7919) % 211), s]).sort((a, b) => a[0] - b[0]).map((x) => x[1]);
+  // Même sélection que AIScreen (`nearest`, commit 2c3ce6e) : minimum de distance parmi les
+  // stations ouvertes ayant un vélo.
+  const pick = (stations) => {
+    const ok = stations.filter((s) => s.bikes > 0 && s.status !== "CLOSED");
+    return ok.length ? ok.reduce((a, b) => ((a.dist ?? Infinity) <= (b.dist ?? Infinity) ? a : b)) : null;
+  };
+
+  it("depuis l'arrêt Foetz, Am Brill : EDELECK, à 7 km (6,96) — la vraie plus proche", () => {
+    const stations = shuffle(enrich(raw, AM_BRILL));
+    expect(stations[0].name).not.toBe("EDELECK");            // le désordre est réel
+    const nearest = pick(stations);
+    expect(nearest.name).toBe("EDELECK");
+    expect(nearest.dist).toBe(haversine(AM_BRILL.lat, AM_BRILL.lng, 49.565477, 6.079436));
+    expect(nearest.dist).toBeGreaterThan(6800);
+    expect(nearest.dist).toBeLessThan(7000);
+    // Vérification exhaustive : aucune station du flux n'est plus proche
+    for (const s of raw) expect(haversine(AM_BRILL.lat, AM_BRILL.lng, s.lat, s.lng)).toBeGreaterThanOrEqual(nearest.dist);
+    const r = answerLocally("Station la plus proche ?", { stations, nearest, t: tFr, tn, gpsPos: AM_BRILL, located: true });
+    expect(r.text).toMatch(/^EDELECK \(7 km\)/);
+  });
+
+  it("« Foetz, Am Brill » est un arrêt de bus : aucune station Vel'OH! à Foetz", () => {
+    expect(raw.some((s) => /FOETZ|BRILL$/i.test(s.name))).toBe(false);
+    const within = raw.filter((s) => haversine(AM_BRILL.lat, AM_BRILL.lng, s.lat, s.lng) < 6500);
+    expect(within).toEqual([]);
+  });
+
+  it("à 200 m de l'arrêt, EDELECK ne peut pas être à 19 km : la fiche et les départs venaient de deux positions", () => {
+    for (let deg = 0; deg < 360; deg += 15) {
+      const a = (deg * Math.PI) / 180;
+      const pos = { lat: AM_BRILL.lat + (200 / 111320) * Math.cos(a),
+                    lng: AM_BRILL.lng + (200 / (111320 * Math.cos((AM_BRILL.lat * Math.PI) / 180))) * Math.sin(a) };
+      const n = pick(enrich(raw, pos));
+      expect(n.name).toBe("EDELECK");
+      expect(n.dist).toBeLessThan(7200);
+    }
+    // 19 km avec EDELECK la plus proche : il faut être en Lorraine, ~12 km au sud de Foetz
+    const lorraine = { lat: 49.42, lng: 5.95 };
+    const n = pick(enrich(raw, lorraine));
+    expect(n.name).toBe("EDELECK");
+    expect(Math.round(n.dist / 1000)).toBe(19);
+    expect(haversine(lorraine.lat, lorraine.lng, AM_BRILL.lat, AM_BRILL.lng)).toBeGreaterThan(11000);
+  });
+});

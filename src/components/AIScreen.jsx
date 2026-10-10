@@ -132,6 +132,14 @@ function AIScreen({ stations, aiHistory, setAiHistory,
     return ok.length ? ok.reduce((a,b)=>((a.dist ?? Infinity)<=(b.dist ?? Infinity)?a:b)) : null;
   },[stations]);
   const deps = useMemo(()=>upcoming(busStops, busDeps, 3),[busStops, busDeps]);
+  // Journal (logcat) : la station retenue et la position d'où sa distance est calculée,
+  // pour vérifier sur l'appareil que la fiche et les départs partent du même point.
+  useEffect(()=>{
+    if (!nearest) return;
+    console.info("[IA] station la plus proche :", nearest.name, fmtDist(nearest.dist), "depuis",
+      gpsPos ? `${gpsPos.lat.toFixed(5)},${gpsPos.lng.toFixed(5)} ±${gpsPos.acc ?? "?"} m` : "le centre-ville (pas de GPS)");
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[nearest?.id, nearest ? Math.round(nearest.dist / 100) : null, !!gpsPos]);
 
   // ── Modèle : chargé UNIQUEMENT si la conversation libre est activée ──
   useEffect(()=>{

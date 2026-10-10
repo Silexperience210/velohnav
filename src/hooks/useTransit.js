@@ -8,13 +8,15 @@
 //  - Départs rafraîchis au plus toutes les 60 s (≥ 30 s exigés), arrêts 10 min.
 //  - Cache module partagé : remonter le hook ne relance pas de requête.
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useMemo } from "react";
 import { fetchNearbyStops, fetchStopTimes } from "../utils/transitous.js";
+import { haversine } from "../utils.js";
 
 const CACHE = new Map();        // clé → { ts, data }
 const DEPARTURES_TTL = 60_000;  // 1 min
 const NEARBY_TTL     = 600_000; // 10 min
 const MAX_STOPS_WITH_DEPARTURES = 2;
+const NEARBY_RADIUS = 1500;     // m — rayon de findNearbyStops
 
 // ── Départs d'un arrêt ────────────────────────────────────────────
 export async function fetchDepartures(stopId, maxJourneys = 6) {
@@ -33,7 +35,7 @@ export async function fetchDepartures(stopId, maxJourneys = 6) {
 }
 
 // ── Arrêts bus/tram proches ───────────────────────────────────────
-export async function findNearbyStops(lat, lng, radius = 1500) {
+export async function findNearbyStops(lat, lng, radius = NEARBY_RADIUS) {
   const cacheKey = `nb_${Math.round(lat*100)}_${Math.round(lng*100)}`;
   const cached = CACHE.get(cacheKey);
   if (cached && (Date.now() - cached.ts) < NEARBY_TTL) return cached.data;
@@ -45,6 +47,22 @@ export async function findNearbyStops(lat, lng, radius = 1500) {
     console.warn("[Transitous] map/stops:", e.message);
     return cached ? cached.data : [];
   }
+}
+
+/**
+ * Distances des arrêts recalculées depuis la position COURANTE, comme celles des stations
+ * (utils.enrich). Celles de l'API sont figées à la position du téléchargement, refait au
+ * plus une fois par cellule de ~1 km : l'écran IA pouvait afficher « Foetz, Am Brill —
+ * 200 m » à côté d'une station calculée depuis une autre position, 12 km plus loin.
+ * Un arrêt sorti du rayon n'est plus « proche » : il disparaît jusqu'au prochain chargement.
+ */
+export function relocateStops(stops, pos, radius = NEARBY_RADIUS) {
+  if (!pos || !Array.isArray(stops)) return stops ?? [];
+  return stops
+    .filter(s => Number.isFinite(s?.lat) && Number.isFinite(s?.lng))
+    .map(s => ({ ...s, dist: haversine(pos.lat, pos.lng, s.lat, s.lng) }))
+    .filter(s => s.dist <= radius)
+    .sort((a, b) => a.dist - b.dist);
 }
 
 // ── Formatter pour prompt IA ──────────────────────────────────────
@@ -78,6 +96,10 @@ export function useTransit(gpsPos, { active = true } = {}) {
   const [departures, setDepartures] = useState({});
   const [loading,    setLoading]    = useState(false);
   const fetchingRef = useRef(false);
+  // Changement de cellule pendant un chargement : on le refait à la fin au lieu de
+  // l'ignorer (avant, la liste de l'ancienne position restait jusqu'à 60 s de plus).
+  const pendingRef = useRef(false);
+  const rerunRef = useRef(null);   // doFetch de l'effet en cours (pas celui d'une position périmée)
   const gpsRef = useRef(gpsPos);
   useEffect(() => { gpsRef.current = gpsPos; }, [gpsPos]);
 
@@ -90,7 +112,8 @@ export function useTransit(gpsPos, { active = true } = {}) {
 
     const doFetch = async () => {
       const pos = gpsRef.current;
-      if (!pos || fetchingRef.current || !isVisible()) return;
+      if (!pos || !isVisible()) return;
+      if (fetchingRef.current) { pendingRef.current = true; return; }
       fetchingRef.current = true;
       setLoading(true);
       try {
@@ -107,10 +130,12 @@ export function useTransit(gpsPos, { active = true } = {}) {
       } finally {
         fetchingRef.current = false;
         if (!cancelled) setLoading(false);
+        pruneCache();
+        if (pendingRef.current) { pendingRef.current = false; rerunRef.current?.(); }
       }
-      pruneCache();
     };
 
+    rerunRef.current = doFetch;
     doFetch();
     const interval = setInterval(doFetch, DEPARTURES_TTL);
     // Retour au premier plan : rafraîchit (le cache évite les doublons)
@@ -119,10 +144,12 @@ export function useTransit(gpsPos, { active = true } = {}) {
 
     return () => {
       cancelled = true;
+      if (rerunRef.current === doFetch) rerunRef.current = null;
       clearInterval(interval);
       document.removeEventListener?.("visibilitychange", onVisible);
     };
   }, [gpsKey, active]);
 
-  return { stops, departures, loading };
+  const located = useMemo(() => relocateStops(stops, gpsPos), [stops, gpsPos]);
+  return { stops: located, departures, loading };
 }
