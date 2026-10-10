@@ -52,6 +52,16 @@ for (const level of ["error", "warn"]) {
   };
 }
 
+/**
+ * Fils du moteur processeur. Plusieurs fils exigent SharedArrayBuffer, donc une page
+ * isolée (COOP/COEP, `crossOriginIsolated`) ; sinon un seul — onnxruntime y retombe de
+ * lui-même, on le fixe pour ne dépendre d'aucune heuristique.
+ */
+export function wasmThreads(scope = self) {
+  if (!scope.crossOriginIsolated || typeof SharedArrayBuffer === "undefined") return 1;
+  return Math.max(1, Math.min(4, (scope.navigator?.hardwareConcurrency || 1) - 1));
+}
+
 async function runtime(engineId) {
   if (tf) return tf;
   const engine = ENGINES[engineId] ?? ENGINES.webgpu;
@@ -59,10 +69,7 @@ async function runtime(engineId) {
   globalThis[ENGINE_SLOT] = ort;
   tf = await import("@huggingface/transformers");
   const onnx = tf.env.backends.onnx;
-  // Un seul fil : sans isolation cross-origin (COOP/COEP, absente de la WebView
-  // Capacitor) il n'y a pas de SharedArrayBuffer. onnxruntime retombe déjà à 1 fil dans
-  // ce cas, on le fixe explicitement pour ne dépendre d'aucune heuristique.
-  onnx.wasm.numThreads = 1;
+  onnx.wasm.numThreads = wasmThreads();
   onnx.wasm.proxy = false;
   // transformers.js force wasmPaths vers cdn.jsdelivr.net : le moteur (14 à 28 Mo) était
   // retéléchargé à chaque initialisation, hors de tout délai, et l'IA ne démarrait pas

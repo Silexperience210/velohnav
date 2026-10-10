@@ -46,6 +46,7 @@ try {
   const r = await ready;
   if (r.type === "error") throw new Error(`${r.message}\n   journal : ${JSON.stringify(r.log)}`);
   await send({ type: "meta", device: variant.device, dtype: variant.dtype, engine, probe: p, ua: navigator.userAgent,
+               isolated: self.crossOriginIsolated, cores: navigator.hardwareConcurrency,
                loadMs: Math.round(performance.now() - t0load), selfTest: r.selfTest, selfTestMs: r.selfTestMs });
   // Contexte vide : un outil appelé retombe sur l'assistant déterministe, ce n'est pas l'objet du banc.
   const ctx = { stations: [], t, now: new Date() };

@@ -41,7 +41,7 @@ const server = http.createServer((req, res) => {
     req.on("data", (c) => { body += c; });
     req.on("end", () => {
       const m = JSON.parse(body);
-      if (m.type === "meta") { meta = m; console.log(`[banc] ${m.device}/${m.dtype} moteur ${m.engine} : chargé en ${m.loadMs} ms, essai à vide ${JSON.stringify(m.selfTest)} en ${m.selfTestMs} ms`, JSON.stringify(m.probe)); }
+      if (m.type === "meta") { meta = m; console.log(`[banc] ${m.device}/${m.dtype} moteur ${m.engine}${m.isolated ? ` (page isolée, ${m.cores} cœurs)` : " (un fil)"} : chargé en ${m.loadMs} ms, essai à vide ${JSON.stringify(m.selfTest)} en ${m.selfTestMs} ms`, JSON.stringify(m.probe)); }
       else if (m.type === "row") {
         rows.push(m);
         console.log(`[${m.cfg}] ${m.q}${m.reachesModel ? "" : "  (reconnu sans modèle)"}\n   brut : ${JSON.stringify(m.raw)}`
@@ -55,6 +55,11 @@ const server = http.createServer((req, res) => {
       res.end("ok");
     });
     return;
+  }
+  // ISOLATE=1 : page isolée (COOP/COEP), condition des fils multiples du moteur processeur.
+  if (process.env.ISOLATE === "1") {
+    res.setHeader("cross-origin-opener-policy", "same-origin");
+    res.setHeader("cross-origin-embedder-policy", "require-corp");
   }
   const file = url.startsWith("/models/") ? path.join(modelsDir, url.slice(8)) : path.join(out, url === "/" ? "index.html" : url);
   fs.stat(file, (err, st) => {
