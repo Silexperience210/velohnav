@@ -10,17 +10,20 @@
 // s'il se bloque, et l'échec est rapporté avec sa raison. Les décisions (variante,
 // délais, repli) sont des fonctions pures dans modelPolicy.js.
 import {
-  VARIANTS, chooseVariant, LIMITS, watchdog,
-  initialProgress, progressReducer, withTimeout,
-  memoryVerdict, heaviestVariant, LEGACY_MODEL_DIRS, selfTestVerdict,
-  planAttempts, classifyFailure, deviceFingerprint, failureRecord,
+  VARIANTS, MODEL, chooseVariant, LIMITS, watchdog,
+  initialProgress, progressReducer, withTimeout, hubFileUrl,
+  memoryVerdict, heaviestVariant, LEGACY_MODEL_DIRS, selfTestVerdict, outputLooksCorrupted,
+  planAttempts, classifyFailure, deviceFingerprint, failureRecord, runtimeContext, NEEDS_DOWNLOAD,
 } from "./modelPolicy.js";
 import { readMemoryInfo } from "./deviceMemory.js";
+import { logSentry } from "../sentry.js";
 
 export { chooseVariant };
 
-// Tentatives en échec sur cet appareil (planAttempts les saute) : { fingerprint, failed:
-// { "q4f16/webgpu": "raison", … } }. Liées à l'empreinte (modèle, échelle, GPU annoncé).
+// Tentatives en échec sur cet appareil (planAttempts les saute) : { fingerprint, context,
+// failed: { "q4f16/webgpu": "raison", … } }. Liées à l'empreinte (modèle, échelle, GPU
+// annoncé) et au contexte (moteur onnxruntime, version du navigateur) : une mise à jour
+// de l'un ou de l'autre fait rejouer les tentatives d'elles-mêmes.
 const FAILED_KEY = "velohnav_ai_attempts_ko";
 // Clés d'avant l'échelle, reprises une fois puis effacées (voir failureRecord).
 const LEGACY_F16_KEY = "velohnav_ai_f16_ko";
@@ -28,23 +31,60 @@ const LEGACY_WEBGPU_KEY = "velohnav_ai_webgpu_ko";
 
 const store = () => { try { return globalThis.localStorage || null; } catch { return null; } };
 
-function loadFailures(fingerprint) {
+function loadFailures(fingerprint, context) {
   const ls = store();
   let stored = null, legacyF16 = null;
   try { stored = ls?.getItem(FAILED_KEY) ?? null; legacyF16 = ls?.getItem(LEGACY_F16_KEY) ?? null; } catch { /* mode privé */ }
-  const failed = failureRecord({ stored, legacyF16, fingerprint });
+  const failed = failureRecord({ stored, legacyF16, fingerprint, context });
   if (legacyF16 || ls?.getItem?.(LEGACY_WEBGPU_KEY)) {
-    saveFailures(fingerprint, failed);
+    saveFailures(fingerprint, context, failed);
     try { ls.removeItem?.(LEGACY_F16_KEY); ls.removeItem?.(LEGACY_WEBGPU_KEY); } catch { /* idem */ }
   }
   return failed;
 }
-function saveFailures(fingerprint, failed) {
-  try { store()?.setItem(FAILED_KEY, JSON.stringify({ fingerprint, failed })); } catch { /* mode privé */ }
+function saveFailures(fingerprint, context, failed) {
+  try { store()?.setItem(FAILED_KEY, JSON.stringify({ fingerprint, context, failed })); } catch { /* mode privé */ }
 }
-/** Oublie les échecs mémorisés : « Réessayer » quand plus rien ne restait à tenter. */
+
+// « Réessayer » : l'utilisateur accepte ce que coûte le prochain chargement, téléchargement
+// compris (planAttempts : `consent`). Valable pour UN chargement.
+let downloadConsent = false;
+/** Oublie les échecs mémorisés et autorise le prochain chargement à télécharger : « Réessayer ». */
 export function forgetFailures() {
+  downloadConsent = true;
   try { store()?.removeItem?.(FAILED_KEY); } catch { /* mode privé */ }
+}
+
+/**
+ * Variantes dont tous les fichiers sont déjà sur l'appareil : copie embarquée dans l'APK
+ * (toutes), ou cache de transformers.js (clé = URL du Hub, celle du pré-chargement).
+ * null quand on ne peut pas le savoir (pas d'API Cache) : planAttempts garde alors l'ordre
+ * de préférence pur. Ne télécharge rien.
+ * @returns {Promise<Set<string>|null>}
+ */
+async function cachedDtypes() {
+  if (typeof caches === "undefined") return null;
+  const dtypes = [...new Set(Object.values(VARIANTS).map((v) => v.dtype))];
+  try {
+    const ctrl = new AbortController();
+    const local = await withTimeout(
+      fetch(`/models/${MODEL.localDir}/config.json`, { method: "HEAD", signal: ctrl.signal }),
+      LIMITS.localCheckMs, "local model check", () => ctrl.abort(),
+    ).then((r) => r.ok, () => false);
+    if (local) return new Set(dtypes);
+  } catch { /* pas de copie embarquée */ }
+  try {
+    const cache = await withTimeout(caches.open("transformers-cache"), 5000, "cache");
+    const have = new Set();
+    for (const d of dtypes) {
+      const files = Object.values(VARIANTS).find((v) => v.dtype === d).files;
+      const hits = await withTimeout(Promise.all(files.map((f) => cache.match(hubFileUrl(f)))), 5000, "cache");
+      if (hits.every(Boolean)) have.add(d);
+    }
+    return have;
+  } catch {
+    return null;
+  }
 }
 
 /** Échec de chargement ou de génération, avec un code traduisible côté interface. */
@@ -81,6 +121,7 @@ export function modelReport() {
     skipped: report.skipped.map((x) => ({ ...x })),
     chosen: report.chosen ? { ...report.chosen } : null,
     gpu: report.gpu ? { ...report.gpu } : null,
+    cached: report.cached ? [...report.cached] : null,
   };
 }
 
@@ -97,6 +138,9 @@ function gpuSummary(probe) {
     vendor: i.vendor || "", architecture: i.architecture || "", description: i.description || "",
     fallback: !!probe.isFallbackAdapter,
     f16: (probe.features || []).includes("shader-f16"),
+    subgroups: (probe.features || []).includes("subgroups"),
+    subgroupMin: Number.isFinite(i.subgroupMinSize) ? i.subgroupMinSize : null,
+    subgroupMax: Number.isFinite(i.subgroupMaxSize) ? i.subgroupMaxSize : null,
     maxBufferMiB: Number.isFinite(probe.limits?.maxBufferSize) ? Math.round(probe.limits.maxBufferSize / 2 ** 20) : null,
     maxBindingMiB: Number.isFinite(probe.limits?.maxStorageBufferBindingSize) ? Math.round(probe.limits.maxStorageBufferBindingSize / 2 ** 20) : null,
     device: probe.device?.ok ? "ok" : (probe.device?.error || probe.error || "—"),
@@ -105,7 +149,8 @@ function gpuSummary(probe) {
 
 const gpuLine = (g) => g.adapter
   ? `${[g.vendor, g.architecture, g.description].filter(Boolean).join(" ") || "?"}${g.fallback ? " (logiciel)" : ""}, `
-    + `shader-f16 ${g.f16 ? "oui" : "non"}, tampon ${g.maxBufferMiB ?? "?"} Mio, liaison ${g.maxBindingMiB ?? "?"} Mio, device ${g.device}`
+    + `shader-f16 ${g.f16 ? "oui" : "non"}, subgroups ${g.subgroups ? `oui (${g.subgroupMin ?? "?"}–${g.subgroupMax ?? "?"})` : "non"}, `
+    + `tampon ${g.maxBufferMiB ?? "?"} Mio, liaison ${g.maxBindingMiB ?? "?"} Mio, device ${g.device}`
   : `aucun adaptateur${g.device && g.device !== "—" ? ` (${g.device})` : ""}`;
 
 let worker = null;
@@ -199,7 +244,7 @@ function runAttempt(choose, onProgress, onPhase) {
       const now = Date.now();
       st = { ...st, since: now, lastActivity: now, expect: a.variant.files };   // init seulement quand les POIDS sont là
       onPhase?.({ phase: "download", device: a.engine.device, engine: a.engine.id, attempt: a.id, mb: a.variant.mb });
-      w.postMessage({ type: "load", variant: a.variant, engine: a.engine.id });
+      w.postMessage({ type: "load", variant: a.variant, engine: a.engine.id, profile: a.profile });
     };
 
     // Le chien de garde : la seule chose qui voit un blocage (une attente qui ne se
@@ -257,14 +302,18 @@ const attemptLine = (x) => `${x.id} → ${x.code}${x.detail ? ` (${x.detail})` :
  */
 async function runLadder(onProgress, onPhase, gen) {
   const tried = [];
-  report = { tried, skipped: [], chosen: null, gpu: null };
-  let fingerprint = null, failed = {};
+  report = { tried, skipped: [], chosen: null, gpu: null, cached: null };
+  const context = runtimeContext();
+  // Consentement de « Réessayer » : pour CE chargement seulement
+  const consent = downloadConsent;
+  downloadConsent = false;
+  let fingerprint = null, failed = {}, cached = null;
   const choose = (probe) => {
     if (probeCache === undefined) probeCache = probe ?? null;
     report.gpu = gpuSummary(probeCache);
     fingerprint = deviceFingerprint(probeCache);
-    failed = loadFailures(fingerprint);
-    const plan = planAttempts({ probe: probeCache, failed });
+    failed = loadFailures(fingerprint, context);
+    const plan = planAttempts({ probe: probeCache, failed, cached, consent });
     // Ce qui vient d'échouer pendant CE chargement figure déjà dans `tried`
     report.skipped = plan.skipped.filter((x) => !tried.some((y) => y.id === x.id));
     const a = plan.queue[0] || null;
@@ -276,6 +325,11 @@ async function runLadder(onProgress, onPhase, gen) {
   };
 
   for (let first = true; ; first = false) {
+    if (gen !== generation) throw new ModelError("cancelled");
+    // État du cache relu avant CHAQUE plan : une tentative vient peut-être de télécharger
+    // ou de purger des fichiers (ce qui ne coûte rien passe avant, planAttempts)
+    cached = await cachedDtypes();
+    report.cached = cached ? [...cached] : null;
     if (gen !== generation) throw new ModelError("cancelled");
     // Sonde déjà faite : la tentative est désignée ici, et s'il ne reste rien à tenter,
     // aucun worker n'est créé pour rien.
@@ -298,29 +352,48 @@ async function runLadder(onProgress, onPhase, gen) {
       console.warn(`[IA] tentative ${a.id} en échec (${d.code}, phase ${e.phase}) :`, e.detail);
       if (d.condemn) {
         failed = { ...failed, [a.id]: String(e.detail || d.code).slice(0, 200) };
-        saveFailures(fingerprint, failed);
+        saveFailures(fingerprint, context, failed);
       }
-      if (d.purgeDtype) purgeCachedVariant(d.purgeDtype);
+      // Attendue : le plan suivant relit le cache et ne doit plus y voir ces fichiers
+      if (d.purgeDtype) await purgeCachedVariant(d.purgeDtype);
       if (!d.continue) throw new ModelError(d.code, { detail: e.detail, seconds: e.seconds, mb: a.variant.mb, attempts: tried });
       continue;
     }
     if (!r.attempt) {
       current = null;
-      const lines = [...tried.map(attemptLine), ...report.skipped.filter((x) => x.reason.startsWith("failed-before")).map((x) => `${x.id} → ${x.reason}`)];
+      const lines = [...tried.map(attemptLine), ...report.skipped
+        .filter((x) => x.reason.startsWith("failed-before") || x.reason === NEEDS_DOWNLOAD).map((x) => `${x.id} → ${x.reason}`)];
       console.warn("[IA] aucune tentative n'a abouti :", lines.join(" ; "));
+      reportLadder(context, null);
       throw new ModelError("all_failed", { detail: lines.join(" ; "), attempts: tried });
     }
     report.chosen = {
       id: r.attempt.id, dtype: r.attempt.variant.dtype, device: r.attempt.engine.device,
-      engine: r.attempt.engine.id, mb: r.attempt.variant.mb,
+      engine: r.attempt.engine.id, mb: r.attempt.variant.mb, profile: r.attempt.profile?.id ?? null,
       ...(Number.isFinite(r.loadMs) ? { loadMs: r.loadMs } : {}),
     };
     console.info(`[IA] retenu : ${r.attempt.id} (${r.attempt.variant.mb} Mo`
       + `${Number.isFinite(r.loadMs) ? `, prêt en ${(r.loadMs / 1000).toFixed(1)} s` : ""})`
       + `${report.gpu ? ` ; GPU : ${gpuLine(report.gpu)}` : ""}`
       + `${tried.length ? ` ; avant lui : ${tried.map(attemptLine).join(" ; ")}` : ""}`);
+    reportLadder(context, report.chosen);
     return;
   }
+}
+
+/**
+ * Bilan transmis à Sentry (seulement si l'application en a un et que l'utilisateur ne l'a
+ * pas coupé) : quel GPU, quelle tentative a échoué et comment, laquelle est retenue. Sans
+ * lui, savoir quels GPU calculent faux exige que chaque utilisateur lise son écran.
+ * Envoyé seulement quand une tentative a échoué PENDANT ce chargement : les échecs étant
+ * mémorisés, un même appareil ne le renvoie qu'après un changement de contexte.
+ */
+function reportLadder(context, chosen) {
+  if (!report.tried.length) return;
+  logSentry(chosen?.device === "webgpu" ? "info" : "warning", "ia: échelle GPU", {
+    context, chosen: chosen?.id ?? null, gpu: report.gpu ? gpuLine(report.gpu) : "no-webgpu",
+    tried: report.tried.map(attemptLine), skipped: report.skipped.map((x) => `${x.id} [${x.reason}]`),
+  });
 }
 
 /**
@@ -453,23 +526,31 @@ export async function generateDetailed(system, history, opts = {}) {
 
 async function runGeneration(id, messages, opts, seconds) {
   try {
-    return await sendGeneration(id, messages, opts, seconds);
+    const text = await sendGeneration(id, messages, opts, seconds);
+    // Le GPU a passé l'essai à vide puis rend du charabia (autre noyau sur un long prompt) :
+    // c'est un calcul faux, traité comme une erreur du moteur — la tentative est écartée.
+    if (current?.engine.device === "webgpu" && outputLooksCorrupted(text)) {
+      throw new ModelError("generate", { detail: `corrupted output: ${JSON.stringify(String(text).slice(0, 60))}` });
+    }
+    return text;
   } catch (e) {
     // Erreur du moteur (pas un délai) sur le GPU : une session peut se créer puis échouer
-    // à chaque réponse (banc : « Sub requires f16 »). La tentative est écartée sur cet
-    // appareil, le worker arrêté ; `recover` dit à l'interface de recharger : l'échelle
-    // passe d'elle-même à la tentative suivante (le processeur en dernier).
+    // à chaque réponse (banc : « Sub requires f16 »), ou calculer faux. La tentative est
+    // écartée sur cet appareil, le worker arrêté ; `recover` dit à l'interface de
+    // recharger : l'échelle passe d'elle-même à la tentative suivante (processeur en dernier).
     const a = current;
     if (e?.code === "generate" && a) {
       const d = classifyFailure({ attempt: a, phase: "generate" });
       if (d.condemn) {
         const fingerprint = deviceFingerprint(probeCache ?? null);
-        const failed = { ...loadFailures(fingerprint), [a.id]: String(e.detail || d.code).slice(0, 200) };
-        saveFailures(fingerprint, failed);
+        const context = runtimeContext();
+        const failed = { ...loadFailures(fingerprint, context), [a.id]: String(e.detail || d.code).slice(0, 200) };
+        saveFailures(fingerprint, context, failed);
         if (classifyFailure({ attempt: a, phase: "generate", failed }).purgeDtype) purgeCachedVariant(a.variant.dtype);
         report.tried.push({ id: a.id, code: d.code, detail: e.detail });
         report.chosen = null;
         console.warn(`[IA] tentative ${a.id} écartée après une erreur de génération :`, e.detail);
+        reportLadder(context, null);
         const err = new ModelError("generate", { detail: e.detail, recover: true, attempts: report.tried });
         killWorker(err);
         throw err;

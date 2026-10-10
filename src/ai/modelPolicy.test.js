@@ -3,6 +3,7 @@ import {
   VARIANTS, LARGEST_TENSOR_BYTES, LIMITS, assessWebGPU, watchdog,
   initialProgress, progressReducer, withTimeout, selfTestVerdict, variantFor,
   ATTEMPTS, ENGINES, planAttempts, classifyFailure, deviceFingerprint, failureRecord, attemptById, gpuSetAside,
+  GPU_PROFILES, compatFeatures, compatLimits, runtimeContext, outputLooksCorrupted, SELF_TEST, NEEDS_DOWNLOAD, ORT_WEB_VERSION,
 } from "./modelPolicy.js";
 
 // Sonde d'un GPU capable de porter q4f16, modifiée cas par cas.
@@ -81,8 +82,8 @@ describe("sonde WebGPU : la présence d'un adaptateur ne suffit pas", () => {
 const ids = (plan) => plan.queue.map((a) => a.id);
 
 describe("échelle des tentatives : le GPU d'abord, le processeur toujours en dernier", () => {
-  it("ordre : q4f16 sur le GPU, q4 sur le GPU, puis processeur — un seul moteur par voie", () => {
-    expect(ATTEMPTS.map((a) => a.id)).toEqual(["q4f16/webgpu", "q4/webgpu", "q4/wasm"]);
+  it("ordre : q4f16 sur le GPU (natif, puis compatible), q4 sur le GPU (idem), puis processeur — un seul moteur par voie", () => {
+    expect(ATTEMPTS.map((a) => a.id)).toEqual(["q4f16/webgpu", "q4f16/webgpu-compat", "q4/webgpu", "q4/webgpu-compat", "q4/wasm"]);
     // le moteur JSEP (build « all », 28,4 Mo) n'est plus embarqué : aucune tentative ne le demande
     expect(Object.keys(ENGINES).sort()).toEqual(["wasm", "webgpu"]);
   });
@@ -93,8 +94,10 @@ describe("échelle des tentatives : le GPU d'abord, le processeur toujours en de
 
   it("vrai GPU sans shader-f16 (mesuré sur RTX 3060 / Chrome 151) : q4 sur le GPU d'abord, q4f16 écarté et dit pourquoi", () => {
     const p = planAttempts({ probe: goodProbe({ features: ["subgroups"] }) });
-    expect(ids(p)).toEqual(["q4/webgpu", "q4/wasm"]);
-    expect(p.skipped).toEqual([{ id: "q4f16/webgpu", reason: "no-shader-f16" }]);
+    expect(ids(p)).toEqual(["q4/webgpu", "q4/webgpu-compat", "q4/wasm"]);
+    expect(p.skipped).toEqual([
+      { id: "q4f16/webgpu", reason: "no-shader-f16" }, { id: "q4f16/webgpu-compat", reason: "no-shader-f16" },
+    ]);
   });
 
   it("pas de WebGPU, adaptateur logiciel ou device refusé : processeur seul", () => {
@@ -105,7 +108,7 @@ describe("échelle des tentatives : le GPU d'abord, le processeur toujours en de
 
   it("tentatives déjà en échec ici : sautées, avec leur raison", () => {
     const p = planAttempts({ probe: goodProbe(), failed: { "q4f16/webgpu": "Sub requires f16" } });
-    expect(ids(p)[0]).toBe("q4/webgpu");
+    expect(ids(p)[0]).toBe("q4f16/webgpu-compat");
     expect(p.skipped[0]).toEqual({ id: "q4f16/webgpu", reason: "failed-before: Sub requires f16" });
   });
 
@@ -151,7 +154,7 @@ describe("échecs mémorisés : liés au modèle, à l'échelle et au GPU", () =
   it("échecs « …/jsep » mémorisés avant le retrait de ce moteur : sans effet sur l'échelle", () => {
     const stored = JSON.stringify({ fingerprint: fp, failed: { "q4f16/jsep": "x", "q4/jsep": "y" } });
     const p = planAttempts({ probe: goodProbe(), failed: failureRecord({ stored, fingerprint: fp }) });
-    expect(ids(p)).toEqual(["q4f16/webgpu", "q4/webgpu", "q4/wasm"]);
+    expect(ids(p)).toEqual(ATTEMPTS.map((a) => a.id));
     expect(p.skipped).toEqual([]);
   });
 
@@ -159,10 +162,13 @@ describe("échecs mémorisés : liés au modèle, à l'échelle et au GPU", () =
     expect(failureRecord({ stored: "{", fingerprint: fp })).toEqual({});
   });
 
-  it("ancien « fp16 en échec » : q4f16 écarté (fichiers purgés, pas de second téléchargement)", () => {
+  it("ancien « fp16 en échec » : q4f16 natif écarté ; le compatible, jamais essayé, attend un téléchargement consenti", () => {
     const f = failureRecord({ stored: null, legacyF16: "Sub requires f16", fingerprint: fp });
     expect(Object.keys(f)).toEqual(["q4f16/webgpu"]);
-    expect(planAttempts({ probe: goodProbe(), failed: f }).queue[0].id).toBe("q4/webgpu");
+    // fichiers q4f16 purgés, q4 en cache : pas de second téléchargement de lui-même
+    const p = planAttempts({ probe: goodProbe(), failed: f, cached: new Set(["q4"]) });
+    expect(p.queue[0].id).toBe("q4/webgpu");
+    expect(p.skipped).toContainEqual({ id: "q4f16/webgpu-compat", reason: NEEDS_DOWNLOAD });
   });
 });
 
@@ -281,12 +287,13 @@ describe("après l'échec d'une tentative : la suivante part d'elle-même", () =
     }
   });
 
-  it("q4f16 purgé dès que sa tentative GPU a échoué (plus aucune ne s'en sert)", () => {
-    expect(classifyFailure({ attempt: A("q4f16/webgpu"), phase: "init" }).purgeDtype).toBe("q4f16");
+  it("q4f16 purgé quand ses DEUX tentatives GPU ont échoué (plus aucune ne s'en sert), pas avant", () => {
+    expect(classifyFailure({ attempt: A("q4f16/webgpu"), phase: "init" }).purgeDtype).toBeNull();
+    expect(classifyFailure({ attempt: A("q4f16/webgpu-compat"), phase: "init", failed: { "q4f16/webgpu": "x" } }).purgeDtype).toBe("q4f16");
   });
 
   it("q4 jamais purgé : le processeur s'en sert", () => {
-    const failed = { "q4/webgpu": "x" };
+    const failed = { "q4/webgpu": "x", "q4/webgpu-compat": "x" };
     expect(classifyFailure({ attempt: A("q4/wasm"), phase: "init", failed }).purgeDtype).toBeNull();
     expect(classifyFailure({ attempt: A("q4/webgpu"), phase: "init" }).purgeDtype).toBeNull();
   });
@@ -371,7 +378,8 @@ describe("GPU mis de côté : la raison se lit (retour du téléphone : « proce
   it("pas de WebGPU : une seule raison pour les deux tentatives GPU, rien à rejouer", () => {
     const { skipped } = planAttempts({ probe: null });
     expect(gpuSetAside({ chosen: cpu, tried: [], skipped })).toEqual({
-      reasons: [{ ids: ["q4f16/webgpu", "q4/webgpu"], kind: "no_webgpu", detail: "" }], retry: false, downloadMB: 0,
+      reasons: [{ ids: ["q4f16/webgpu", "q4f16/webgpu-compat", "q4/webgpu", "q4/webgpu-compat"], kind: "no_webgpu", detail: "" }],
+      retry: false, downloadMB: 0,
     });
   });
   it("GPU sans fp16 dont le q4 a échoué à ce démarrage : chaque raison, erreur exacte, rejouable sans téléchargement", () => {
@@ -379,22 +387,159 @@ describe("GPU mis de côté : la raison se lit (retour du téléphone : « proce
     const { skipped } = planAttempts({ probe });
     const r = gpuSetAside({ chosen: cpu, skipped, tried: [{ id: "q4/webgpu", code: "init", detail: "OrtRun: Sub requires f16" }] });
     expect(r.reasons).toEqual([
-      { ids: ["q4f16/webgpu"], kind: "no_f16", detail: "" },
+      { ids: ["q4f16/webgpu", "q4f16/webgpu-compat"], kind: "no_f16", detail: "" },
       { ids: ["q4/webgpu"], kind: "failed", detail: "OrtRun: Sub requires f16" },
     ]);
     expect(r).toMatchObject({ retry: true, downloadMB: 0 });
   });
   it("échecs mémorisés d'un lancement précédent : dits comme tels, et rejouer q4f16 annonce son téléchargement", () => {
     const probe = { adapter: true, features: ["shader-f16"], limits: { maxBufferSize: 2 ** 30, maxStorageBufferBindingSize: 2 ** 30 }, device: { ok: true } };
-    const { skipped } = planAttempts({ probe, failed: { "q4f16/webgpu": "init_timeout", "q4/webgpu": "init_timeout" } });
+    const failed = Object.fromEntries(ATTEMPTS.filter((a) => a.engine.device === "webgpu").map((a) => [a.id, "init_timeout"]));
+    const { skipped } = planAttempts({ probe, failed });
     const r = gpuSetAside({ chosen: cpu, skipped, tried: [] });
-    expect(r.reasons).toEqual([{ ids: ["q4f16/webgpu", "q4/webgpu"], kind: "failed_before", detail: "init_timeout" }]);
+    expect(r.reasons).toEqual([{ ids: ["q4f16/webgpu", "q4f16/webgpu-compat", "q4/webgpu", "q4/webgpu-compat"], kind: "failed_before", detail: "init_timeout" }]);
+    // deux tentatives q4f16, UN téléchargement
     expect(r).toMatchObject({ retry: true, downloadMB: VARIANTS.webgpu.mb });
   });
   it("device refusé, limites trop basses : catégorie et détail", () => {
     const refused = planAttempts({ probe: { adapter: true, features: [], limits: { maxBufferSize: 2 ** 30, maxStorageBufferBindingSize: 2 ** 30 }, device: { ok: false, error: "OperationError" } } });
-    expect(gpuSetAside({ chosen: cpu, skipped: refused.skipped }).reasons.at(-1)).toEqual({ ids: ["q4/webgpu"], kind: "device", detail: "OperationError" });
+    expect(gpuSetAside({ chosen: cpu, skipped: refused.skipped }).reasons.at(-1)).toEqual({ ids: ["q4/webgpu", "q4/webgpu-compat"], kind: "device", detail: "OperationError" });
     const small = planAttempts({ probe: { adapter: true, features: ["shader-f16"], limits: { maxBufferSize: 2 ** 24, maxStorageBufferBindingSize: 2 ** 24 }, device: { ok: true } } });
     expect(gpuSetAside({ chosen: cpu, skipped: small.skipped }).reasons[0]).toMatchObject({ kind: "limits", detail: expect.stringMatching(/maxBufferSize 16 MiB/) });
+  });
+});
+
+// ── GPU qui calcule faux : réglage « compatible » et rejeu automatique ─────────
+// Retour du téléphone : q4f16 rendait « 臟 », q4 « � » à l'essai à vide. Le GPU calculait
+// faux sur les deux variantes ; onnxruntime y avait activé les subgroups (noyau WideTile).
+describe("réglage GPU compatible : device sans subgroups", () => {
+  it("chaque variante GPU a sa tentative native (id inchangé) et sa tentative compatible", () => {
+    for (const dtype of ["q4f16", "q4"]) {
+      expect(attemptById(`${dtype}/webgpu`).profile).toBe(GPU_PROFILES.native);
+      expect(attemptById(`${dtype}/webgpu-compat`).profile).toBe(GPU_PROFILES.compat);
+      expect(attemptById(`${dtype}/webgpu-compat`).variant).toBe(attemptById(`${dtype}/webgpu`).variant);
+    }
+    expect(attemptById("q4/wasm").profile).toBeNull();
+    expect(GPU_PROFILES.compat).toMatchObject({ custom: true, subgroups: false });
+  });
+
+  it("fonctions demandées : jamais de subgroups ; shader-f16 seulement pour q4f16, s'il existe", () => {
+    const all = ["shader-f16", "subgroups", "subgroup-size-control", "chromium-experimental-subgroup-matrix", "timestamp-query"];
+    expect(compatFeatures("q4f16", all)).toEqual(["shader-f16"]);
+    expect(compatFeatures("q4", all)).toEqual([]);
+    expect(compatFeatures("q4f16", new Set(["subgroups"]))).toEqual([]);
+    expect(compatFeatures("q4f16", undefined)).toEqual([]);
+  });
+
+  it("limites demandées : toutes celles de l'adaptateur, y compris portées par le prototype (GPUSupportedLimits)", () => {
+    class Limits { get maxBufferSize() { return 2 ** 31; } get maxComputeWorkgroupStorageSize() { return 32768; } }
+    const lim = Object.create(Limits.prototype, { maxStorageBufferBindingSize: { value: 2 ** 30, enumerable: true } });
+    // les accesseurs d'une classe JS ne sont pas énumérables : on les rend tels que WebIDL les expose
+    for (const k of ["maxBufferSize", "maxComputeWorkgroupStorageSize"]) {
+      Object.defineProperty(Limits.prototype, k, { ...Object.getOwnPropertyDescriptor(Limits.prototype, k), enumerable: true });
+    }
+    expect(compatLimits(lim)).toEqual({ maxStorageBufferBindingSize: 2 ** 30, maxBufferSize: 2 ** 31, maxComputeWorkgroupStorageSize: 32768 });
+    expect(compatLimits({ a: 1, b: "x", c: NaN })).toEqual({ a: 1 });
+    expect(compatLimits(null)).toEqual({});
+  });
+});
+
+describe("plan : ce qui ne coûte rien est tenté seul, un téléchargement attend le consentement", () => {
+  const nativeKo = { "q4f16/webgpu": "self-test no-word: \"臟\"", "q4/webgpu": "self-test no-word: \"�\"" };
+
+  it("cas du téléphone : natifs en échec, q4f16 purgé, q4 en cache → q4 compatible sur le GPU, puis processeur", () => {
+    const p = planAttempts({ probe: goodProbe(), failed: nativeKo, cached: new Set(["q4"]) });
+    expect(ids(p)).toEqual(["q4/webgpu-compat", "q4/wasm"]);
+    expect(p.skipped).toContainEqual({ id: "q4f16/webgpu-compat", reason: NEEDS_DOWNLOAD });
+  });
+
+  it("« Réessayer » (consentement) : l'ordre de préférence complet, téléchargement compris", () => {
+    const p = planAttempts({ probe: goodProbe(), failed: nativeKo, cached: new Set(["q4"]), consent: true });
+    expect(ids(p)).toEqual(["q4f16/webgpu-compat", "q4/webgpu-compat", "q4/wasm"]);
+  });
+
+  it("premier chargement (rien en cache) ou cache inconnu : ordre de préférence, le téléchargement est attendu", () => {
+    expect(ids(planAttempts({ probe: goodProbe(), cached: new Set() }))).toEqual(ATTEMPTS.map((a) => a.id));
+    expect(ids(planAttempts({ probe: goodProbe(), cached: null }))).toEqual(ATTEMPTS.map((a) => a.id));
+  });
+
+  it("q4 hors du cache n'est jamais reporté : le processeur en a besoin de toute façon", () => {
+    const p = planAttempts({ probe: goodProbe(), cached: new Set(["q4f16"]) });
+    expect(ids(p)).toEqual(ATTEMPTS.map((a) => a.id));
+  });
+
+  it("tentative reportée : dite (« à télécharger »), comptée une fois, rejouable", () => {
+    const cpu = { id: "q4/wasm", dtype: "q4", device: "wasm", engine: "wasm", mb: 294 };
+    const { skipped } = planAttempts({ probe: goodProbe(), failed: nativeKo, cached: new Set(["q4"]) });
+    const r = gpuSetAside({ chosen: cpu, skipped, tried: [{ id: "q4/webgpu-compat", code: "init", detail: "self-test no-word" }], cached: ["q4"] });
+    expect(r.reasons.map((x) => [x.kind, x.ids])).toEqual([
+      ["failed_before", ["q4f16/webgpu"]], ["download", ["q4f16/webgpu-compat"]],
+      ["failed_before", ["q4/webgpu"]], ["failed", ["q4/webgpu-compat"]],
+    ]);
+    expect(r).toMatchObject({ retry: true, downloadMB: VARIANTS.webgpu.mb });
+  });
+});
+
+describe("contexte d'un échec : moteur et navigateur", () => {
+  const fp = deviceFingerprint(goodProbe({ info: { vendor: "qualcomm", architecture: "adreno-7xx" } }));
+  const CHROME = "Mozilla/5.0 (Linux; Android 14; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/140.0.7339.207 Mobile Safari/537.36";
+
+  it("version d'onnxruntime-web lue au build, version majeure de la WebView", () => {
+    expect(ORT_WEB_VERSION).toMatch(/^1\.\d+\.\d+/);
+    expect(runtimeContext(CHROME)).toBe(`ort ${ORT_WEB_VERSION} · chrome 140`);
+    expect(runtimeContext("")).toBe(`ort ${ORT_WEB_VERSION} · ?`);
+  });
+
+  it("même contexte : échecs gardés ; WebView ou moteur mis à jour : oubliés, tout est rejoué", () => {
+    const ctx = runtimeContext(CHROME);
+    const stored = JSON.stringify({ fingerprint: fp, context: ctx, failed: { "q4/webgpu": "x" } });
+    expect(failureRecord({ stored, fingerprint: fp, context: ctx })).toEqual({ "q4/webgpu": "x" });
+    expect(failureRecord({ stored, fingerprint: fp, context: runtimeContext(CHROME.replace("Chrome/140", "Chrome/141")) })).toEqual({});
+  });
+
+  it("enregistrement d'avant le contexte : supposé courant (les échecs du téléphone ne sont pas rejoués)", () => {
+    const stored = JSON.stringify({ fingerprint: fp, failed: { "q4f16/webgpu": "x", "q4/webgpu": "y" } });
+    expect(failureRecord({ stored, fingerprint: fp, context: runtimeContext(CHROME) })).toEqual({ "q4f16/webgpu": "x", "q4/webgpu": "y" });
+  });
+});
+
+describe("charabia : essai à vide sur un long prompt, et sortie surveillée ensuite", () => {
+  it("sorties relevées sur le téléphone : corrompues", () => {
+    expect(outputLooksCorrupted("臟")).toBe(true);
+    expect(outputLooksCorrupted("�")).toBe(true);
+    expect(outputLooksCorrupted("Bonjour 地黎 talk<|im_end|>")).toBe(true);
+  });
+
+  it("réponses justes, accents, symboles, appels d'outils, jetons spéciaux : intactes", () => {
+    for (const ok of [
+      "Bonjour ! Comment puis-je vous aider aujourd'hui ?<|im_end|>",
+      "Il fait 12 °C, vent 17 km/h — café à 2,50 € 😄",
+      "<|tool_call_start|>[route(destination=\"Gare\", mode=\"bike\")]<|tool_call_end|><|im_end|>",
+      "", null,
+    ]) expect(outputLooksCorrupted(ok), String(ok)).toBe(false);
+  });
+
+  it("essai GPU : consigne longue puis « Bonjour » (noyaux de remplissage des vraies questions) ; processeur : court", () => {
+    expect(SELF_TEST.gpuMessages.map((m) => m.role)).toEqual(["system", "user"]);
+    expect(SELF_TEST.gpuMessages[0].content.length).toBeGreaterThan(400);
+    expect(SELF_TEST.gpuMessages.at(-1).content).toBe("Bonjour");
+    expect(SELF_TEST.messages).toEqual([{ role: "user", content: "Bonjour" }]);
+  });
+});
+
+describe("interface : chaque raison et chaque réglage GPU ont leur phrase", () => {
+  it("en français et en anglais", async () => {
+    const fr = (await import("../locales/fr.js")).default;
+    const en = (await import("../locales/en.js")).default;
+    const keys = [
+      ...["no_webgpu", "no_adapter", "software", "no_f16", "limits", "device", "failed", "failed_before", "download"].map((k) => `ui.ai.model.gpu.${k}`),
+      "ui.ai.model.profile.compat", "ui.ai.model.attempt.native", "ui.ai.model.attempt.compat",
+      "ui.ai.model.gpu_info", "ui.ai.model.gpu_none", "ui.ai.model.gpu_no_subgroups",
+    ];
+    for (const k of keys) {
+      expect(fr[k], k).toBeTruthy();
+      expect(en[k], k).toBeTruthy();
+    }
+    expect(fr["ui.ai.model.gpu.download"]).toContain("{mb}");
   });
 });

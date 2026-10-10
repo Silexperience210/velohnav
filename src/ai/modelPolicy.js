@@ -97,6 +97,61 @@ export const ENGINES = Object.freeze({
   wasm:   Object.freeze({ id: "wasm",   module: "wasm",   device: "wasm" }),
 });
 
+/**
+ * Réglages du GPU, une même variante pouvant échouer avec l'un et réussir avec l'autre.
+ *
+ * Retour du téléphone : les DEUX variantes GPU se chargeaient, puis l'essai à vide rendait
+ * du charabia (« 臟 » en q4f16, « � » en q4). Ce n'était donc ni le fp16 (q4 calcule en
+ * fp32) ni le chargement : le GPU calculait faux. Ce qui distingue ce téléphone des
+ * machines où le même modèle répond (Dawn natif, Chrome de bureau) :
+ *  - onnxruntime demande à l'adaptateur TOUTES les fonctions qu'il offre, dont
+ *    `subgroups` et `subgroup-size-control` (webgpu_context.cc, GetAvailableRequiredFeatures) ;
+ *  - avec `subgroups`, le noyau MatMulNBits de remplissage (WideTile, prompt de plus de
+ *    quelques jetons) réduit ses résultats par subgroupShuffle en bandes de
+ *    `adapterInfo.subgroupMinSize` (matmul_nbits.cc). Les GPU mobiles ont des tailles de
+ *    subgroup variables (Mali ~16, Adreno 64/128), terrain des pilotes fragiles ;
+ *  - sans `subgroups`, le même noyau fait une réduction directe.
+ * Lu dans le graphe : les 93 MatMulNBits du modèle n'ont pas d'accuracy_level, le chemin
+ * DP4A (int8) n'est donc jamais pris — il n'est pas en cause.
+ *
+ *  - native : onnxruntime crée le device lui-même (le plus rapide quand le pilote suit) ;
+ *  - compat : le worker crée le device SANS subgroups (shader-f16 seulement, et seulement
+ *    pour q4f16) et le passe à onnxruntime (option `device` de l'EP WebGPU, qui lit alors
+ *    les fonctions de CE device) ; accumulation fp32 des produits matriciels en q4f16.
+ * L'id d'une tentative native est inchangé (« q4f16/webgpu ») : les échecs déjà
+ * mémorisés sur un téléphone restent valables et ne sont pas rejoués.
+ */
+export const GPU_PROFILES = Object.freeze({
+  native: Object.freeze({ id: "native", suffix: "", custom: false }),
+  compat: Object.freeze({ id: "compat", suffix: "-compat", custom: true, subgroups: false, f32acc: true }),
+});
+
+/**
+ * Fonctions à demander pour un device « compat » : jamais de subgroups, shader-f16 seulement
+ * si la variante calcule en fp16 (q4f16 ne tourne pas sans).
+ * @param {string} dtype @param {Iterable<string>} adapterFeatures
+ */
+export function compatFeatures(dtype, adapterFeatures) {
+  return dtype === "q4f16" && [...(adapterFeatures || [])].includes("shader-f16") ? ["shader-f16"] : [];
+}
+
+/**
+ * Limites à demander pour un device « compat » : celles de l'adaptateur, toutes (onnxruntime
+ * en a besoin de plusieurs — tampons, stockage partagé, taille des groupes). Un device créé
+ * avec les limites par défaut (128 Mio de tampon, 16 Kio partagés) ferait échouer des noyaux.
+ * Seules les valeurs numériques sont reprises.
+ * @param {object} limits GPUSupportedLimits (attributs sur le prototype : for…in les voit)
+ */
+export function compatLimits(limits) {
+  const out = {};
+  if (!limits) return out;
+  for (const k in limits) {
+    const v = limits[k];
+    if (typeof v === "number" && Number.isFinite(v)) out[k] = v;
+  }
+  return out;
+}
+
 /** Variante correspondant à un couple appareil / quantification (q4f16 par défaut sur GPU). */
 export function variantFor(device, dtype) {
   if (device === "webgpu") return dtype === "q4" ? VARIANTS.webgpuQ4 : VARIANTS.webgpu;
@@ -191,25 +246,33 @@ const mib = (n) => (typeof n === "number" ? `${Math.round(n / 1048576)} MiB` : "
 
 // ── Échelle des tentatives ──────────────────────────────────────
 //
-// Une tentative = une variante (fichiers, dtype) × un moteur onnxruntime. Ordre de
-// préférence, du plus léger au plus sûr, établi au banc (docs/MODELE.md) :
+// Une tentative = une variante (fichiers, dtype) × un moteur onnxruntime × un réglage du
+// GPU (GPU_PROFILES). Ordre de préférence, du plus rapide au plus sûr, établi au banc
+// (docs/MODELE.md) :
 //
-//   q4f16 / EP WebGPU natif   255 Mo, le plus rapide quand le GPU calcule en fp16
-//   q4    / EP WebGPU natif   294 Mo, calcul fp32 : n'exige pas shader-f16
-//   q4    / processeur        mêmes fichiers : le repli, qui ne demande rien au GPU
+//   q4f16 / GPU natif          255 Mo, le plus rapide quand le GPU calcule en fp16
+//   q4f16 / GPU compatible     mêmes fichiers, device sans subgroups, accumulation fp32
+//   q4    / GPU natif          294 Mo, calcul fp32 : n'exige pas shader-f16
+//   q4    / GPU compatible     mêmes fichiers, device sans subgroups
+//   q4    / processeur         mêmes fichiers : le repli, qui ne demande rien au GPU
 //
 // q4 sert au GPU comme au processeur : passer d'une tentative à la suivante ne
-// retélécharge jamais un fichier déjà en cache. Seul le passage q4f16 → q4 télécharge
-// (294 Mo).
+// retélécharge jamais un fichier déjà en cache. Seul q4f16 peut coûter un téléchargement
+// que le processeur n'aurait pas exigé (255 Mo) : planAttempts ne le lance de lui-même
+// qu'au premier chargement (voir là).
 //
 // fp16 (725 Mo, model_fp16) n'est PAS dans l'échelle : pic mémoire estimé 2,5 Go
 // (MEMORY.peakFactor), hors de portée des téléphones visés (1,4 Go libres chez le
 // propriétaire), et le décodage d'un petit modèle sur GPU mobile est borné par la
 // bande passante mémoire : 2,8 fois plus de poids à lire par jeton.
-const attempt = (variant, engine) => Object.freeze({ id: `${variant.dtype}/${engine.id}`, variant, engine });
+const attempt = (variant, engine, profile = null) => Object.freeze({
+  id: `${variant.dtype}/${engine.id}${profile?.suffix ?? ""}`, variant, engine, profile,
+});
 export const ATTEMPTS = Object.freeze([
-  attempt(VARIANTS.webgpu, ENGINES.webgpu),
-  attempt(VARIANTS.webgpuQ4, ENGINES.webgpu),
+  attempt(VARIANTS.webgpu, ENGINES.webgpu, GPU_PROFILES.native),
+  attempt(VARIANTS.webgpu, ENGINES.webgpu, GPU_PROFILES.compat),
+  attempt(VARIANTS.webgpuQ4, ENGINES.webgpu, GPU_PROFILES.native),
+  attempt(VARIANTS.webgpuQ4, ENGINES.webgpu, GPU_PROFILES.compat),
   attempt(VARIANTS.wasm, ENGINES.wasm),
 ]);
 export const attemptById = (id) => ATTEMPTS.find((a) => a.id === id) || null;
@@ -220,8 +283,30 @@ export const attemptById = (id) => ATTEMPTS.find((a) => a.id === id) || null;
  * Le retrait du moteur JSEP ne la change PAS : les tentatives restantes sont identiques,
  * et rejouer un échec q4f16 déjà constaté retéléchargerait 255 Mo pour rien. Les
  * échecs « …/jsep » mémorisés sont simplement ignorés (absents de ATTEMPTS).
+ * L'ajout des tentatives « compat » ne la change pas non plus : les tentatives natives
+ * gardent leur id, leurs échecs restent vrais ; les nouvelles n'ont encore rien d'écrit.
  */
 export const LADDER_VERSION = 3;
+
+/**
+ * Version d'onnxruntime-web embarquée (vite.config.js, lue dans node_modules au build).
+ * Un échec GPU dépend du moteur : un nouveau moteur redonne sa chance à chaque tentative.
+ */
+// eslint-disable-next-line no-undef
+export const ORT_WEB_VERSION = typeof __ORT_WEB_VERSION__ === "string" ? __ORT_WEB_VERSION__ : "unknown";
+
+/**
+ * Contexte d'exécution d'un échec : moteur onnxruntime et version majeure du navigateur
+ * (la WebView du système, mise à jour à part de l'application). Un échec ne vaut que dans
+ * le contexte où il a été constaté : après la mise à jour de l'un ou de l'autre (pilotes
+ * WebGPU de Chrome, noyaux d'onnxruntime), les tentatives sont rejouées d'elles-mêmes —
+ * sans téléchargement imposé (planAttempts).
+ * @param {string} [ua] navigator.userAgent
+ */
+export function runtimeContext(ua = globalThis.navigator?.userAgent || "") {
+  const b = /(Chrome|Firefox)\/(\d+)/.exec(ua);
+  return `ort ${ORT_WEB_VERSION} · ${b ? `${b[1].toLowerCase()} ${b[2]}` : "?"}`;
+}
 
 /**
  * Empreinte de l'appareil pour les échecs mémorisés : modèle, échelle, et GPU annoncé.
@@ -233,16 +318,31 @@ export function deviceFingerprint(probe) {
   return `${MODEL.revision.slice(0, 8)}|${LADDER_VERSION}|${gpu}`;
 }
 
+/** Raison d'une tentative GPU reportée faute de fichiers en cache (voir planAttempts). */
+export const NEEDS_DOWNLOAD = "needs-download";
+
 /**
  * Tentatives à essayer, dans l'ordre, sur cet appareil.
- * @param {{ probe: object|null, failed?: Record<string,string> }} s
- *   failed : tentatives déjà en échec ici (id → raison), voir failureRecord
+ *
+ * Tout ce qui ne coûte rien est tenté sans rien demander. Ce qui coûterait un
+ * téléchargement que le processeur n'exige pas (q4f16 hors du cache : 255 Mo) n'est lancé
+ * de lui-même qu'au PREMIER chargement (rien en cache : un téléchargement est attendu de
+ * toute façon). Ensuite, il attend le consentement (« Réessayer le GPU ») : un échec
+ * oublié après une mise à jour (runtimeContext) ne doit pas retélécharger 255 Mo sur le
+ * forfait mobile à chaque mise à jour de la WebView.
+ *
+ * @param {{ probe: object|null, failed?: Record<string,string>, cached?: Set<string>|null, consent?: boolean }} s
+ *   failed  : tentatives déjà en échec ici (id → raison), voir failureRecord
+ *   cached  : dtypes dont TOUS les fichiers sont déjà sur l'appareil ; null = inconnu
+ *             (ordre de préférence pur, comme au premier chargement)
+ *   consent : l'utilisateur a demandé de tout réessayer, téléchargement compris
  * @returns {{ queue: object[], skipped: {id:string, reason:string}[] }}
  *   skipped : ce qui n'est pas tenté, et pourquoi (journalisé et montré)
  */
-export function planAttempts({ probe, failed = {} }) {
+export function planAttempts({ probe, failed = {}, cached = null, consent = false }) {
   const gpuF16 = assessWebGPU(probe);
   const gpuF32 = assessWebGPU(probe, { f16: false });
+  const pure = consent || !cached || cached.size === 0;
   const queue = [], skipped = [];
   for (const a of ATTEMPTS) {
     let why = null;
@@ -250,6 +350,8 @@ export function planAttempts({ probe, failed = {} }) {
     else if (a.engine.device === "webgpu") {
       const v = a.variant.dtype === "q4f16" ? gpuF16 : gpuF32;
       if (!v.ok) why = v.reason;
+      // Fichiers propres au GPU, absents : seulement avec consentement (ou au premier chargement)
+      else if (!pure && !cached.has(a.variant.dtype) && a.variant.dtype !== VARIANTS.wasm.dtype) why = NEEDS_DOWNLOAD;
     }
     if (why) skipped.push({ id: a.id, reason: why });
     else queue.push(a);
@@ -264,15 +366,24 @@ export function planAttempts({ probe, failed = {} }) {
  * condamné » n'est PAS repris : l'échec n'a jamais été lu (message tronqué à
  * l'écran), il a eu lieu avec un moteur processeur qui ne pouvait pas démarrer, et
  * retenter q4 sur le GPU ne télécharge rien (fichiers partagés avec le processeur).
- * @param {{ stored: string|null, legacyF16?: string|null, fingerprint: string }} s
+ *
+ * Contexte (runtimeContext) : un échec constaté avec un autre moteur onnxruntime ou une
+ * autre version du navigateur est oublié — les tentatives repartent d'elles-mêmes. Un
+ * enregistrement écrit avant ce champ n'en a pas : il est supposé du contexte courant
+ * (même moteur embarqué depuis), et prend le contexte à la prochaine écriture.
+ * @param {{ stored: string|null, legacyF16?: string|null, fingerprint: string, context?: string|null }} s
  * @returns {Record<string,string>}
  */
-export function failureRecord({ stored, legacyF16 = null, fingerprint }) {
+export function failureRecord({ stored, legacyF16 = null, fingerprint, context = null }) {
   let rec = null;
   try { rec = stored ? JSON.parse(stored) : null; } catch { rec = null; }
-  const failed = rec && rec.fingerprint === fingerprint && rec.failed && typeof rec.failed === "object" ? { ...rec.failed } : {};
+  const sameContext = !rec?.context || !context || rec.context === context;
+  const failed = rec && rec.fingerprint === fingerprint && sameContext && rec.failed && typeof rec.failed === "object" ? { ...rec.failed } : {};
   if (legacyF16) {
-    for (const a of ATTEMPTS) if (a.variant.dtype === "q4f16" && !failed[a.id]) failed[a.id] = `legacy: ${String(legacyF16).slice(0, 120)}`;
+    // L'ancien « fp16 en échec » a été constaté avec le device d'onnxruntime : il vaut
+    // pour la tentative native, pas pour la compatible, jamais essayée.
+    const native = ATTEMPTS.find((a) => a.variant.dtype === "q4f16" && !a.profile?.custom);
+    if (!failed[native.id]) failed[native.id] = `legacy: ${String(legacyF16).slice(0, 120)}`;
   }
   return failed;
 }
@@ -461,9 +572,44 @@ export function selfTestVerdict(text) {
   return { ok: true, reason: "ok" };
 }
 
-/** Message de l'essai à vide (le worker et les tests s'en servent). */
+/**
+ * Sortie d'une génération manifestement corrompue : caractère de remplacement (octets
+ * qui ne forment pas d'UTF-8, « � » relevé sur téléphone) ou lettre d'une autre écriture
+ * que le latin (« 臟 »). Le modèle répond en français ou en anglais, ses appels d'outils
+ * sont en ASCII : ni l'un ni l'autre n'arrive d'un calcul juste. Jetons spéciaux ignorés.
+ * Sert APRÈS l'essai à vide : un GPU peut le passer puis calculer faux sur un long prompt
+ * (autre noyau de remplissage) — la façade écarte alors la tentative.
+ * @param {unknown} text sortie brute du modèle
+ */
+export function outputLooksCorrupted(text) {
+  const s = String(text ?? "").replace(/<\|[a-z_]+\|>/g, "");
+  return /�/.test(s) || /(?=\p{L})\P{Script=Latin}/u.test(s);
+}
+
+/**
+ * Messages de l'essai à vide (le worker et les tests s'en servent).
+ *
+ * Sur le GPU, l'essai passe par une consigne de quelques centaines de caractères avant
+ * « Bonjour » : le remplissage d'un prompt long emprunte d'autres noyaux que celui de
+ * quelques jetons (MatMulNBits WideTile au-delà de quelques lignes, attention sur une
+ * séquence plus longue), et c'est sur ce chemin que tournent les vraies questions (consigne
+ * + outils : ~730 jetons). Sur le processeur, l'essai reste court : son calcul n'est pas en
+ * doute, et chaque jeton y coûte cher.
+ */
+const GPU_SELF_TEST_SYSTEM =
+  "Tu es l'assistant de VelohNav, une application de vélos en libre-service à Luxembourg. "
+  + "Tu réponds en français, en une ou deux phrases courtes et polies. Tu aides à trouver une "
+  + "station Vel'OH! avec des vélos ou des places libres, à préparer un itinéraire à vélo, à "
+  + "consulter la météo avant de partir et les prochains départs de bus ou de tram. Quand une "
+  + "information te manque, tu le dis simplement au lieu d'inventer. Tu ne donnes jamais de "
+  + "chiffres que tu n'as pas reçus : le nombre de vélos, les horaires et la météo viennent "
+  + "des outils de l'application, pas de toi.";
 export const SELF_TEST = Object.freeze({
   messages: Object.freeze([{ role: "user", content: "Bonjour" }]),
+  gpuMessages: Object.freeze([
+    { role: "system", content: GPU_SELF_TEST_SYSTEM },
+    { role: "user", content: "Bonjour" },
+  ]),
   maxNewTokens: 6,
 });
 
@@ -496,18 +642,21 @@ const SKIP_KIND = Object.freeze({
 
 /**
  * Pourquoi aucune tentative GPU n'a été retenue.
- * @param {{ chosen: object|null, tried?: {id,code,detail}[], skipped?: {id,reason}[] }} report modelReport()
+ * @param {{ chosen: object|null, tried?: {id,code,detail}[], skipped?: {id,reason}[], cached?: string[]|null }} report modelReport()
  * @returns {null | { reasons: { ids: string[], kind: string, detail: string }[], retry: boolean, downloadMB: number }}
  *   null : le GPU est retenu, ou rien n'est encore retenu. `kind` : no_webgpu, no_adapter,
  *   software, no_f16, limits, device, failed (à ce chargement), failed_before (lancement
- *   précédent). Raisons identiques regroupées. `retry` : un échec mémorisé ou constaté
- *   peut être rejoué (« Réessayer le GPU ») ; `downloadMB` : ce que ce nouvel essai
- *   téléchargerait (q4f16 n'est pas en cache s'il a été purgé ; q4 l'est, il sert au processeur).
+ *   précédent), download (pas encore essayé : fichiers à télécharger). Raisons identiques
+ *   regroupées. `retry` : un échec ou une tentative reportée peut être rejoué (« Réessayer
+ *   le GPU ») ; `downloadMB` : ce que ce nouvel essai téléchargerait, chaque fichier compté
+ *   une fois (q4f16 n'est pas en cache s'il a été purgé ; q4 l'est, il sert au processeur).
  */
 export function gpuSetAside(report) {
   if (!report?.chosen || report.chosen.device === "webgpu") return null;
   const reasons = [];
-  let retry = false, downloadMB = 0;
+  const have = new Set(report.cached ?? [report.chosen.dtype]);
+  const toFetch = new Map();   // dtype → Mo
+  let retry = false;
   for (const a of ATTEMPTS.filter((x) => x.engine.device === "webgpu")) {
     const t = report.tried?.find((x) => x.id === a.id);
     const s = report.skipped?.find((x) => x.id === a.id);
@@ -515,16 +664,18 @@ export function gpuSetAside(report) {
     if (t) { kind = "failed"; detail = t.detail || t.code; }
     else if (!s) continue;
     else if (s.reason.startsWith("failed-before")) { kind = "failed_before"; detail = s.reason.replace(/^failed-before:\s*/, ""); }
+    else if (s.reason === NEEDS_DOWNLOAD) { kind = "download"; detail = ""; }
     else if (SKIP_KIND[s.reason]) { kind = SKIP_KIND[s.reason]; detail = ""; }
     else if (s.reason.startsWith("device")) { kind = "device"; detail = s.reason.replace(/^device:\s*/, ""); }
     else { kind = "limits"; detail = s.reason; }
-    if (kind === "failed" || kind === "failed_before") {
+    if (kind === "failed" || kind === "failed_before" || kind === "download") {
       retry = true;
-      if (a.variant.dtype !== report.chosen.dtype) downloadMB += a.variant.mb;
+      if (!have.has(a.variant.dtype)) toFetch.set(a.variant.dtype, a.variant.mb);
     }
     const same = reasons.find((r) => r.kind === kind && r.detail === detail);
     if (same) same.ids.push(a.id);
     else reasons.push({ ids: [a.id], kind, detail: String(detail).slice(0, 240) });
   }
+  const downloadMB = [...toFetch.values()].reduce((x, y) => x + y, 0);
   return { reasons, retry, downloadMB };
 }

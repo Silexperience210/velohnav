@@ -3,7 +3,7 @@ import { t, tn, useI18n } from "../i18n.js";
 import { launchNativeArNav } from "../utils.js";
 import { fetchWeather, getWeatherAdvice } from "../hooks/useWeather.js";
 import { loadModel, unloadModel, generateDetailed, warmUp, chatModelMB, modelReport, forgetFailures } from "../ai/localModel.js";
-import { gpuSetAside } from "../ai/modelPolicy.js";
+import { gpuSetAside, attemptById } from "../ai/modelPolicy.js";
 import { systemPrompt, resolveModelOutput, explainFallback } from "../ai/assistant.js";
 import { Icon } from "../ui/icons.jsx";
 import { IconButton, ProgressBar, Spinner, Button } from "../ui/primitives.jsx";
@@ -27,19 +27,36 @@ function describeModelError(e) {
   return e.detail && !/^timeout /.test(e.detail) ? `${msg} (${e.detail})` : msg;
 }
 
-// « GPU · q4f16, calcul 16 bits » : ce qui tourne, en clair.
-const whereLabel = (engine, dtype) => t("ui.ai.model.where", {
-  engine: t(`ui.ai.model.engine.${engine}`), dtype: t(`ui.ai.model.dtype.${dtype}`),
-});
-const attemptLabel = (id) => { const [dtype, engine] = String(id).split("/"); return whereLabel(engine, dtype); };
+// « GPU · q4f16, calcul 16 bits » : ce qui tourne, en clair — « · mode compatible » quand le
+// GPU tourne sur le device sans subgroups (GPU_PROFILES, modelPolicy.js).
+const whereLabel = (engine, dtype, profile = null) => {
+  const base = t("ui.ai.model.where", { engine: t(`ui.ai.model.engine.${engine}`), dtype: t(`ui.ai.model.dtype.${dtype}`) });
+  return profile === "compat" ? `${base} · ${t("ui.ai.model.profile.compat")}` : base;
+};
+const attemptLabel = (id) => {
+  const a = attemptById(id);
+  if (!a) { const [dtype, engine] = String(id).split("/"); return whereLabel(engine, dtype); }
+  return whereLabel(a.engine.id, a.variant.dtype, a.profile?.id);
+};
+// Nom court d'une tentative dans une raison : « q4f16 », « q4 compatible »
+const attemptShort = (id) => {
+  const a = attemptById(id);
+  return a ? t(`ui.ai.model.attempt.${a.profile?.custom ? "compat" : "native"}`, { dtype: a.variant.dtype }) : String(id);
+};
 
 // Pourquoi le GPU ne sert pas, en clair (gpuSetAside, modelPolicy.js). Version du
 // navigateur jointe à « WebGPU absent » : c'est elle qui décide (WebView du système).
 const browserVersion = () => (/(Chrome|Firefox|Version)\/[\d.]+/.exec(globalThis.navigator?.userAgent || "")?.[0] || "?");
 const gpuAsideLabel = (aside) => aside.reasons.map(r => t(`ui.ai.model.gpu.${r.kind}`, {
-  what: r.ids.map(id => t(`ui.ai.model.dtype.${id.split("/")[0]}`)).join(", "),
-  detail: r.detail, ua: browserVersion(),
+  what: r.ids.map(attemptShort).join(", "),
+  detail: r.detail, ua: browserVersion(), mb: aside.downloadMB,
 })).join(" ; ");
+// Le GPU tel qu'il s'annonce : sans son nom, impossible de relier un échec à un pilote.
+const gpuDescribe = (g) => !g.adapter ? t("ui.ai.model.gpu_none") : [
+  [g.vendor, g.architecture, g.description].filter(Boolean).join(" ") || "?",
+  `f16 ${g.f16 ? "✓" : "✗"}`,
+  g.subgroups ? `subgroups ${g.subgroupMin ?? "?"}–${g.subgroupMax ?? "?"}` : t("ui.ai.model.gpu_no_subgroups"),
+].join(" · ");
 
 // Taille réelle du modèle conversationnel, annoncée AVANT tout téléchargement :
 // rien ne part sans que l'utilisateur l'ait décidé.
@@ -475,13 +492,19 @@ function AIScreen({ stations, aiHistory, setAiHistory,
               : modelState==="loading" ? t("ui.ai.model.loading", { pct:modelProgress })
               : modelState==="error"   ? `${t("ui.ai.model.error")}${modelError ? " — " + modelError.slice(0, 220) : ""}`
               : modelInfo?.chosen
-                ? t("ui.ai.model.ready_on", { where: whereLabel(modelInfo.chosen.engine, modelInfo.chosen.dtype) })
+                ? t("ui.ai.model.ready_on", { where: whereLabel(modelInfo.chosen.engine, modelInfo.chosen.dtype, modelInfo.chosen.profile) })
                 : t("ui.ai.model.ready")}
           </div>
           {/* Prêt hors du GPU : pourquoi, lisible à l'écran (sans cela, impossible de le savoir sur l'appareil) */}
           {chatOn && modelState==="ready" && gpuAside?.reasons.length > 0 && (
             <div style={{ fontSize:10.5, color:"var(--vn-text3)", lineHeight:1.45, overflowWrap:"anywhere" }}>
               {t("ui.ai.model.gpu_aside", { why: gpuAsideLabel(gpuAside) })}
+            </div>
+          )}
+          {/* Le GPU tel qu'il s'annonce (fabricant, fp16, tailles de subgroup) : quand il n'est pas utilisé ou que tout a échoué */}
+          {chatOn && modelInfo?.gpu && ((modelState==="ready" && gpuAside?.reasons.length > 0) || modelState==="error") && (
+            <div style={{ fontSize:10.5, color:"var(--vn-text3)", lineHeight:1.45, overflowWrap:"anywhere" }}>
+              {t("ui.ai.model.gpu_info", { gpu: gpuDescribe(modelInfo.gpu) })}
             </div>
           )}
           {/* Bascule interne (GPU → tentative suivante) : dite comme une information, pas comme une erreur */}

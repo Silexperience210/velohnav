@@ -79,6 +79,17 @@ const progress = (file, loaded, total) => ({ type: "progress", ev: { status: "pr
 const last = () => FakeWorker.all.at(-1);
 const filesDone = (w) => { for (const f of w.load.variant.files) w.emit(progress(f, 10, 10)); };
 const SUB_F16 = "failed to call OrtRun(). Sub requires f16 but the device does not support it.";
+// Cache de transformers.js simulé : `dtypes` = variantes dont les fichiers sont présents.
+// Pas de copie embarquée : la requête HEAD locale échoue.
+const stubCache = (dtypes) => {
+  vi.stubGlobal("caches", {
+    open: async () => ({
+      match: async (url) => (dtypes.some((d) => url.includes(`/onnx/model_${d}.onnx`)) ? {} : undefined),
+      keys: async () => [], delete: async () => true,
+    }),
+  });
+  vi.stubGlobal("fetch", async () => { throw new TypeError("no local model"); });
+};
 
 describe("façade : l'échelle des tentatives, sans rien demander", () => {
   let mod, store;
@@ -108,28 +119,43 @@ describe("façade : l'échelle des tentatives, sans rien demander", () => {
     filesDone(w1);
     w1.emit({ type: "error", message: SUB_F16, log: ["error: shader_helper.cc:416 Program Sub requires f16"] });
     await flush();
-    // q4 sur le GPU (calcul fp32) : nouveau worker, pas de nouvelle sonde
+    // q4f16 sur le GPU en réglage compatible (device sans subgroups) : nouveau worker, pas de nouvelle sonde
     const w2 = last();
     expect(w1.terminated).toBe(true);
     expect(w2).not.toBe(w1);
     expect(w2.sent.some((m) => m.type === "probe")).toBe(false);
-    expect(w2.load).toMatchObject({ engine: "webgpu", variant: { dtype: "q4", device: "webgpu" } });
+    expect(w2.load).toMatchObject({ engine: "webgpu", variant: { dtype: "q4f16", device: "webgpu" }, profile: { id: "compat", custom: true } });
+    expect(w1.load.profile).toMatchObject({ id: "native", custom: false });
     filesDone(w2);
-    await vi.advanceTimersByTimeAsync(181_000);   // bloqué : le chien de garde tranche
+    w2.emit({ type: "ready", selfTest: "臟" });   // charabia relevé sur le téléphone
     await flush();
+    // q4 sur le GPU (calcul fp32), natif
     const w3 = last();
     expect(w2.terminated).toBe(true);
-    expect(w3.load).toMatchObject({ engine: "wasm", variant: { dtype: "q4", device: "wasm" } });
+    expect(w3.load).toMatchObject({ engine: "webgpu", variant: { dtype: "q4", device: "webgpu" }, profile: { id: "native" } });
     filesDone(w3);
-    w3.emit({ type: "ready", selfTest: "Bonjour ! Comment puis-", loadMs: 41_000 });
+    await vi.advanceTimersByTimeAsync(181_000);   // bloqué : le chien de garde tranche
+    await flush();
+    const w4 = last();
+    expect(w3.terminated).toBe(true);
+    expect(w4.load).toMatchObject({ engine: "webgpu", variant: { dtype: "q4" }, profile: { id: "compat" } });
+    filesDone(w4);
+    w4.emit({ type: "ready", selfTest: "\uFFFD" });
+    await flush();
+    const w5 = last();
+    expect(w5.load).toMatchObject({ engine: "wasm", variant: { dtype: "q4", device: "wasm" } });
+    expect(w5.load.profile).toBeNull();
+    filesDone(w5);
+    w5.emit({ type: "ready", selfTest: "Bonjour ! Comment puis-", loadMs: 41_000 });
     await expect(loading).resolves.toBeUndefined();
     expect(mod.isModelReady()).toBe(true);
 
     const r = mod.modelReport();
     expect(r.chosen).toMatchObject({ id: "q4/wasm", engine: "wasm", device: "wasm", dtype: "q4", mb: 294, loadMs: 41_000 });
     expect(r.tried.map((x) => [x.id, x.code])).toEqual([
-      ["q4f16/webgpu", "init"], ["q4/webgpu", "init_timeout"],
+      ["q4f16/webgpu", "init"], ["q4f16/webgpu-compat", "init"], ["q4/webgpu", "init_timeout"], ["q4/webgpu-compat", "init"],
     ]);
+    expect(r.tried[1].detail).toBe('self-test no-word: "臟"');
     // le message du moteur ET la ligne de journal qui l'explique sont conservés
     expect(r.tried[0].detail).toContain("Sub requires f16");
     expect(r.tried[0].detail).toContain("shader_helper.cc:416");
@@ -137,7 +163,7 @@ describe("façade : l'échelle des tentatives, sans rien demander", () => {
     expect(mod.chatModelMB()).toBe(294);
     // chaque bascule annoncée à l'interface : quelle tentative, sur quel moteur
     expect(phases.filter((p) => p.phase === "download").map((p) => p.attempt))
-      .toEqual(["q4f16/webgpu", "q4/webgpu", "q4/wasm"]);
+      .toEqual(["q4f16/webgpu", "q4f16/webgpu-compat", "q4/webgpu", "q4/webgpu-compat", "q4/wasm"]);
     // q4f16 purgé une fois condamné — jamais q4, qui sert au processeur
     expect(console.info).toHaveBeenCalledWith(expect.stringMatching(/^\[IA\] retenu : q4\/wasm/));
   });
@@ -145,7 +171,7 @@ describe("façade : l'échelle des tentatives, sans rien demander", () => {
   it("au lancement suivant : les tentatives en échec ne sont pas rejouées, le processeur part directement", async () => {
     store.set("velohnav_ai_attempts_ko", JSON.stringify({
       fingerprint: (await import("./modelPolicy.js")).deviceFingerprint(GOOD_PROBE),
-      failed: { "q4f16/webgpu": "a", "q4/webgpu": "c" },
+      failed: { "q4f16/webgpu": "a", "q4f16/webgpu-compat": "b", "q4/webgpu": "c", "q4/webgpu-compat": "d" },
     }));
     const loading = mod.loadModel();
     await flush();
@@ -154,7 +180,7 @@ describe("façade : l'échelle des tentatives, sans rien demander", () => {
     expect(last().load).toMatchObject({ engine: "wasm" });
     last().emit({ type: "ready", selfTest: "Bonjour !" });
     await loading;
-    expect(mod.modelReport().skipped.map((x) => x.id)).toEqual(["q4f16/webgpu", "q4/webgpu"]);
+    expect(mod.modelReport().skipped.map((x) => x.id)).toEqual(["q4f16/webgpu", "q4f16/webgpu-compat", "q4/webgpu", "q4/webgpu-compat"]);
   });
 
   it("GPU sans shader-f16 (mesuré sur un vrai GPU) : q4 sur le GPU d'emblée, un seul téléchargement", async () => {
@@ -171,7 +197,7 @@ describe("façade : l'échelle des tentatives, sans rien demander", () => {
     const outcome = mod.loadModel().then(() => "resolved", (e) => e);
     await flush();
     last().emit({ type: "probe", probe: GOOD_PROBE });
-    for (let i = 0; i < 3; i++) {
+    for (let i = 0; i < 5; i++) {
       const w = last();
       filesDone(w);
       w.emit({ type: "error", message: `échec ${w.load.variant.dtype}/${w.load.engine}` });
@@ -179,13 +205,13 @@ describe("façade : l'échelle des tentatives, sans rien demander", () => {
     }
     const e = await outcome;
     expect(e).toMatchObject({ name: "ModelError", code: "all_failed" });
-    expect(e.attempts).toHaveLength(3);
+    expect(e.attempts).toHaveLength(5);
     expect(e.detail).toContain("q4/wasm → init (échec q4/wasm)");
-    expect(FakeWorker.all).toHaveLength(3);
+    expect(FakeWorker.all).toHaveLength(5);
     // Rechargement sans « Réessayer » : rien n'est retenté, aucun worker créé
     const again = await mod.loadModel().then(() => "resolved", (x) => x);
     expect(again.code).toBe("all_failed");
-    expect(FakeWorker.all).toHaveLength(3);
+    expect(FakeWorker.all).toHaveLength(5);
     // « Réessayer » après all_failed : les échecs sont oubliés, l'échelle repart du début
     mod.forgetFailures();
     mod.loadModel().catch(() => {});
@@ -209,7 +235,7 @@ describe("façade : l'échelle des tentatives, sans rien demander", () => {
     last().emit({ type: "probe", probe: GOOD_PROBE });
     last().emit({ type: "error", stage: "engine", message: "Failed to fetch dynamically imported module" });
     await flush();
-    expect(last().load).toMatchObject({ engine: "webgpu", variant: { dtype: "q4" } });
+    expect(last().load).toMatchObject({ engine: "webgpu", variant: { dtype: "q4f16" }, profile: { id: "compat" } });
   });
 
   it("coupure réseau pendant le téléchargement : erreur dite, rien de condamné, reprise au même endroit", async () => {
@@ -243,7 +269,7 @@ describe("façade : l'échelle des tentatives, sans rien demander", () => {
     expect(w.terminated).toBe(false);
     await vi.advanceTimersByTimeAsync(3_000);
     expect(w.terminated).toBe(true);
-    expect(last().load).toMatchObject({ engine: "webgpu", variant: { dtype: "q4" } });
+    expect(last().load).toMatchObject({ engine: "webgpu", variant: { dtype: "q4f16" }, profile: { id: "compat" } });
     expect(mod.modelReport().tried).toEqual([{ id: "q4f16/webgpu", code: "init_timeout", detail: "timeout 180 s" }]);
   });
 
@@ -263,6 +289,7 @@ describe("façade : l'échelle des tentatives, sans rien demander", () => {
   });
 
   it("anciennes clés : « fp16 en échec » repris (pas de second téléchargement q4f16), « GPU condamné » non — q4 sur le GPU retenté", async () => {
+    stubCache(["q4"]);   // q4f16 purgé à l'époque, q4 en cache (il sert au processeur)
     store.set("velohnav_ai_f16_ko", "Sub requires f16");
     store.set("velohnav_ai_webgpu_ko", "1");
     mod.loadModel().catch(() => {});
@@ -290,7 +317,7 @@ describe("façade : l'échelle des tentatives, sans rien demander", () => {
     expect(JSON.parse(store.get("velohnav_ai_attempts_ko")).failed["q4f16/webgpu"]).toContain("Sub requires f16");
     mod.loadModel().catch(() => {});
     await flush();
-    expect(last().load).toMatchObject({ engine: "webgpu", variant: { dtype: "q4", device: "webgpu" } });
+    expect(last().load).toMatchObject({ engine: "webgpu", variant: { dtype: "q4f16", device: "webgpu" }, profile: { id: "compat" } });
   });
 
   it("une réponse qui ne vient jamais : délai, worker arrêté, erreur generate_timeout, rien de condamné", async () => {
@@ -344,6 +371,113 @@ describe("façade : l'échelle des tentatives, sans rien demander", () => {
       raw: "<|tool_call_start|>[weather()<|im_end|>",
       text: "<|tool_call_start|>[weather()",
     });
+  });
+
+  it("cas du téléphone (GPU natif en charabia, q4f16 purgé) : le GPU repart de lui-même en réglage compatible, sans téléchargement", async () => {
+    stubCache(["q4"]);
+    // enregistrement écrit avant le contexte (version d'avant) : supposé courant, pas rejoué
+    store.set("velohnav_ai_attempts_ko", JSON.stringify({
+      fingerprint: (await import("./modelPolicy.js")).deviceFingerprint(GOOD_PROBE),
+      failed: { "q4f16/webgpu": 'self-test no-word: "臟"', "q4/webgpu": 'self-test no-word: "\uFFFD"' },
+    }));
+    const loading = mod.loadModel();
+    await flush();
+    last().emit({ type: "probe", probe: { ...GOOD_PROBE, features: ["shader-f16", "subgroups"], info: { ...GOOD_PROBE.info, subgroupMinSize: 16, subgroupMaxSize: 16 } } });
+    expect(FakeWorker.all).toHaveLength(1);
+    expect(last().load).toMatchObject({ engine: "webgpu", variant: { dtype: "q4" }, profile: { id: "compat", custom: true, subgroups: false } });
+    last().emit({ type: "ready", selfTest: "Bonjour ! Comment", loadMs: 9000 });
+    await loading;
+    const r = mod.modelReport();
+    expect(r.chosen).toMatchObject({ id: "q4/webgpu-compat", device: "webgpu", profile: "compat" });
+    expect(r.cached).toEqual(["q4"]);
+    expect(r.skipped).toContainEqual({ id: "q4f16/webgpu-compat", reason: "needs-download" });
+    expect(r.gpu).toMatchObject({ subgroups: true, subgroupMin: 16, subgroupMax: 16 });
+  });
+
+  it("le réglage compatible calcule faux lui aussi : processeur, échec mémorisé AVEC son contexte", async () => {
+    stubCache(["q4"]);
+    vi.stubGlobal("navigator", { userAgent: "Mozilla/5.0 (Linux; Android 14; wv) Chrome/140.0.0.0 Mobile Safari/537.36" });
+    store.set("velohnav_ai_attempts_ko", JSON.stringify({
+      fingerprint: (await import("./modelPolicy.js")).deviceFingerprint(GOOD_PROBE),
+      failed: { "q4f16/webgpu": "a", "q4/webgpu": "b" },
+    }));
+    const loading = mod.loadModel();
+    await flush();
+    last().emit({ type: "probe", probe: GOOD_PROBE });
+    last().emit({ type: "ready", selfTest: "\uFFFD" });
+    await flush();
+    expect(last().load).toMatchObject({ engine: "wasm" });
+    last().emit({ type: "ready", selfTest: "Bonjour !" });
+    await loading;
+    const saved = JSON.parse(store.get("velohnav_ai_attempts_ko"));
+    expect(saved.context).toMatch(/^ort .+ · chrome 140$/);
+    expect(Object.keys(saved.failed)).toEqual(["q4f16/webgpu", "q4/webgpu", "q4/webgpu-compat"]);
+  });
+
+  it("WebView ou moteur mis à jour : les échecs d'avant sont oubliés, l'échelle repart d'elle-même", async () => {
+    vi.stubGlobal("navigator", { userAgent: "Mozilla/5.0 (Linux; Android 14; wv) Chrome/141.0.0.0 Mobile Safari/537.36" });
+    const { deviceFingerprint, runtimeContext } = await import("./modelPolicy.js");
+    store.set("velohnav_ai_attempts_ko", JSON.stringify({
+      fingerprint: deviceFingerprint(GOOD_PROBE),
+      context: runtimeContext("Mozilla/5.0 (Linux; Android 14; wv) Chrome/140.0.0.0 Mobile Safari/537.36"),
+      failed: { "q4f16/webgpu": "a", "q4f16/webgpu-compat": "b", "q4/webgpu": "c", "q4/webgpu-compat": "d" },
+    }));
+    mod.loadModel().catch(() => {});
+    await flush();
+    last().emit({ type: "probe", probe: GOOD_PROBE });
+    expect(last().load).toMatchObject({ engine: "webgpu", variant: { dtype: "q4f16" }, profile: { id: "native" } });
+  });
+
+  it("« Réessayer » autorise UN chargement à télécharger : q4f16 rejoué ; ensuite, plus rien sans consentement", async () => {
+    stubCache(["q4"]);
+    mod.forgetFailures();
+    mod.loadModel().catch(() => {});
+    await flush();
+    last().emit({ type: "probe", probe: GOOD_PROBE });
+    expect(last().load).toMatchObject({ variant: { dtype: "q4f16" }, profile: { id: "native" } });
+    mod.unloadModel();
+    await flush();
+    mod.loadModel().catch(() => {});
+    await flush();
+    // sonde déjà faite : la tentative part directement, sans q4f16 (hors du cache)
+    expect(last().load).toMatchObject({ variant: { dtype: "q4" }, profile: { id: "native" } });
+    expect(mod.modelReport().skipped.map((x) => [x.id, x.reason])).toEqual([
+      ["q4f16/webgpu", "needs-download"], ["q4f16/webgpu-compat", "needs-download"],
+    ]);
+  });
+
+  it("GPU prêt puis charabia sur une vraie question : tentative écartée (mémorisée), `recover` → la suivante", async () => {
+    const loading = mod.loadModel();
+    await flush();
+    const w = last();
+    w.emit({ type: "probe", probe: GOOD_PROBE });
+    w.emit({ type: "ready", selfTest: "Bonjour !" });
+    await loading;
+    const reply = mod.generateDetailed("sys", [{ role: "user", content: "Je suis Silex" }]).then(() => "resolved", (e) => e);
+    await vi.advanceTimersByTimeAsync(0);
+    w.emit({ type: "result", id: w.sent.at(-1).id, text: "臟臟\uFFFD<|im_end|>" });
+    const e = await reply;
+    expect(e).toMatchObject({ code: "generate", recover: true });
+    expect(e.detail).toMatch(/^corrupted output: /);
+    expect(w.terminated).toBe(true);
+    expect(JSON.parse(store.get("velohnav_ai_attempts_ko")).failed["q4f16/webgpu"]).toMatch(/^corrupted output/);
+    mod.loadModel().catch(() => {});
+    await flush();
+    expect(last().load).toMatchObject({ variant: { dtype: "q4f16" }, profile: { id: "compat" } });
+  });
+
+  it("sur le processeur, une sortie étrange n'est pas un calcul faux du GPU : rendue telle quelle, rien d'écarté", async () => {
+    const loading = mod.loadModel();
+    await flush();
+    const w = last();
+    w.emit({ type: "probe", probe: null });
+    w.emit({ type: "ready", selfTest: "Bonjour !" });
+    await loading;
+    const reply = mod.generateDetailed("sys", [{ role: "user", content: "x" }]);
+    await vi.advanceTimersByTimeAsync(0);
+    w.emit({ type: "result", id: w.sent.at(-1).id, text: "Ελλάδα.<|im_end|>" });
+    await expect(reply).resolves.toMatchObject({ text: "Ελλάδα." });
+    expect(store.has("velohnav_ai_attempts_ko")).toBe(false);
   });
 
   it("erreur du moteur pendant la génération sur le processeur : rejetée avec son message, rien après lui", async () => {

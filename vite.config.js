@@ -2,6 +2,15 @@ import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import { VitePWA } from 'vite-plugin-pwa'
 import ortEngine from './scripts/vite-ort-engine.mjs'
+import { readFileSync } from 'node:fs'
+
+// Version d'onnxruntime-web embarquée : un échec GPU mémorisé ne vaut que pour ce
+// moteur (src/ai/modelPolicy.js, runtimeContext). Lue dans node_modules, jamais recopiée.
+const ortWebVersion = (() => {
+  try {
+    return JSON.parse(readFileSync(new URL('./node_modules/onnxruntime-web/package.json', import.meta.url), 'utf8')).version
+  } catch { return 'unknown' }
+})()
 
 // PWA activé UNIQUEMENT pour le build web (pas pour Capacitor APK).
 // Pour build APK : VITE_DISABLE_PWA=1 npm run build
@@ -53,6 +62,9 @@ export default defineConfig({
     })]),
   ],
   base: './',
+  define: {
+    __ORT_WEB_VERSION__: JSON.stringify(ortWebVersion),
+  },
   // CRITIQUE : NE PAS marquer Capacitor en external — le bundle doit l'inclure
   // sinon le WebView Android fait import("@capacitor/core") qui résout en 404.
   // Capacitor est résolu via node_modules au build-time et le bridge natif

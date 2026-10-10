@@ -16,7 +16,10 @@
 // le pose sous ENGINE_SLOT, PUIS importe transformers.js, qui le reçoit (ortEngine.js).
 // ortEngine.js n'est PAS importé ici : il lit le moteur à son évaluation, qui doit venir
 // après le choix (il est importé par transformers.js, via le plugin).
-import { LIMITS, MODEL, SELF_TEST, hubFileUrl, cacheHeaders, withTimeout, ENGINES, ENGINE_SLOT } from "./modelPolicy.js";
+import {
+  LIMITS, MODEL, SELF_TEST, hubFileUrl, cacheHeaders, withTimeout, ENGINES, ENGINE_SLOT,
+  compatFeatures, compatLimits,
+} from "./modelPolicy.js";
 import { reusablePrefix, sameIds, prefixMessages, shareable, copyCache } from "./promptCache.js";
 
 const MODEL_ID = MODEL.id;
@@ -128,7 +131,11 @@ async function probeWebGPU() {
   const info = adapter.info || {};
   const out = {
     adapter: true,
-    info: { vendor: info.vendor || "", architecture: info.architecture || "", device: info.device || "", description: info.description || "" },
+    info: {
+      vendor: info.vendor || "", architecture: info.architecture || "", device: info.device || "", description: info.description || "",
+      // Tailles de subgroup annoncées (Chrome 131+) : celles que suppose le noyau WideTile
+      ...(Number.isFinite(info.subgroupMinSize) ? { subgroupMinSize: info.subgroupMinSize, subgroupMaxSize: info.subgroupMaxSize } : {}),
+    },
     isFallbackAdapter: !!(adapter.info?.isFallbackAdapter ?? adapter.isFallbackAdapter),
     features,
     limits,
@@ -186,12 +193,46 @@ async function prefetchToCache(file, bytes) {
   }
 }
 
-async function load({ variant, engine, modelId }) {
-  let rt;
+/**
+ * Device du réglage « compat » (GPU_PROFILES, modelPolicy.js) : créé ici, SANS subgroups,
+ * avec toutes les limites de l'adaptateur, puis confié à onnxruntime (option `device` de
+ * l'EP WebGPU), qui choisit ses noyaux d'après les fonctions de CE device.
+ * Ses erreurs de validation WebGPU, sinon muettes, partent dans le journal joint aux échecs.
+ */
+async function compatDevice(dtype) {
+  const adapter = await withTimeout(navigator.gpu.requestAdapter({ powerPreference: "high-performance" }), LIMITS.probeMs, "requestAdapter");
+  if (!adapter) throw new Error("no GPU adapter");
+  const device = await withTimeout(
+    adapter.requestDevice({ requiredFeatures: compatFeatures(dtype, adapter.features), requiredLimits: compatLimits(adapter.limits) }),
+    LIMITS.probeMs, "requestDevice",
+  );
+  device.addEventListener?.("uncapturederror", (ev) => console.error(`WebGPU: ${ev?.error?.message || ev}`));
+  device.lost?.then((i) => console.error(`WebGPU device lost: ${i?.reason || ""} ${i?.message || ""}`)).catch(() => {});
+  return device;
+}
+
+/** Options de session propres au réglage GPU (rien pour le réglage natif ni le processeur). */
+async function sessionOptions(variant, profile) {
+  if (variant.device !== "webgpu" || !profile?.custom) return undefined;
+  const device = await compatDevice(variant.dtype);
+  return {
+    executionProviders: [{
+      name: "webgpu",
+      device,
+      // fp32 pour les accumulateurs des produits matriciels : seul q4f16 calcule en fp16
+      ...(profile.f32acc && variant.dtype === "q4f16" ? { enableMatmulFp32Accumulation: true } : {}),
+    }],
+  };
+}
+
+async function load({ variant, engine, profile, modelId }) {
+  let rt, session_options;
   try {
     rt = await runtime(engine);
+    session_options = await sessionOptions(variant, profile);
   } catch (e) {
-    // Moteur introuvable ou qui refuse de s'initialiser : propre à CETTE tentative
+    // Moteur introuvable, qui refuse de s'initialiser, ou device refusé : propre à CETTE
+    // tentative (la suivante doit partir), pas au réseau
     throw Object.assign(e instanceof Error ? e : new Error(String(e)), { stage: "engine" });
   }
   const { pipeline, env } = rt;
@@ -212,6 +253,7 @@ async function load({ variant, engine, modelId }) {
     ...(ref === MODEL_ID ? { revision: MODEL.revision } : {}),   // même clé de cache que le pré-chargement
     dtype: variant.dtype,
     device: variant.device,
+    ...(session_options ? { session_options } : {}),
     progress_callback: (p) => {
       if (!p || !p.status) return;
       post({ type: "progress", ev: { status: p.status, file: p.file, loaded: p.loaded, total: p.total } });
@@ -238,7 +280,7 @@ self.onmessage = async ({ data }) => {
       await load(msg);
       // loadMs : du message « load » à l'essai à vide réussi (téléchargement compris)
       const t1 = performance.now();
-      const selfTest = await selfTestRun();
+      const selfTest = await selfTestRun(msg.variant);
       const t2 = performance.now();
       post({ type: "ready", selfTest, loadMs: Math.round(t2 - t0), selfTestMs: Math.round(t2 - t1) });
     } catch (e) {
@@ -268,10 +310,12 @@ self.onmessage = async ({ data }) => {
  * prouve pas que le modèle sait générer — mesuré au banc : q4f16 sur un GPU sans fp16 se
  * charge, puis chaque génération échoue. Une erreur ici remonte comme un échec de
  * chargement ; le texte produit est jugé par la façade (selfTestVerdict).
+ * Sur le GPU, prompt long (SELF_TEST.gpuMessages) : il passe par les noyaux de
+ * remplissage des vraies questions.
  */
-async function selfTestRun() {
+async function selfTestRun(variant) {
   const raw = await complete({
-    messages: SELF_TEST.messages,
+    messages: variant?.device === "webgpu" ? SELF_TEST.gpuMessages : SELF_TEST.messages,
     options: { max_new_tokens: SELF_TEST.maxNewTokens, do_sample: false },
   });
   return raw.replace(/<\|[a-z_]+\|>/g, "").trim();

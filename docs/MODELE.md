@@ -194,6 +194,56 @@ Conclusion : sur le processeur, le décodage reste borné par `MatMulNBits` (≈
 jeton et par fil sur PC de bureau). Le vrai gain est le GPU : l'écran dit désormais
 pourquoi il est écarté (« GPU non utilisé — … »), cause à lire sur le téléphone.
 
+## GPU qui calcule faux : réglage compatible et rejeu automatique
+
+Retour du téléphone (2026-10-10) : « GPU non utilisé — q4f16 : échec lors d'un lancement
+précédent (self-test no-word: "臟") ; q4 : (self-test no-word: "�") ». Les deux variantes se
+chargeaient, la génération ne levait aucune erreur, mais les jetons étaient faux. q4 calcule
+en fp32 : ce n'est donc pas (seulement) le fp16. Le même modèle répond juste ailleurs (Dawn
+natif, Chrome de bureau) : c'est le calcul sur ce GPU qui dévie.
+
+Ce que montrent les sources d'onnxruntime (EP WebGPU natif, celui embarqué) :
+
+| Constat | Où |
+|---|---|
+| Sans device fourni, onnxruntime demande à l'adaptateur `shader-f16`, `subgroups`, `subgroup-size-control`, `chromium-experimental-subgroup-matrix` s'ils existent | `webgpu_context.cc`, `GetAvailableRequiredFeatures` |
+| Avec un device fourni (option `device` de l'EP), il lit les fonctions de CE device | `webgpu_context.cc`, `Device().GetFeatures` |
+| MatMulNBits de remplissage (WideTile) : réduction par `subgroupShuffle` en bandes de `subgroupMinSize` si `subgroups`, réduction directe sinon | `matmul_nbits.cc` |
+| Chemin DP4A (int8) : exige `accuracy_level == 4` ; les 93 MatMulNBits du modèle n'en ont pas → jamais pris | `dp4a_matmul_nbits.cc` + graphe `model_q4.onnx` |
+
+Hypothèse retenue (non mesurée sur le téléphone) : un noyau à subgroups calcule faux sur ce
+pilote mobile. D'où l'échelle à cinq tentatives (`ATTEMPTS`, `modelPolicy.js`) :
+
+| Tentative | Device | Ce qu'elle exclut |
+|---|---|---|
+| `q4f16/webgpu` | créé par onnxruntime | — |
+| `q4f16/webgpu-compat` | créé par le worker : sans subgroups, `shader-f16` seul, accumulation fp32 | subgroups, débordement fp16 des accumulateurs |
+| `q4/webgpu` | créé par onnxruntime | fp16 |
+| `q4/webgpu-compat` | créé par le worker : aucune fonction | fp16 et subgroups |
+| `q4/wasm` | processeur | le GPU |
+
+Mesuré (Chromium 141 sans écran, WebGPU SwiftShader, vrai worker de l'application) : le
+device compatible est accepté par onnxruntime, l'essai à vide rend « Bonjour ! Pourriez »,
+et « Quelle est la capitale du Luxembourg ? » donne « La capitale du Luxembourg est
+Luxembourg. ». Ce qui reste à voir sur le téléphone : si `q4/webgpu-compat` passe là où
+`q4/webgpu` rendait « � ».
+
+Mécanisme, sans clic :
+- **Ce qui ne coûte rien est tenté seul** : sur le téléphone (natifs en échec, q4 en cache),
+  le prochain lancement essaie `q4/webgpu-compat` directement, puis le processeur.
+- **Ce qui coûterait un téléchargement** (q4f16 purgé, 255 Mo) n'est lancé de lui-même qu'au
+  premier chargement ; ensuite, « Réessayer le GPU » vaut consentement pour UN chargement.
+- **Essai à vide sur un prompt long** côté GPU : les vraies questions (≈ 730 jetons)
+  passent par les noyaux de remplissage, pas par ceux d'un « Bonjour » de dix jetons.
+- **Sortie surveillée** : une réponse du GPU avec « � » ou une lettre non latine
+  (`outputLooksCorrupted`) écarte la tentative comme une erreur du moteur.
+- **Échecs datés par leur contexte** (`runtimeContext` : version d'onnxruntime-web lue au
+  build, version majeure de la WebView) : une mise à jour de l'un ou de l'autre fait
+  rejouer les tentatives d'elles-mêmes, toujours sans téléchargement imposé.
+- **Diagnostic** : la ligne « GPU : fabricant · f16 · subgroups min–max » s'affiche quand le
+  GPU n'est pas utilisé ; le bilan de l'échelle part à Sentry quand une tentative échoue
+  (si un DSN est configuré et que l'utilisateur ne l'a pas coupé).
+
 ## Ce qui n'a pas été mesuré
 
 - Aucune mesure sur téléphone (mémoire, vitesse, WebGPU). Toutes les mesures RSS viennent de
