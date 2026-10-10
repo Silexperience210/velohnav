@@ -1,6 +1,7 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import { VitePWA } from 'vite-plugin-pwa'
+import ortEngine from './scripts/vite-ort-engine.mjs'
 
 // PWA activé UNIQUEMENT pour le build web (pas pour Capacitor APK).
 // Pour build APK : VITE_DISABLE_PWA=1 npm run build
@@ -62,8 +63,11 @@ export default defineConfig({
   },
   // Le worker du modèle (src/ai/modelWorker.js) importe transformers.js, qui se
   // découpe en plusieurs morceaux : le format iife par défaut ne le permet pas.
+  // ortEngine : transformers.js reçoit le moteur onnxruntime choisi par le worker
+  // (sans lui, la variante processeur n'a pas ses noyaux — voir src/ai/ortEngine.js).
   worker: {
     format: 'es',
+    plugins: () => [ortEngine()],
   },
   test: {
     environment: 'node',

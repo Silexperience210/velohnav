@@ -68,11 +68,34 @@ export const VARIANTS = Object.freeze({
   // (« Sub requires f16 »), q4 sur WebGPU répond normalement (« Je suis Silex » compris).
   // Mêmes fichiers que la variante WASM.
   webgpuQ4: variant("q4", "webgpu", "_q4"),
-  // q4 sur WASM : q4f16 calcule en fp16, que le moteur processeur ne sait pas faire ;
-  // q8 (model_quantized) pèserait 510 Mo. Mesuré au banc : dans Chrome, la session ne se
-  // crée pas (GatherBlockQuantized sans implémentation WASM — les trois exports du modèle
-  // l'utilisent). Gardée en dernier recours : l'échec y est explicite.
+  // q4 sur le processeur : q4f16 calcule en fp16, que le moteur processeur ne sait pas
+  // faire ; q8 (model_quantized) pèserait 510 Mo. Ne démarre QU'AVEC le moteur « wasm »
+  // (ENGINES) : celui qu'importe transformers.js n'a pas le noyau processeur
+  // GatherBlockQuantized. Mesuré dans Chrome avec le bon moteur : 6/6 réponses.
   wasm:   variant("q4",    "wasm",   "_q4"),
+});
+
+/** Emplacement global où le worker pose le moteur choisi (lu par ortEngine.js). */
+export const ENGINE_SLOT = Symbol.for("velohnav.ort-engine");
+
+/**
+ * Moteurs onnxruntime-web, un par build (chacun a son binaire WASM) :
+ *  - webgpu : l'EP WebGPU natif (build « asyncify »), celui qu'importe transformers.js.
+ *    Son binaire n'a PAS de noyau processeur GatherBlockQuantized : il ne sait faire
+ *    tourner ce modèle que sur le GPU ;
+ *  - jsep : l'EP WebGPU historique, écrit en JavaScript (build « all », binaire
+ *    .jsep.wasm). Seconde implémentation WebGPU, indépendante de la première : autres
+ *    shaders, autre gestion des tampons. Un pilote mobile qui refuse l'une peut accepter
+ *    l'autre — c'est la raison de sa présence ; ce n'est PAS mesuré sur téléphone ;
+ *  - wasm : processeur seul (build « wasm »), noyaux GatherBlockQuantized présents.
+ * Relevé dans les binaires d'onnxruntime-web 1.31 : GatherBlockQuantized<uint8, int64>
+ * (indices int64 du modèle) existe dans ort-wasm-simd-threaded.wasm, pas dans
+ * .asyncify.wasm.
+ */
+export const ENGINES = Object.freeze({
+  webgpu: Object.freeze({ id: "webgpu", module: "webgpu", device: "webgpu" }),
+  jsep:   Object.freeze({ id: "jsep",   module: "all",    device: "webgpu" }),
+  wasm:   Object.freeze({ id: "wasm",   module: "wasm",   device: "wasm" }),
 });
 
 /** Variante correspondant à un couple appareil / quantification (q4f16 par défaut sur GPU). */
@@ -167,23 +190,117 @@ export function assessWebGPU(probe, { f16 = true } = {}) {
 
 const mib = (n) => (typeof n === "number" ? `${Math.round(n / 1048576)} MiB` : "?");
 
+// ── Échelle des tentatives ──────────────────────────────────────
+//
+// Une tentative = une variante (fichiers, dtype) × un moteur onnxruntime. Ordre de
+// préférence, du plus léger au plus sûr, établi au banc (docs/MODELE.md) :
+//
+//   q4f16 / EP WebGPU natif   255 Mo, le plus rapide quand le GPU calcule en fp16
+//   q4f16 / EP WebGPU JSEP    mêmes fichiers, autre implémentation WebGPU
+//   q4    / EP WebGPU natif   294 Mo, calcul fp32 : n'exige pas shader-f16
+//   q4    / EP WebGPU JSEP    mêmes fichiers
+//   q4    / processeur        mêmes fichiers : le repli, qui ne demande rien au GPU
+//
+// Les deux moteurs GPU d'un même dtype partagent leurs fichiers. q4 sert au GPU comme au processeur : passer d'une tentative à la suivante ne retélécharge jamais un
+// fichier déjà en cache. Seul le passage q4f16 → q4 télécharge (294 Mo).
+//
+// fp16 (725 Mo, model_fp16) n'est PAS dans l'échelle : pic mémoire estimé 2,5 Go
+// (MEMORY.peakFactor), hors de portée des téléphones visés (1,4 Go libres chez le
+// propriétaire), et le décodage d'un petit modèle sur GPU mobile est borné par la
+// bande passante mémoire : 2,8 fois plus de poids à lire par jeton.
+const attempt = (variant, engine) => Object.freeze({ id: `${variant.dtype}/${engine.id}`, variant, engine });
+export const ATTEMPTS = Object.freeze([
+  attempt(VARIANTS.webgpu, ENGINES.webgpu),
+  attempt(VARIANTS.webgpu, ENGINES.jsep),
+  attempt(VARIANTS.webgpuQ4, ENGINES.webgpu),
+  attempt(VARIANTS.webgpuQ4, ENGINES.jsep),
+  attempt(VARIANTS.wasm, ENGINES.wasm),
+]);
+export const attemptById = (id) => ATTEMPTS.find((a) => a.id === id) || null;
+
 /**
- * Variante à charger. Un échec WebGPU déjà constaté sur cet appareil (mémorisé) force
- * WASM sans même sonder : on ne retente pas un chemin qui a déjà bloqué. Un échec
- * propre au calcul fp16 (f16KnownBroken) écarte seulement q4f16 : le GPU reste utilisé,
- * en q4.
- * @param {{ webgpuKnownBroken: boolean, f16KnownBroken?: boolean,
- *           assessment: {ok:boolean, reason:string} | null,
- *           assessmentQ4?: {ok:boolean, reason:string} | null }} s
- *   assessment : sonde évaluée pour q4f16 ; assessmentQ4 : la même, pour q4 (sans shader-f16)
+ * Version de l'échelle : un échec mémorisé ne vaut que pour la même échelle, le même
+ * modèle et le même GPU. Changer de moteur ou d'export redonne sa chance à chacun.
  */
-export function planLoad({ webgpuKnownBroken, f16KnownBroken = false, assessment, assessmentQ4 = null }) {
-  if (webgpuKnownBroken) return { variant: VARIANTS.wasm, reason: "webgpu-failed-before" };
-  if (assessment?.ok && !f16KnownBroken) return { variant: VARIANTS.webgpu, reason: "webgpu-ok" };
-  // GPU utilisable sans fp16 (shader-f16 absent, ou fp16 déjà en échec ici) : q4 sur le
-  // GPU plutôt que WASM, où ce modèle ne se charge pas dans le navigateur (banc).
-  if (assessmentQ4?.ok) return { variant: VARIANTS.webgpuQ4, reason: f16KnownBroken ? "f16-failed-before" : (assessment?.reason || "no-f16") };
-  return { variant: VARIANTS.wasm, reason: assessment?.reason || "no-probe" };
+export const LADDER_VERSION = 3;
+
+/**
+ * Empreinte de l'appareil pour les échecs mémorisés : modèle, échelle, et GPU annoncé.
+ * Un téléphone dont le pilote ou le navigateur change d'adaptateur repart de zéro.
+ */
+export function deviceFingerprint(probe) {
+  const i = probe?.info || {};
+  const gpu = probe?.adapter ? [i.vendor, i.architecture, i.device, i.description].filter(Boolean).join("/") || "gpu" : "no-gpu";
+  return `${MODEL.revision.slice(0, 8)}|${LADDER_VERSION}|${gpu}`;
+}
+
+/**
+ * Tentatives à essayer, dans l'ordre, sur cet appareil.
+ * @param {{ probe: object|null, failed?: Record<string,string> }} s
+ *   failed : tentatives déjà en échec ici (id → raison), voir failureRecord
+ * @returns {{ queue: object[], skipped: {id:string, reason:string}[] }}
+ *   skipped : ce qui n'est pas tenté, et pourquoi (journalisé et montré)
+ */
+export function planAttempts({ probe, failed = {} }) {
+  const gpuF16 = assessWebGPU(probe);
+  const gpuF32 = assessWebGPU(probe, { f16: false });
+  const queue = [], skipped = [];
+  for (const a of ATTEMPTS) {
+    let why = null;
+    if (failed[a.id]) why = `failed-before: ${failed[a.id]}`;
+    else if (a.engine.device === "webgpu") {
+      const v = a.variant.dtype === "q4f16" ? gpuF16 : gpuF32;
+      if (!v.ok) why = v.reason;
+    }
+    if (why) skipped.push({ id: a.id, reason: why });
+    else queue.push(a);
+  }
+  return { queue, skipped };
+}
+
+/**
+ * Échecs mémorisés, lus depuis le stockage. Ne vaut que pour la même empreinte.
+ * Les anciennes clés (avant l'échelle) sont reprises pour ne pas retélécharger :
+ * « f16 en échec » couvrait q4f16, dont les fichiers ont été purgés. L'ancien « GPU
+ * condamné » n'est PAS repris : l'échec n'a jamais été lu (message tronqué à
+ * l'écran), il a eu lieu avec un moteur processeur qui ne pouvait pas démarrer, et
+ * retenter q4 sur le GPU ne télécharge rien (fichiers partagés avec le processeur).
+ * @param {{ stored: string|null, legacyF16?: string|null, fingerprint: string }} s
+ * @returns {Record<string,string>}
+ */
+export function failureRecord({ stored, legacyF16 = null, fingerprint }) {
+  let rec = null;
+  try { rec = stored ? JSON.parse(stored) : null; } catch { rec = null; }
+  const failed = rec && rec.fingerprint === fingerprint && rec.failed && typeof rec.failed === "object" ? { ...rec.failed } : {};
+  if (legacyF16) {
+    for (const a of ATTEMPTS) if (a.variant.dtype === "q4f16" && !failed[a.id]) failed[a.id] = `legacy: ${String(legacyF16).slice(0, 120)}`;
+  }
+  return failed;
+}
+
+/**
+ * Que faire après l'échec d'une tentative ?
+ *  - réseau (setup, download) : on s'arrête, sans rien condamner — le même essai
+ *    reprendra, fichiers déjà reçus compris ;
+ *  - moteur (import du moteur, initialisation, essai à vide) : la tentative est
+ *    condamnée sur cet appareil et la suivante part d'elle-même ;
+ *  - génération : une erreur du moteur sur le GPU condamne la tentative (une session
+ *    peut se créer puis échouer à chaque réponse, mesuré) ; un délai dépassé ne prouve
+ *    rien et ne condamne pas ; sur le processeur, rien après lui : on ne condamne pas.
+ * purge : dtype dont les fichiers ne serviront plus (toutes ses tentatives condamnées).
+ * @param {{ attempt: object, phase: "setup"|"engine"|"download"|"init"|"generate", timedOut?: boolean,
+ *           failed?: Record<string,string> }} f
+ */
+export function classifyFailure({ attempt: a, phase, timedOut = false, failed = {} }) {
+  const sfx = timedOut ? "_timeout" : "";
+  const none = { condemn: false, continue: false, purgeDtype: null };
+  if (phase === "setup" || phase === "download") return { ...none, code: `${phase}${sfx}` };
+  if (phase === "generate" && (timedOut || a.engine.device !== "webgpu")) return { ...none, code: `generate${sfx}` };
+  const after = { ...failed, [a.id]: "x" };
+  const dtypeDead = ATTEMPTS.filter((o) => o.variant.dtype === a.variant.dtype).every((o) => after[o.id]);
+  // q4 sert aussi au processeur : jamais purgé
+  const purgeDtype = dtypeDead && a.variant.dtype !== VARIANTS.wasm.dtype ? a.variant.dtype : null;
+  return { condemn: true, continue: true, purgeDtype, code: `${phase === "generate" ? "generate" : "init"}${sfx}` };
 }
 
 // ── Mémoire : refuser proprement plutôt que faire tuer l'application ─────────
@@ -252,7 +369,14 @@ export const LIMITS = Object.freeze({
     webgpu: 180_000,
     wasm: 300_000,
   }),
-  generateMs: 180_000,      // une réponse complète
+  generateMs: Object.freeze({   // une réponse complète
+    webgpu: 180_000,
+    // Processeur, un seul fil (pas de SharedArrayBuffer dans la WebView) : chaque passe
+    // coûte ~1,8 s mesurée dans Chrome sur un processeur de bureau, 41 à 115 s par
+    // réponse courte, et une réponse de 96 jetons dépasse 180 s. Avec 180 s, la voie
+    // processeur échouait sur toute réponse longue. Téléphone : plus lent, non mesuré.
+    wasm: 600_000,
+  }),
   probeMs: 10_000,          // requestAdapter / requestDevice
   localCheckMs: 4_000,      // HEAD sur /models/… (copie embarquée)
 });
@@ -319,42 +443,6 @@ export function progressReducer(state, ev, now) {
   // Tout événement du hub (initiate, download, progress, done) prouve que le réseau
   // répond : on quitte « setup » pour la surveillance de coupure.
   return { ...state, files, finished, pct, phase: "download", lastActivity: now };
-}
-
-/**
- * Que faire après un échec ? Aucune décision ne relance AUTOMATIQUEMENT un second
- * téléchargement complet : le repli est annoncé à l'utilisateur, avec la taille, et n'a
- * lieu que s'il appuie sur « Réessayer ». Seule la sonde, AVANT tout téléchargement,
- * bascule d'elle-même.
- *
- * Ordre des replis, établi au banc (docs/MODELE.md) : q4f16/GPU → q4/GPU → q4/WASM.
- * Un GPU peut charger q4f16 puis échouer à chaque génération (calcul fp16) : l'échec
- * d'initialisation (essai à vide compris) ou de génération en q4f16 écarte donc le fp16,
- * pas le GPU. Seul l'échec de q4 sur le GPU condamne le GPU.
- * @param {{ device: "webgpu"|"wasm", dtype?: string, phase: "setup"|"download"|"init"|"generate", timedOut?: boolean }} f
- */
-export function decideAfterFailure({ device, dtype, phase, timedOut = false }) {
-  const sfx = timedOut ? "_timeout" : "";
-  const current = variantFor(device, dtype);
-  const base = { markWebGPUBroken: false, markF16Broken: false, purgeDtype: null, autoRetry: false };
-  const gpuF16 = current === VARIANTS.webgpu;
-  if (gpuF16 && (phase === "init" || (phase === "generate" && !timedOut))) {
-    return {
-      ...base,
-      code: phase === "init" ? `webgpu_init${sfx}` : "webgpu_generate",
-      markF16Broken: true,
-      purgeDtype: VARIANTS.webgpu.dtype, // libère le fichier q4f16 devenu inutile sur cet appareil
-      next: VARIANTS.webgpuQ4,
-    };
-  }
-  if (phase === "init" && current === VARIANTS.webgpuQ4) {
-    // Les fichiers q4 servent aussi à WASM : rien à purger.
-    return { ...base, code: `webgpu_q4_init${sfx}`, markWebGPUBroken: true, next: VARIANTS.wasm };
-  }
-  if (phase === "init") return { ...base, code: `wasm_init${sfx}`, next: VARIANTS.wasm };
-  if (phase === "download") return { ...base, code: `download${sfx}`, next: current };
-  if (phase === "generate") return { ...base, code: `generate${sfx}`, next: current };
-  return { ...base, code: `setup${sfx}`, next: current };
 }
 
 /**

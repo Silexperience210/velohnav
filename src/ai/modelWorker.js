@@ -7,8 +7,16 @@
 // vie de la page. Une initialisation qui ne rend jamais la main condamne donc toute
 // tentative suivante dans la même page. Un worker, lui, se termine : la façade
 // (localModel.js) le tue à l'expiration du délai et en recrée un neuf.
-import { pipeline, env } from "@huggingface/transformers";
-import { LIMITS, MODEL, SELF_TEST, hubFileUrl, cacheHeaders, withTimeout } from "./modelPolicy.js";
+//
+// Un worker = UNE tentative = UN moteur onnxruntime. transformers.js importe toujours
+// `onnxruntime-web/webgpu`, dont le binaire (ort-wasm-simd-threaded.asyncify.wasm) n'a
+// pas de noyau processeur pour GatherBlockQuantized : la variante processeur ne pouvait
+// PAS démarrer (« Could not find an implementation for GatherBlockQuantized(1) », mesuré
+// dans Chrome). Le worker charge le build qu'exige la tentative (ENGINES, modelPolicy.js),
+// le pose sous ENGINE_SLOT, PUIS importe transformers.js, qui le reçoit (ortEngine.js).
+// ortEngine.js n'est PAS importé ici : il lit le moteur à son évaluation, qui doit venir
+// après le choix (il est importé par transformers.js, via le plugin).
+import { LIMITS, MODEL, SELF_TEST, hubFileUrl, cacheHeaders, withTimeout, ENGINES, ENGINE_SLOT } from "./modelPolicy.js";
 
 const MODEL_ID = MODEL.id;
 // Copie embarquée éventuelle (public/models/ via scripts/fetch-model.sh).
@@ -17,21 +25,53 @@ const LOCAL_PATH = "/models/";
 // Cache de transformers.js (hub.js : caches.open("transformers-cache"), clé = URL du Hub)
 const CACHE_NAME = "transformers-cache";
 
-const ort = env.backends.onnx;
-// Un seul fil : sans isolation cross-origin (COOP/COEP, absente de la WebView
-// Capacitor) il n'y a pas de SharedArrayBuffer. onnxruntime retombe déjà à 1 fil dans
-// ce cas, on le fixe explicitement pour ne dépendre d'aucune heuristique.
-ort.wasm.numThreads = 1;
-ort.wasm.proxy = false;
-// transformers.js force wasmPaths vers cdn.jsdelivr.net : le moteur (21 Mo) était
-// retéléchargé à chaque initialisation, hors de tout délai, et l'IA ne démarrait pas
-// hors ligne. Le binaire est déjà embarqué par Vite à côté du bundle : on le rend à
-// onnxruntime en effaçant la surcharge.
-ort.wasm.wasmPaths = undefined;
+// Imports littéraux : Vite doit voir chaque moteur pour embarquer son binaire.
+const ENGINE_MODULES = {
+  [ENGINES.webgpu.module]: () => import("onnxruntime-web/webgpu"),
+  [ENGINES.jsep.module]: () => import("onnxruntime-web/all"),
+  [ENGINES.wasm.module]: () => import("onnxruntime-web/wasm"),
+};
 
+let tf = null;          // module transformers.js, importé après le choix du moteur
 let generator = null;
 
 const post = (msg) => self.postMessage(msg);
+
+// Journal d'onnxruntime : ses erreurs WebGPU (validation, shader non compilable, « Sub
+// requires f16 ») partent en console.error/warn, et l'exception qui remonte se réduit
+// souvent à « failed to call OrtRun() ». Les dernières lignes sont gardées pour être
+// jointes à l'erreur : sans elles, la cause d'un échec GPU n'est pas lisible.
+const LOG_MAX = 8;
+const logTail = [];
+for (const level of ["error", "warn"]) {
+  const orig = console[level].bind(console);
+  console[level] = (...args) => {
+    const line = args.map((a) => (a instanceof Error ? a.message : typeof a === "string" ? a : (() => { try { return JSON.stringify(a); } catch { return String(a); } })())).join(" ");
+    logTail.push(`${level}: ${line}`.slice(0, 300));
+    if (logTail.length > LOG_MAX) logTail.shift();
+    orig(...args);
+  };
+}
+
+async function runtime(engineId) {
+  if (tf) return tf;
+  const engine = ENGINES[engineId] ?? ENGINES.webgpu;
+  const ort = await ENGINE_MODULES[engine.module]();
+  globalThis[ENGINE_SLOT] = ort;
+  tf = await import("@huggingface/transformers");
+  const onnx = tf.env.backends.onnx;
+  // Un seul fil : sans isolation cross-origin (COOP/COEP, absente de la WebView
+  // Capacitor) il n'y a pas de SharedArrayBuffer. onnxruntime retombe déjà à 1 fil dans
+  // ce cas, on le fixe explicitement pour ne dépendre d'aucune heuristique.
+  onnx.wasm.numThreads = 1;
+  onnx.wasm.proxy = false;
+  // transformers.js force wasmPaths vers cdn.jsdelivr.net : le moteur (14 à 28 Mo) était
+  // retéléchargé à chaque initialisation, hors de tout délai, et l'IA ne démarrait pas
+  // hors ligne. Le binaire est déjà embarqué par Vite à côté du bundle : on le rend à
+  // onnxruntime en effaçant la surcharge.
+  onnx.wasm.wasmPaths = undefined;
+  return tf;
+}
 
 async function hasLocalModel() {
   const ctrl = new AbortController();
@@ -50,7 +90,7 @@ async function hasLocalModel() {
  * Sonde WebGPU : pas seulement « un adaptateur existe », mais « un device a été obtenu
  * avec les limites (et la fonction shader-f16 si l'adaptateur l'offre) ». Chaque appel
  * est borné. Sans shader-f16, le device est tout de même demandé : la variante q4 (calcul
- * fp32) peut tourner sur ce GPU. Le verdict est rendu par assessWebGPU (modelPolicy.js),
+ * fp32) peut tourner sur ce GPU. Le verdict est rendu par planAttempts (modelPolicy.js),
  * côté façade.
  */
 async function probeWebGPU() {
@@ -70,8 +110,10 @@ async function probeWebGPU() {
     maxBufferSize: adapter.limits.maxBufferSize,
     maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize,
   };
+  const info = adapter.info || {};
   const out = {
     adapter: true,
+    info: { vendor: info.vendor || "", architecture: info.architecture || "", device: info.device || "", description: info.description || "" },
     isFallbackAdapter: !!(adapter.info?.isFallbackAdapter ?? adapter.isFallbackAdapter),
     features,
     limits,
@@ -129,7 +171,15 @@ async function prefetchToCache(file, bytes) {
   }
 }
 
-async function load({ variant, modelId }) {
+async function load({ variant, engine, modelId }) {
+  let rt;
+  try {
+    rt = await runtime(engine);
+  } catch (e) {
+    // Moteur introuvable ou qui refuse de s'initialiser : propre à CETTE tentative
+    throw Object.assign(e instanceof Error ? e : new Error(String(e)), { stage: "engine" });
+  }
+  const { pipeline, env } = rt;
   let ref = modelId || MODEL_ID;
   if (!modelId && (await hasLocalModel())) {
     env.allowLocalModels = true;
@@ -151,6 +201,13 @@ async function load({ variant, modelId }) {
   });
 }
 
+/** Erreur à transmettre : message, étape (« engine » : import du moteur), journal du moteur. */
+const errorReport = (e) => ({
+  message: String(e?.message || e),
+  stage: e?.stage || "load",
+  log: logTail.slice(),
+});
+
 self.onmessage = async ({ data }) => {
   const msg = data || {};
   if (msg.type === "probe") {
@@ -158,11 +215,16 @@ self.onmessage = async ({ data }) => {
     return;
   }
   if (msg.type === "load") {
+    const t0 = performance.now();
     try {
       await load(msg);
-      post({ type: "ready", selfTest: await selfTest() });
+      // loadMs : du message « load » à l'essai à vide réussi (téléchargement compris)
+      const t1 = performance.now();
+      const selfTest = await selfTestRun();
+      const t2 = performance.now();
+      post({ type: "ready", selfTest, loadMs: Math.round(t2 - t0), selfTestMs: Math.round(t2 - t1) });
     } catch (e) {
-      post({ type: "error", message: String(e?.message || e) });
+      post({ type: "error", ...errorReport(e) });
     }
     return;
   }
@@ -182,7 +244,7 @@ self.onmessage = async ({ data }) => {
  * charge, puis chaque génération échoue. Une erreur ici remonte comme un échec de
  * chargement ; le texte produit est jugé par la façade (selfTestVerdict).
  */
-async function selfTest() {
+async function selfTestRun() {
   const raw = await complete({
     messages: SELF_TEST.messages,
     options: { max_new_tokens: SELF_TEST.maxNewTokens, do_sample: false },

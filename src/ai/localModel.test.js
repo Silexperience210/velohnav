@@ -54,28 +54,33 @@ describe("nettoyage de la sortie brute", () => {
   });
 });
 
-// ── Le défaut observé sur téléphone, rejoué avec un faux worker ──────────
-// Progression à 100 %, puis plus rien : ni « prêt », ni erreur. Le chargement doit
-// désormais finir en échec explicite, tuer le worker bloqué, et proposer WASM.
+// ── Façade rejouée avec un faux worker ──────────────────────────────
+// Un worker par tentative (un moteur onnxruntime par worker). Le passage d'une tentative
+// à la suivante se fait sans rien demander ; seul l'échec de TOUTES remonte.
 class FakeWorker {
   static all = [];
   constructor() { this.sent = []; this.terminated = false; FakeWorker.all.push(this); }
   postMessage(m) { this.sent.push(m); }
   terminate() { this.terminated = true; }
   emit(data) { this.onmessage?.({ data }); }
+  get load() { return this.sent.find((m) => m.type === "load"); }
 }
 
 const GOOD_PROBE = {
-  adapter: true, isFallbackAdapter: false, features: ["shader-f16"],
+  adapter: true, isFallbackAdapter: false, info: { vendor: "arm", architecture: "valhall" }, features: ["shader-f16"],
   limits: { maxBufferSize: 2 ** 31, maxStorageBufferBindingSize: 2 ** 31 }, device: { ok: true },
 };
+const NO_F16_PROBE = { ...GOOD_PROBE, features: ["subgroups"] };
 const MB = 254_965_760;   // model_q4f16.onnx_data
 const GRAPH = 182_827;    // model_q4f16.onnx
-// Le contrôle mémoire précède la création du worker (asynchrone)
+// Contrôle mémoire (asynchrone) avant chaque worker
 const flush = () => vi.advanceTimersByTimeAsync(0);
 const progress = (file, loaded, total) => ({ type: "progress", ev: { status: "progress", file, loaded, total } });
+const last = () => FakeWorker.all.at(-1);
+const filesDone = (w) => { for (const f of w.load.variant.files) w.emit(progress(f, 10, 10)); };
+const SUB_F16 = "failed to call OrtRun(). Sub requires f16 but the device does not support it.";
 
-describe("façade : un chargement ne peut plus rester figé", () => {
+describe("façade : l'échelle des tentatives, sans rien demander", () => {
   let mod, store;
   beforeEach(async () => {
     vi.useFakeTimers();
@@ -83,111 +88,246 @@ describe("façade : un chargement ne peut plus rester figé", () => {
     FakeWorker.all = [];
     store = new Map();
     vi.stubGlobal("Worker", FakeWorker);
-    vi.stubGlobal("localStorage", { getItem: (k) => store.get(k) ?? null, setItem: (k, v) => store.set(k, String(v)) });
+    vi.stubGlobal("localStorage", {
+      getItem: (k) => store.get(k) ?? null, setItem: (k, v) => store.set(k, String(v)), removeItem: (k) => store.delete(k),
+    });
     vi.spyOn(console, "warn").mockImplementation(() => {});
     vi.spyOn(console, "info").mockImplementation(() => {});
     mod = await import("./localModel.js");
   });
   afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
-  it("WebGPU figé à 100 % : échec explicite après le délai, worker tué, repli q4 sur le GPU mémorisé", async () => {
-    const pcts = [], phases = [];
-    const p = mod.loadModel((x) => pcts.push(x), (x) => phases.push(x));
-    const outcome = p.then(() => "resolved", (e) => e);
+  it("cas du propriétaire : le GPU refuse tout, le modèle démarre SUR LE PROCESSEUR sans erreur ni clic", async () => {
+    const phases = [];
+    const loading = mod.loadModel(() => {}, (p) => phases.push(p));
     await flush();
-    const w = FakeWorker.all[0];
-    expect(w.sent[0]).toEqual({ type: "probe" });
-    w.emit({ type: "probe", probe: GOOD_PROBE });
-    expect(w.sent[1].variant).toMatchObject({ dtype: "q4f16", device: "webgpu" });
-    // Le graphe arrive d'abord : à 100 %, ce n'est PAS la fin (les poids suivent).
-    w.emit(progress("onnx/model_q4f16.onnx", GRAPH, GRAPH));
-    expect(phases.at(-1)).toEqual({ phase: "download", device: "webgpu" });
-    w.emit(progress("onnx/model_q4f16.onnx_data", MB / 2, MB));
-    w.emit(progress("onnx/model_q4f16.onnx_data", MB, MB));
-    expect(pcts.at(-1)).toBe(100);
-    expect(phases.at(-1)).toEqual({ phase: "init", device: "webgpu" });
-
-    await vi.advanceTimersByTimeAsync(179_000);
-    expect(w.terminated).toBe(false); // encore dans le délai
-
-    await vi.advanceTimersByTimeAsync(3_000);
-    const e = await outcome;
-    expect(e).toMatchObject({ name: "ModelError", code: "webgpu_init_timeout", seconds: 180, mb: 294 });
-    expect(w.terminated).toBe(true);
-    expect(store.get("velohnav_ai_f16_ko")).toBeTruthy();
-    expect(store.has("velohnav_ai_webgpu_ko")).toBe(false);   // le GPU n'est pas condamné
-    expect(mod.chatModelMB()).toBe(294); // l'interface annonce la taille du repli
-    expect(mod.isModelReady()).toBe(false);
-
-    // « Réessayer » : worker neuf, sonde (bornée), puis q4 sur le GPU — jamais q4f16 à nouveau.
-    const retry = mod.loadModel();
+    const w1 = last();
+    expect(w1.sent[0]).toEqual({ type: "probe" });
+    w1.emit({ type: "probe", probe: GOOD_PROBE });
+    expect(w1.load).toMatchObject({ engine: "webgpu", variant: { dtype: "q4f16", device: "webgpu" } });
+    filesDone(w1);
+    w1.emit({ type: "error", message: SUB_F16, log: ["error: shader_helper.cc:416 Program Sub requires f16"] });
     await flush();
-    const w2 = FakeWorker.all[1];
-    expect(w2).not.toBe(w);
-    w2.emit({ type: "probe", probe: GOOD_PROBE });
-    expect(w2.sent.filter((m) => m.type === "load")).toEqual([{ type: "load", variant: expect.objectContaining({ dtype: "q4", device: "webgpu" }) }]);
-    w2.emit(progress("onnx/model_q4.onnx", 10, 10));
-    w2.emit(progress("onnx/model_q4.onnx_data", 10, 10));
-    w2.emit({ type: "ready", selfTest: "Bonjour !" });
-    await expect(retry).resolves.toBeUndefined();
+    // q4f16 avec l'autre moteur GPU : mêmes fichiers, aucun téléchargement, pas de nouvelle sonde
+    const w2 = last();
+    expect(w1.terminated).toBe(true);
+    expect(w2).not.toBe(w1);
+    expect(w2.sent.some((m) => m.type === "probe")).toBe(false);
+    expect(w2.load).toMatchObject({ engine: "jsep", variant: { dtype: "q4f16" } });
+    filesDone(w2);
+    w2.emit({ type: "ready", selfTest: "" });   // <|pad|> en boucle : rien de lisible (mesuré)
+    await flush();
+    const w3 = last();
+    expect(w3.load).toMatchObject({ engine: "webgpu", variant: { dtype: "q4", device: "webgpu" } });
+    filesDone(w3);
+    w3.emit({ type: "error", message: "GPU validation error" });
+    await flush();
+    const w4 = last();
+    expect(w4.load).toMatchObject({ engine: "jsep", variant: { dtype: "q4" } });
+    filesDone(w4);
+    await vi.advanceTimersByTimeAsync(181_000);   // bloqué : le chien de garde tranche
+    await flush();
+    const w5 = last();
+    expect(w4.terminated).toBe(true);
+    expect(w5.load).toMatchObject({ engine: "wasm", variant: { dtype: "q4", device: "wasm" } });
+    filesDone(w5);
+    w5.emit({ type: "ready", selfTest: "Bonjour ! Comment puis-", loadMs: 41_000 });
+    await expect(loading).resolves.toBeUndefined();
     expect(mod.isModelReady()).toBe(true);
+
+    const r = mod.modelReport();
+    expect(r.chosen).toMatchObject({ id: "q4/wasm", engine: "wasm", device: "wasm", dtype: "q4", mb: 294, loadMs: 41_000 });
+    expect(r.tried.map((x) => [x.id, x.code])).toEqual([
+      ["q4f16/webgpu", "init"], ["q4f16/jsep", "init"], ["q4/webgpu", "init"], ["q4/jsep", "init_timeout"],
+    ]);
+    // le message du moteur ET la ligne de journal qui l'explique sont conservés
+    expect(r.tried[0].detail).toContain("Sub requires f16");
+    expect(r.tried[0].detail).toContain("shader_helper.cc:416");
+    expect(r.gpu).toMatchObject({ vendor: "arm", architecture: "valhall", f16: true });
+    expect(mod.chatModelMB()).toBe(294);
+    // chaque bascule annoncée à l'interface : quelle tentative, sur quel moteur
+    expect(phases.filter((p) => p.phase === "download").map((p) => p.attempt))
+      .toEqual(["q4f16/webgpu", "q4f16/jsep", "q4/webgpu", "q4/jsep", "q4/wasm"]);
+    // q4f16 purgé une fois ses deux moteurs condamnés — jamais q4, qui sert au processeur
+    expect(console.info).toHaveBeenCalledWith(expect.stringMatching(/^\[IA\] retenu : q4\/wasm/));
   });
 
-  it("sonde défavorable : WASM d'emblée, un seul téléchargement", async () => {
-    mod.loadModel().catch(() => {});
+  it("au lancement suivant : les tentatives en échec ne sont pas rejouées, le processeur part directement", async () => {
+    store.set("velohnav_ai_attempts_ko", JSON.stringify({
+      fingerprint: (await import("./modelPolicy.js")).deviceFingerprint(GOOD_PROBE),
+      failed: { "q4f16/webgpu": "a", "q4f16/jsep": "b", "q4/webgpu": "c", "q4/jsep": "d" },
+    }));
+    const loading = mod.loadModel();
     await flush();
-    const w = FakeWorker.all[0];
-    w.emit({ type: "probe", probe: { ...GOOD_PROBE, features: [] } });   // pas de shader-f16
-    const loads = w.sent.filter((m) => m.type === "load");
-    expect(loads).toHaveLength(1);
-    expect(loads[0].variant.dtype).toBe("q4");
+    last().emit({ type: "probe", probe: GOOD_PROBE });
+    expect(FakeWorker.all).toHaveLength(1);
+    expect(last().load).toMatchObject({ engine: "wasm" });
+    last().emit({ type: "ready", selfTest: "Bonjour !" });
+    await loading;
+    expect(mod.modelReport().skipped.map((x) => x.id)).toEqual(["q4f16/webgpu", "q4f16/jsep", "q4/webgpu", "q4/jsep"]);
   });
 
-  it("coupure réseau pendant le téléchargement : échec explicite, GPU non condamné", async () => {
+  it("GPU sans shader-f16 (mesuré sur un vrai GPU) : q4 sur le GPU d'emblée, un seul téléchargement", async () => {
+    const loading = mod.loadModel();
+    await flush();
+    last().emit({ type: "probe", probe: NO_F16_PROBE });
+    expect(last().load).toMatchObject({ engine: "webgpu", variant: { dtype: "q4", device: "webgpu" } });
+    last().emit({ type: "ready", selfTest: "Bonjour !", loadMs: 4106 });
+    await loading;
+    expect(mod.modelReport().chosen).toMatchObject({ id: "q4/webgpu", device: "webgpu" });
+  });
+
+  it("toutes les voies échouent : UNE erreur, « all_failed », avec chaque raison ; aucune boucle", async () => {
     const outcome = mod.loadModel().then(() => "resolved", (e) => e);
     await flush();
-    const w = FakeWorker.all[0];
+    last().emit({ type: "probe", probe: GOOD_PROBE });
+    for (let i = 0; i < 5; i++) {
+      const w = last();
+      filesDone(w);
+      w.emit({ type: "error", message: `échec ${w.load.variant.dtype}/${w.load.engine}` });
+      await flush();
+    }
+    const e = await outcome;
+    expect(e).toMatchObject({ name: "ModelError", code: "all_failed" });
+    expect(e.attempts).toHaveLength(5);
+    expect(e.detail).toContain("q4/wasm → init (échec q4/wasm)");
+    expect(FakeWorker.all).toHaveLength(5);
+    // Rechargement sans « Réessayer » : rien n'est retenté, aucun worker créé
+    const again = await mod.loadModel().then(() => "resolved", (x) => x);
+    expect(again.code).toBe("all_failed");
+    expect(FakeWorker.all).toHaveLength(5);
+    // « Réessayer » après all_failed : les échecs sont oubliés, l'échelle repart du début
+    mod.forgetFailures();
+    mod.loadModel().catch(() => {});
+    await flush();
+    expect(last().load).toMatchObject({ engine: "webgpu", variant: { dtype: "q4f16" } });
+  });
+
+  it("erreur avant tout fichier reçu (hors ligne : config.json introuvable) : arrêt sans rien condamner", async () => {
+    const outcome = mod.loadModel().then(() => "resolved", (e) => e);
+    await flush();
+    last().emit({ type: "probe", probe: GOOD_PROBE });
+    last().emit({ type: "error", message: "TypeError: Failed to fetch" });
+    expect(await outcome).toMatchObject({ code: "setup" });
+    expect(FakeWorker.all).toHaveLength(1);
+    expect(store.has("velohnav_ai_attempts_ko")).toBe(false);
+  });
+
+  it("le moteur lui-même refuse de se charger : propre à la tentative, la suivante part", async () => {
+    mod.loadModel().catch(() => {});
+    await flush();
+    last().emit({ type: "probe", probe: GOOD_PROBE });
+    last().emit({ type: "error", stage: "engine", message: "Failed to fetch dynamically imported module" });
+    await flush();
+    expect(last().load).toMatchObject({ engine: "jsep" });
+  });
+
+  it("coupure réseau pendant le téléchargement : erreur dite, rien de condamné, reprise au même endroit", async () => {
+    const outcome = mod.loadModel().then(() => "resolved", (e) => e);
+    await flush();
+    const w = last();
     w.emit({ type: "probe", probe: GOOD_PROBE });
     w.emit(progress("onnx/model_q4f16.onnx_data", 1000, MB));
     await vi.advanceTimersByTimeAsync(92_000);
     expect(await outcome).toMatchObject({ code: "download_timeout", seconds: 90 });
     expect(w.terminated).toBe(true);
-    expect(store.has("velohnav_ai_webgpu_ko")).toBe(false);
-  });
-
-  it("erreur remontée par le worker : rapportée avec sa raison, pas avalée", async () => {
-    store.set("velohnav_ai_webgpu_ko", "1");
-    const outcome = mod.loadModel().then(() => "resolved", (e) => e);
+    expect(store.has("velohnav_ai_attempts_ko")).toBe(false);
+    mod.loadModel().catch(() => {});
     await flush();
-    const w = FakeWorker.all[0];
-    w.emit(progress("onnx/model_q4.onnx", 5, 5));
-    w.emit(progress("onnx/model_q4.onnx_data", 5, 5));
-    w.emit({ type: "error", message: "RangeError: Array buffer allocation failed" });
-    expect(await outcome).toMatchObject({ code: "wasm_init", detail: "RangeError: Array buffer allocation failed" });
-    expect(w.terminated).toBe(true);
+    expect(last().load).toMatchObject({ engine: "webgpu", variant: { dtype: "q4f16" } });
   });
 
-  it("une réponse qui ne vient jamais : délai, worker arrêté, erreur generate_timeout", async () => {
+  it("WebGPU figé à 100 % : le graphe à 100 % ne suffit pas, puis délai d'initialisation, puis tentative suivante", async () => {
+    const pcts = [], phases = [];
+    mod.loadModel((x) => pcts.push(x), (x) => phases.push(x)).catch(() => {});
+    await flush();
+    const w = last();
+    w.emit({ type: "probe", probe: GOOD_PROBE });
+    w.emit(progress("onnx/model_q4f16.onnx", GRAPH, GRAPH));
+    expect(phases.at(-1)).toMatchObject({ phase: "download", device: "webgpu", attempt: "q4f16/webgpu" });
+    w.emit(progress("onnx/model_q4f16.onnx_data", MB / 2, MB));
+    w.emit(progress("onnx/model_q4f16.onnx_data", MB, MB));
+    expect(pcts.at(-1)).toBe(100);
+    expect(phases.at(-1)).toMatchObject({ phase: "init", engine: "webgpu" });
+    await vi.advanceTimersByTimeAsync(179_000);
+    expect(w.terminated).toBe(false);
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(w.terminated).toBe(true);
+    expect(last().load).toMatchObject({ engine: "jsep" });
+    expect(mod.modelReport().tried).toEqual([{ id: "q4f16/webgpu", code: "init_timeout", detail: "timeout 180 s" }]);
+  });
+
+  it("« prêt » exige l'essai à vide : sans texte, ou charabia, la tentative est écartée", async () => {
+    mod.loadModel().catch(() => {});
+    await flush();
+    last().emit({ type: "probe", probe: GOOD_PROBE });
+    for (const selfTest of [undefined, "", "地黎 talk"]) {
+      const w = last();
+      w.emit({ type: "ready", selfTest });
+      await flush();
+      expect(w.terminated).toBe(true);
+      expect(mod.isModelReady()).toBe(false);
+    }
+    expect(mod.modelReport().tried.map((x) => x.detail.split(":")[0]))
+      .toEqual(["self-test no-output", "self-test no-word", "self-test script"]);
+  });
+
+  it("anciennes clés : « fp16 en échec » repris (pas de second téléchargement q4f16), « GPU condamné » non — q4 sur le GPU retenté", async () => {
+    store.set("velohnav_ai_f16_ko", "Sub requires f16");
     store.set("velohnav_ai_webgpu_ko", "1");
+    mod.loadModel().catch(() => {});
+    await flush();
+    last().emit({ type: "probe", probe: GOOD_PROBE });
+    expect(last().load).toMatchObject({ engine: "webgpu", variant: { dtype: "q4", device: "webgpu" } });
+    expect(store.has("velohnav_ai_f16_ko")).toBe(false);
+    expect(store.has("velohnav_ai_webgpu_ko")).toBe(false);
+    expect(Object.keys(JSON.parse(store.get("velohnav_ai_attempts_ko")).failed).sort()).toEqual(["q4f16/jsep", "q4f16/webgpu"]);
+  });
+
+  it("q4f16 chargé mais la génération échoue (cas mesuré) : erreur dite, tentative écartée, `recover` → la suivante se charge", async () => {
     const loading = mod.loadModel();
     await flush();
-    const w = FakeWorker.all[0];
+    const w = last();
+    w.emit({ type: "probe", probe: GOOD_PROBE });
+    w.emit({ type: "ready", selfTest: "Bonjour !" });
+    await loading;
+    const reply = mod.generateDetailed("sys", [{ role: "user", content: "Je suis Silex" }]).then(() => "resolved", (e) => e);
+    await vi.advanceTimersByTimeAsync(0);
+    w.emit({ type: "result", id: w.sent.at(-1).id, error: SUB_F16 });
+    expect(await reply).toMatchObject({ code: "generate", detail: SUB_F16, recover: true });
+    expect(w.terminated).toBe(true);
+    expect(mod.isModelReady()).toBe(false);
+    expect(JSON.parse(store.get("velohnav_ai_attempts_ko")).failed["q4f16/webgpu"]).toContain("Sub requires f16");
+    mod.loadModel().catch(() => {});
+    await flush();
+    expect(last().load).toMatchObject({ engine: "jsep", variant: { dtype: "q4f16" } });
+  });
+
+  it("une réponse qui ne vient jamais : délai, worker arrêté, erreur generate_timeout, rien de condamné", async () => {
+    const loading = mod.loadModel();
+    await flush();
+    const w = last();
+    w.emit({ type: "probe", probe: null });
     w.emit({ type: "ready", selfTest: "Bonjour !" });
     await loading;
     const outcome = mod.generate("sys", [{ role: "user", content: "salut" }]).then(() => "resolved", (e) => e);
     await vi.advanceTimersByTimeAsync(0);
     expect(w.sent.at(-1).type).toBe("generate");
+    // processeur : délai long (une passe coûte ~1,8 s mesurée) — 180 s ne suffisent pas
     await vi.advanceTimersByTimeAsync(181_000);
-    expect(await outcome).toMatchObject({ code: "generate_timeout", seconds: 180 });
+    expect(w.terminated).toBe(false);
+    await vi.advanceTimersByTimeAsync(420_000);
+    expect(await outcome).toMatchObject({ code: "generate_timeout", seconds: 600 });
     expect(w.terminated).toBe(true);
     expect(mod.isModelReady()).toBe(false);
+    expect(store.has("velohnav_ai_attempts_ko")).toBe(false);
   });
 
   it("une réponse normale traverse le worker et est nettoyée", async () => {
-    store.set("velohnav_ai_webgpu_ko", "1");
     const loading = mod.loadModel();
     await flush();
-    const w = FakeWorker.all[0];
+    const w = last();
+    w.emit({ type: "probe", probe: null });
     w.emit({ type: "ready", selfTest: "Bonjour !" });
     await loading;
     const reply = mod.generate("sys", [{ role: "user", content: "salut" }]);
@@ -199,48 +339,11 @@ describe("façade : un chargement ne peut plus rester figé", () => {
     await expect(reply).resolves.toBe("Bonjour !");
   });
 
-  it("« prêt » exige l'essai à vide : sans texte, ou charabia, c'est un échec de chargement explicite", async () => {
-    for (const selfTest of [undefined, "", "地黎 talk"]) {
-      FakeWorker.all = [];
-      const outcome = mod.loadModel().then(() => "resolved", (e) => e);
-      await flush();
-      const w = FakeWorker.all[0];
-      w.emit({ type: "probe", probe: GOOD_PROBE });
-      w.emit(progress("onnx/model_q4f16.onnx", GRAPH, GRAPH));
-      w.emit(progress("onnx/model_q4f16.onnx_data", MB, MB));
-      w.emit({ type: "ready", selfTest });
-      const e = await outcome;
-      expect(e, String(selfTest)).toMatchObject({ code: "webgpu_init", mb: 294 });
-      expect(e.detail).toMatch(/^self-test /);
-      expect(mod.isModelReady()).toBe(false);
-      expect(w.terminated).toBe(true);
-      store.clear();
-    }
-  });
-
-  it("q4f16 chargé mais la génération échoue (cas mesuré) : erreur dite, fp16 écarté, « Réessayer » passe en q4 sur le GPU", async () => {
-    const loading = mod.loadModel();
-    await flush();
-    const w = FakeWorker.all[0];
-    w.emit({ type: "probe", probe: GOOD_PROBE });
-    w.emit({ type: "ready", selfTest: "Bonjour !" });
-    await loading;
-    const reply = mod.generateDetailed("sys", [{ role: "user", content: "Je suis Silex" }]).then(() => "resolved", (e) => e);
-    await vi.advanceTimersByTimeAsync(0);
-    const msg = "failed to call OrtRun(). Sub requires f16 but the device does not support it.";
-    w.emit({ type: "result", id: w.sent.at(-1).id, error: msg });
-    expect(await reply).toMatchObject({ code: "webgpu_generate", detail: msg, mb: 294 });
-    expect(w.terminated).toBe(true);
-    expect(mod.isModelReady()).toBe(false);
-    expect(store.get("velohnav_ai_f16_ko")).toBeTruthy();
-    expect(mod.chatModelMB()).toBe(294);
-  });
-
   it("generateDetailed rend aussi la sortie BRUTE, marqueurs compris", async () => {
-    store.set("velohnav_ai_webgpu_ko", "1");
     const loading = mod.loadModel();
     await flush();
-    const w = FakeWorker.all[0];
+    const w = last();
+    w.emit({ type: "probe", probe: null });
     w.emit({ type: "ready", selfTest: "Bonjour !" });
     await loading;
     const reply = mod.generateDetailed("sys", [{ role: "user", content: "Je suis Silex" }]);
@@ -253,17 +356,18 @@ describe("façade : un chargement ne peut plus rester figé", () => {
     });
   });
 
-  it("erreur du moteur pendant la génération : rejetée avec son message, pas transformée en silence", async () => {
-    store.set("velohnav_ai_webgpu_ko", "1");
+  it("erreur du moteur pendant la génération sur le processeur : rejetée avec son message, rien après lui", async () => {
     const loading = mod.loadModel();
     await flush();
-    const w = FakeWorker.all[0];
+    const w = last();
+    w.emit({ type: "probe", probe: null });
     w.emit({ type: "ready", selfTest: "Bonjour !" });
     await loading;
     const reply = mod.generateDetailed("sys", [{ role: "user", content: "Je suis Silex" }]).then(() => "resolved", (e) => e);
     await vi.advanceTimersByTimeAsync(0);
-    const msg = "failed to call OrtRun(). Sub requires f16 but the device does not support it.";
-    w.emit({ type: "result", id: w.sent.at(-1).id, error: msg });
-    expect(await reply).toMatchObject({ code: "generate", detail: msg });
+    w.emit({ type: "result", id: w.sent.at(-1).id, error: "boom" });
+    const e = await reply;
+    expect(e).toMatchObject({ code: "generate", detail: "boom" });
+    expect(e.recover).toBe(false);
   });
 });

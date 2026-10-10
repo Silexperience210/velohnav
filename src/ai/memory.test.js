@@ -122,15 +122,18 @@ describe("façade : la mémoire est contrôlée avant, et rendue après", () => 
     await import("@capacitor/core");
     vi.useFakeTimers();
     FakeWorker.all = [];
-    store = new Map([["velohnav_ai_webgpu_ko", "1"]]);   // WASM direct : pas de sonde
+    store = new Map();
     memInfo.mockReset();
     vi.stubGlobal("Worker", FakeWorker);
-    vi.stubGlobal("localStorage", { getItem: (k) => store.get(k) ?? null, setItem: (k, v) => store.set(k, String(v)) });
+    vi.stubGlobal("localStorage", { getItem: (k) => store.get(k) ?? null, setItem: (k, v) => store.set(k, String(v)), removeItem: (k) => store.delete(k) });
     vi.spyOn(console, "warn").mockImplementation(() => {});
     vi.spyOn(console, "info").mockImplementation(() => {});
     mod = await import("./localModel.js");
   });
   afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
+
+  // Sans WebGPU : la sonde rend null, l'échelle se réduit au processeur.
+  const noGpu = (w) => w.emit({ type: "probe", probe: null });
 
   const native = (info) => {
     vi.stubGlobal("window", { Capacitor: { isNativePlatform: () => true } });
@@ -154,7 +157,33 @@ describe("façade : la mémoire est contrôlée avant, et rendue après", () => 
     expect(memInfo).toHaveBeenCalledTimes(1);   // la source native a bien été lue
     expect(console.info).toHaveBeenCalledWith(expect.stringMatching(/mémoire : ok \(/));
     expect(FakeWorker.all).toHaveLength(1);
-    expect(FakeWorker.all[0].sent[0]).toMatchObject({ type: "load", variant: { dtype: "q4" } });
+    noGpu(FakeWorker.all[0]);
+    expect(FakeWorker.all[0].sent[1]).toMatchObject({ type: "load", engine: "wasm", variant: { dtype: "q4" } });
+  });
+
+  it("téléphone du propriétaire (1 384 Mo libres) : la variante processeur tient (besoin ≈ 1 197 Mo)", async () => {
+    native({ availBytes: 1384e6, totalBytes: 6e9, thresholdBytes: 0, lowMemory: false });
+    mod.loadModel().catch(() => {});
+    await flush();
+    expect(FakeWorker.all).toHaveLength(1);
+    expect(memoryVerdict({ availBytes: 1384e6, thresholdBytes: 0 }, VARIANTS.wasm)).toMatchObject({ ok: true, needMB: 1197 });
+  });
+
+  it("mémoire relue avant CHAQUE tentative : si elle a fondu entre deux, refus propre au lieu d'un crash", async () => {
+    native({ availBytes: 3.5e9, thresholdBytes: 2e8 });
+    const outcome = mod.loadModel().then(() => "resolved", (e) => e);
+    await flush();
+    const w = FakeWorker.all[0];
+    w.emit({ type: "probe", probe: {
+      adapter: true, features: ["shader-f16"], limits: { maxBufferSize: 2 ** 31, maxStorageBufferBindingSize: 2 ** 31 }, device: { ok: true },
+    } });
+    for (const f of w.sent[1].variant.files) w.emit({ type: "progress", ev: { status: "progress", file: f, loaded: 5, total: 5 } });
+    memInfo.mockResolvedValue({ availBytes: 0.9e9, thresholdBytes: 2e8 });
+    w.emit({ type: "error", message: "GPU validation error" });
+    await flush();
+    expect(await outcome).toMatchObject({ code: "memory" });
+    expect(memInfo).toHaveBeenCalledTimes(2);
+    expect(FakeWorker.all).toHaveLength(1);   // aucune tentative suivante lancée sans la mémoire
   });
 
   it("navigateur à 2 Go de RAM : refus", async () => {
@@ -168,6 +197,7 @@ describe("façade : la mémoire est contrôlée avant, et rendue après", () => 
     const loading = mod.loadModel();
     await flush();
     const w = FakeWorker.all[0];
+    noGpu(w);
     w.emit({ type: "ready", selfTest: "Bonjour !" });
     await loading;
     expect(mod.isModelReady()).toBe(true);
@@ -234,6 +264,7 @@ describe("façade : la mémoire est contrôlée avant, et rendue après", () => 
 
   it("après déchargement, une nouvelle activation recharge (worker neuf)", async () => {
     const l1 = mod.loadModel(); await flush();
+    noGpu(FakeWorker.all[0]);
     FakeWorker.all[0].emit({ type: "ready", selfTest: "Bonjour !" }); await l1;
     mod.unloadModel();
     const l2 = mod.loadModel(); await flush();

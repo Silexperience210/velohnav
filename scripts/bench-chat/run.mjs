@@ -2,7 +2,8 @@
 // Banc « conversation libre » dans un vrai navigateur (Chrome headless, WebGPU ou WASM),
 // avec le worker et le chemin d'affichage de l'application.
 //
-//   [HEADLESS=0] node scripts/bench-chat/run.mjs [webgpu|wasm] [config,config…|conversation] [dossier-modèle]
+//   PAGE=ladder [HEADLESS=0] node scripts/bench-chat/run.mjs - "f16=1"   (échelle réelle, voir ladder.js)
+//   [HEADLESS=0] [ENGINE=webgpu|jsep|wasm] node scripts/bench-chat/run.mjs [webgpu|wasm] [config,config…|conversation] [dossier-modèle]
 //
 // « conversation » : la conversation réelle de cases.CONVERSATION, sur plusieurs tours,
 // avec les options de l'application (voir bench.js).
@@ -12,6 +13,7 @@
 // par défaut ~/.cache/vn-models/onnx-community. Les résultats (JSON) vont dans
 // $TMPDIR/vn-bench-<device>.json et un résumé s'affiche.
 import { build } from "vite";
+import ortEngine from "../vite-ort-engine.mjs";
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
@@ -25,7 +27,8 @@ const [device = "webgpu", configs = "", modelsDir = `${process.env.HOME}/.cache/
 const tmp = os.tmpdir();
 const out = path.join(tmp, "vn-bench-dist");
 await build({ root: here, base: "./", logLevel: "warn", configFile: false,
-  worker: { format: "es" }, build: { outDir: out, emptyOutDir: true, target: "es2022" } });
+  worker: { format: "es", plugins: () => [ortEngine()] }, build: { outDir: out, emptyOutDir: true, target: "es2022",
+    rollupOptions: { input: { index: path.join(here, "index.html"), ladder: path.join(here, "ladder.html") } } } });
 
 const TYPES = { ".html": "text/html", ".js": "text/javascript", ".mjs": "text/javascript", ".wasm": "application/wasm", ".json": "application/json" };
 const rows = [];
@@ -38,7 +41,7 @@ const server = http.createServer((req, res) => {
     req.on("data", (c) => { body += c; });
     req.on("end", () => {
       const m = JSON.parse(body);
-      if (m.type === "meta") { meta = m; console.log(`[banc] ${m.device}/${m.dtype}`, JSON.stringify(m.probe)); }
+      if (m.type === "meta") { meta = m; console.log(`[banc] ${m.device}/${m.dtype} moteur ${m.engine} : chargé en ${m.loadMs} ms, essai à vide ${JSON.stringify(m.selfTest)} en ${m.selfTestMs} ms`, JSON.stringify(m.probe)); }
       else if (m.type === "row") {
         rows.push(m);
         console.log(`[${m.cfg}] ${m.q}${m.reachesModel ? "" : "  (reconnu sans modèle)"}\n   brut : ${JSON.stringify(m.raw)}`
@@ -46,6 +49,7 @@ const server = http.createServer((req, res) => {
           + (m.read ? `\n   nettoyé : ${JSON.stringify(m.cleaned)}  → lecture ${m.read}` : "")
           + `\n   affiché (${m.source}${m.reason ? ":" + m.reason : ""}) : ${JSON.stringify(m.shown)}  ${m.ms} ms`);
       }
+      else if (m.type === "ladder") { meta = m; console.log("[échelle]", JSON.stringify(m, null, 1)); }
       else if (m.type === "fatal") { console.error("[banc] échec :", m.message); }
       else if (m.type === "done") finish();
       res.end("ok");
@@ -70,7 +74,7 @@ const chrome = spawn(process.env.CHROME || "google-chrome", [
   ...(process.env.HEADLESS === "0" ? ["--ozone-platform-hint=auto"] : ["--headless=new"]), `--user-data-dir=${profile}`, "--no-first-run", "--enable-unsafe-webgpu",
   "--enable-features=Vulkan", "--ignore-gpu-blocklist",
   ...(process.env.CHROME_FLAGS ? process.env.CHROME_FLAGS.split(" ") : []),
-  `http://127.0.0.1:${port}/index.html?device=${device}${configs === "conversation" ? "&mode=conversation" : configs ? `&configs=${configs}` : ""}`,
+  process.env.PAGE === "ladder" ? `http://127.0.0.1:${port}/ladder.html?${configs}` : `http://127.0.0.1:${port}/index.html?device=${device}${configs === "conversation" ? "&mode=conversation" : configs ? `&configs=${configs}` : ""}${process.env.ENGINE ? `&engine=${process.env.ENGINE}` : ""}`,
 ], { stdio: "ignore" });
 await finished;
 chrome.kill();

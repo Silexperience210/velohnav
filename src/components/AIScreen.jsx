@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { t, tn, useI18n } from "../i18n.js";
 import { launchNativeArNav } from "../utils.js";
 import { fetchWeather, getWeatherAdvice } from "../hooks/useWeather.js";
-import { loadModel, unloadModel, generateDetailed, chatModelMB } from "../ai/localModel.js";
+import { loadModel, unloadModel, generateDetailed, chatModelMB, modelReport, forgetFailures } from "../ai/localModel.js";
 import { TOOLS } from "../ai/tools.js";
 import { systemPrompt, resolveModelOutput, explainFallback } from "../ai/assistant.js";
 import { Icon } from "../ui/icons.jsx";
@@ -27,6 +27,12 @@ function describeModelError(e) {
   return e.detail && !/^timeout /.test(e.detail) ? `${msg} (${e.detail})` : msg;
 }
 
+// « GPU · q4f16, calcul 16 bits » : ce qui tourne, en clair.
+const whereLabel = (engine, dtype) => t("ui.ai.model.where", {
+  engine: t(`ui.ai.model.engine.${engine}`), dtype: t(`ui.ai.model.dtype.${dtype}`),
+});
+const attemptLabel = (id) => { const [dtype, engine] = String(id).split("/"); return whereLabel(engine, dtype); };
+
 // Taille réelle du modèle conversationnel, annoncée AVANT tout téléchargement :
 // rien ne part sans que l'utilisateur l'ait décidé.
 // Taille annoncée : celle de la variante que l'appareil sait réellement faire tourner
@@ -48,7 +54,9 @@ function AIScreen({ stations, aiHistory, setAiHistory,
   const [modelState, setModelState] = useState("off");   // off | loading | ready | error
   const [modelProgress, setModelProgress] = useState(0);
   const [modelError, setModelError] = useState("");   // message réel, affiché en cas d'échec
-  const [modelPhase, setModelPhase] = useState(null);  // { phase: download|init, device }
+  const [modelPhase, setModelPhase] = useState(null);  // { phase: download|init, device, engine, attempt, mb }
+  const [modelInfo, setModelInfo] = useState(null);    // modelReport() : tentatives faites
+  const [modelErrCode, setModelErrCode] = useState(null);
   const [loadSeq, setLoadSeq] = useState(0);             // incrémenté par « Réessayer »
   // La conversation libre est DÉSACTIVÉE par défaut : le modèle pèse ~300 Mo,
   // il n'est téléchargé que sur demande explicite. Sans lui, l'écran reste utile :
@@ -131,13 +139,18 @@ function AIScreen({ stations, aiHistory, setAiHistory,
     let dead = false;
     setModelState("loading");
     setModelPhase(null);
+    setModelErrCode(null);
+    // Le passage d'une tentative à la suivante (GPU → processeur) se fait dans
+    // loadModel, sans rien demander : seul un échec de TOUTES les voies arrive ici.
     loadModel((pct)=>{ if(!dead) setModelProgress(pct); },
-              (p)=>{ if(!dead) setModelPhase(p); })
-      .then(()=>{ if(!dead) setModelState("ready"); })
+              (p)=>{ if(!dead){ setModelPhase(p); setModelInfo(modelReport()); } })
+      .then(()=>{ if(!dead){ setModelState("ready"); setModelInfo(modelReport()); } })
       .catch((e)=>{
         if(!dead && e?.code !== "cancelled"){
           setModelState("error");
           setModelError(describeModelError(e));   // sinon l'utilisateur ne peut que constater l'échec
+          setModelErrCode(e?.code || null);
+          setModelInfo(modelReport());
         }
       });
     // Conversation désactivée, « Réessayer » ou écran quitté : le worker est
@@ -211,13 +224,17 @@ function AIScreen({ stations, aiHistory, setAiHistory,
       raw = out.raw;
       reply = resolveModelOutput(out.text, { ...answerCtx, now: new Date() }, local);
     } catch(e) {
-      // Worker arrêté (délai dépassé, ou fp16 en échec sur ce GPU : « Réessayer » passe en q4) :
-      // le dire, plutôt qu'un « prêt » mensonger.
-      if (e?.code === "generate_timeout" || e?.code === "webgpu_generate") {
+      // Tentative écartée en pleine génération (erreur du moteur GPU) : la suivante se
+      // charge d'elle-même, rien à demander. Délai dépassé (worker arrêté) : le dire,
+      // plutôt qu'un « prêt » mensonger.
+      if (e?.recover) {
+        setLoadSeq(n=>n+1);
+      } else if (e?.code === "generate_timeout") {
         setModelState("error");
         setModelError(describeModelError(e));
+        setModelErrCode(e.code);
+        setModelInfo(modelReport());
       }
-      // Échec du modèle : l'assistant déterministe répond quand même — mais on le dit.
       failed = e;
       reply = { ...local, source: "fallback", reason: e?.code || "generate" };
     }
@@ -434,14 +451,23 @@ function AIScreen({ stations, aiHistory, setAiHistory,
           <div style={{ fontSize:10.5, color:"var(--vn-text3)", lineHeight:1.45 }}>
             {!chatOn ? t("ui.ai.chat.note", { mb: chatModelMB() })
               : modelState==="loading" && modelPhase?.phase==="init"
-                ? t("ui.ai.model.init", { engine: t(`ui.ai.model.engine.${modelPhase.device}`) })
+                ? t("ui.ai.model.init", { where: attemptLabel(modelPhase.attempt) })
               : modelState==="loading" ? t("ui.ai.model.loading", { pct:modelProgress })
               : modelState==="error"   ? `${t("ui.ai.model.error")}${modelError ? " — " + modelError.slice(0, 220) : ""}`
-              : t("ui.ai.model.ready")}
+              : modelInfo?.chosen
+                ? t("ui.ai.model.ready_on", { where: whereLabel(modelInfo.chosen.engine, modelInfo.chosen.dtype) })
+                : t("ui.ai.model.ready")}
           </div>
+          {/* Bascule interne (GPU → tentative suivante) : dite comme une information, pas comme une erreur */}
+          {chatOn && modelState==="loading" && modelInfo?.tried?.length > 0 && modelPhase?.attempt && (
+            <div style={{ fontSize:10.5, color:"var(--vn-text3)", lineHeight:1.45 }}>
+              {t("ui.ai.model.next", { from: attemptLabel(modelInfo.tried.at(-1).id), to: attemptLabel(modelPhase.attempt) })}
+            </div>
+          )}
         </div>
         {chatOn && modelState==="error" && (
-          <Button size="sm" variant="secondary" icon="refresh" onClick={()=>setLoadSeq(n=>n+1)}>{t("ui.ai.model.retry")}</Button>
+          <Button size="sm" variant="secondary" icon="refresh"
+            onClick={()=>{ if (modelErrCode === "all_failed") forgetFailures(); setLoadSeq(n=>n+1); }}>{t("ui.ai.model.retry")}</Button>
         )}
         {chatOn && modelState==="loading" && (
           <div style={{ width:64 }}>

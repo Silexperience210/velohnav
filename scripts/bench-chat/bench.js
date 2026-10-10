@@ -41,10 +41,13 @@ try {
   w.postMessage({ type: "probe" });
   const p = (await probe).probe;
   const ready = once("ready");
-  w.postMessage({ type: "load", variant });
+  const engine = params.get("engine") || (variant.device === "wasm" ? "wasm" : "webgpu");
+  const t0load = performance.now();
+  w.postMessage({ type: "load", variant, engine });
   const r = await ready;
-  if (r.type === "error") throw new Error(r.message);
-  await send({ type: "meta", device: variant.device, dtype: variant.dtype, probe: p, ua: navigator.userAgent });
+  if (r.type === "error") throw new Error(`${r.message}\n   journal : ${JSON.stringify(r.log)}`);
+  await send({ type: "meta", device: variant.device, dtype: variant.dtype, engine, probe: p, ua: navigator.userAgent,
+               loadMs: Math.round(performance.now() - t0load), selfTest: r.selfTest, selfTestMs: r.selfTestMs });
   // Contexte vide : un outil appelé retombe sur l'assistant déterministe, ce n'est pas l'objet du banc.
   const ctx = { stations: [], t, now: new Date() };
   if (params.get("mode") === "conversation") {
