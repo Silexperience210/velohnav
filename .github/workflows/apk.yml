@@ -4,7 +4,15 @@ on:
   push:
     branches: [main]
     tags: ['v*']
+  # workflow_dispatch avec entrée : la construction par défaut reste SANS moteur
+  # natif ; l'entrée vhNative=1 demande la construction avec llama.cpp/Vulkan.
   workflow_dispatch:
+    inputs:
+      vhNative:
+        description: "Moteur natif llama.cpp/Vulkan (-PvhNative=1) — APK ~59 Mo au lieu de ~51 Mo"
+        required: false
+        default: "0"
+        type: string
 
 # FIX: permissions explicites pour softprops/action-gh-release
 permissions:
@@ -13,7 +21,7 @@ permissions:
 jobs:
   build-apk:
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 90
 
     steps:
       - name: Checkout
@@ -70,6 +78,32 @@ jobs:
       - name: Make gradlew executable
         run: chmod +x android/gradlew
 
+      # ── Moteur natif llama.cpp/Vulkan — seulement si l'entrée vhNative=1 ──────
+      # La construction par défaut (push main/tag, ou dispatch sans entrée) reste
+      # strictement celle d'avant : aucun NDK à installer, drapeau vide.
+      - name: Moteur natif demandé ?
+        id: native
+        run: |
+          if [ "${{ inputs.vhNative }}" = "1" ] || [ "${{ inputs.vhNative }}" = "true" ]; then
+            echo "flag=-PvhNative=1" >> "$GITHUB_OUTPUT"
+            echo "Moteur natif ACTIF : -PvhNative=1 (llama.cpp + Vulkan, arm64-v8a)"
+          else
+            echo "flag=" >> "$GITHUB_OUTPUT"
+            echo "Construction par défaut, SANS moteur natif"
+          fi
+
+      # NDK 28.2.13676358 et CMake 3.31.6 : exigés par android/app/build.gradle quand
+      # -PvhNative=1 est passé ; pas garantis dans l'image du runner, donc installés ici
+      # (mêmes versions qu'en local). llama.cpp/Vulkan et SPIR-V sont téléchargés par
+      # CMake lui-même, épinglés par URL et SHA-256.
+      - name: NDK 28 + CMake 3.31 (moteur natif)
+        if: steps.native.outputs.flag != ''
+        run: |
+          set -euo pipefail
+          SDKMANAGER="$(command -v sdkmanager || echo "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager")"
+          yes | "$SDKMANAGER" --install "ndk;28.2.13676358" "cmake;3.31.6" > /dev/null
+          ls -d "$ANDROID_HOME/ndk/28.2.13676358" "$ANDROID_HOME/cmake/3.31.6"
+
       # Keystore de debug FIXE (optionnel). Sans lui, le runner en génère un neuf
       # à chaque exécution : le SHA-1 de l'APK debug change à chaque build et ne
       # peut pas être autorisé pour ARCore (voir docs/ARCORE.md).
@@ -91,7 +125,7 @@ jobs:
 
       - name: Build debug APK
         working-directory: android
-        run: ./gradlew assembleDebug --no-daemon
+        run: ./gradlew assembleDebug --no-daemon ${{ steps.native.outputs.flag }}
 
       - name: Build release APK (signé)
         id: release_build
@@ -113,7 +147,7 @@ jobs:
             -Pandroid.injected.signing.store.password="$STORE_PWD" \
             -Pandroid.injected.signing.key.alias="$KEY_ALIAS" \
             -Pandroid.injected.signing.key.password="$KEY_PWD" \
-            --no-daemon
+            --no-daemon ${{ steps.native.outputs.flag }}
           rm -f app/velohnav-release.jks
           echo "signed=true" >> $GITHUB_OUTPUT
 
@@ -134,9 +168,24 @@ jobs:
 
       - name: APK size
         run: |
-          echo "=== Debug ===" && du -h android/app/build/outputs/apk/debug/app-debug.apk
-          [ -f android/app/build/outputs/apk/release/app-release.apk ] && \
-            echo "=== Release ===" && du -h android/app/build/outputs/apk/release/app-release.apk || true
+          set -u
+          if [ -n "${{ steps.native.outputs.flag }}" ]; then
+            echo "### Construction AVEC moteur natif (llama.cpp/Vulkan)" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "### Construction SANS moteur natif (par défaut)" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          for apk in android/app/build/outputs/apk/debug/app-debug.apk android/app/build/outputs/apk/release/app-release.apk; do
+            [ -f "$apk" ] || continue
+            echo "=== $apk"
+            echo -n "brut : "    && du -h "$apk" | cut -f1
+            zip -9 -q -j "/tmp/$(basename "$apk").zip" "$apk"
+            echo -n "zippé: "    && du -h "/tmp/$(basename "$apk").zip" | cut -f1
+            echo "--- bibliothèques natives embarquées (les plus lourdes) ---"
+            unzip -l "$apk" | awk '$4 ~ /\.so$/ {print $1, $4}' | sort -rn | head -6
+            echo -n "moteur natif présent : "
+            unzip -l "$apk" | grep -c "libvh_llm.so" || true
+            echo "- $(basename "$apk") : $(du -h "$apk" | cut -f1) brut, $(du -h "/tmp/$(basename "$apk").zip" | cut -f1) zippé, libvh_llm.so ×$(unzip -l "$apk" | grep -c "libvh_llm.so")" >> "$GITHUB_STEP_SUMMARY"
+          done
 
       # SHA-1 à déclarer dans la restriction de la clé ARCore (docs/ARCORE.md)
       - name: Empreintes SHA-1
