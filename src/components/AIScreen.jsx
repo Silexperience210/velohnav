@@ -46,8 +46,11 @@ const attemptLabel = (id) => { const [dtype, engine, mode] = String(id).split("/
 // Pourquoi le GPU ne sert pas, en clair (gpuSetAside, modelPolicy.js). Version du
 // navigateur jointe à « WebGPU absent » : c'est elle qui décide (WebView du système).
 const browserVersion = () => (/(Chrome|Firefox|Version)\/[\d.]+/.exec(globalThis.navigator?.userAgent || "")?.[0] || "?");
+// Mode « sûr » compris : sans lui, q4 et q4 « sûr » s'affichaient tous deux « q4, calcul 32 bits ».
+const asideWhat = (id) => { const [dtype, , mode] = String(id).split("/");
+  return t(`ui.ai.model.dtype.${dtype}`) + (mode ? ` · ${t(`ui.ai.model.mode.${mode}`)}` : ""); };
 const gpuAsideLabel = (aside) => aside.reasons.map(r => t(`ui.ai.model.gpu.${r.kind}`, {
-  what: r.ids.map(id => t(`ui.ai.model.dtype.${id.split("/")[0]}`)).join(", "),
+  what: r.ids.map(asideWhat).join(", "),
   detail: r.detail, ua: browserVersion(),
 })).join(" ; ");
 

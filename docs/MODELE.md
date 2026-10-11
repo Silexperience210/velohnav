@@ -385,3 +385,37 @@ GPU à chaque fois. Le texte se copie tel quel.
 **Non fait ici, faute d'appareil :** les 5 lancements sur le Xiaomi 2107113SG. La procédure :
 installer l'APK de la CI (moteur natif), activer la conversation libre, poser « Bonsoir » puis
 « Je suis Silex », fermer l'application ; recommencer 5 fois ; copier le journal.
+
+## Diagnostic : « native status: no answer after 5 s » et WebGPU en échec (11/10)
+
+Retour du téléphone (APK `velohnav-gpu-always`, commit 721e2f7) : natif « indisponible » (statut
+sans réponse après 5 s), les trois tentatives WebGPU en échec, retenu : processeur · q4.
+
+**Natif — cause établie, corrigée.** L'APK embarquait bien `lib/arm64-v8a/libvh_llm.so` (25 Mo)
+et le greffon est enregistré (`MainActivity`). Le défaut était dans `nativeModel.getPlugin()` :
+fonction `async` qui rendait le proxy de `registerPlugin`. `await` lit `.then` ; le proxy de
+Capacitor 8 en fait une méthode native `LocalLlm.then()`, qui n'appelle jamais les rappels de
+`await` : attente sans fin, à chaque lancement, quel que soit le délai. Conséquences : le
+moteur natif n'a **jamais** tourné sur le téléphone, et son GGUF n'a jamais été téléchargé
+(statut « indisponible » : rien à télécharger). Correctif : le greffon est passé dans un
+objet ordinaire (`wrapPlugin`). Test `nativePlugin.test.js` avec un proxy construit comme celui
+de Capacitor : il échoue sur l'ancien code (attente de 5 s, le symptôme exact) et passe désormais.
+Délai du statut porté à 10 s (fil des greffons partagé au démarrage à froid) ; journaux logcat
+`adb logcat -s VhLlm` : statut, liaison au processus `:llm`, durée et début de chaque réponse.
+
+**WebGPU — le GPU calcule faux ; l'essai à vide a raison.** Même essai, mêmes fichiers q4,
+sur le processeur (onnxruntime-node, glouton) : « Bonjour ! Comment puis- » puis « Bien sûr !
+Pourrais-tu me » (q4 et q4f16 identiques). Gabarit appliqué vérifié :
+`<|startoftext|><|im_start|>user\nBonjour<|im_end|>\n<|im_start|>assistant\n`, sans historique.
+Sur l'Adreno : q4 → « � » ; q4 « sûr » → « Your message was not delivered. » puis « Silex » ;
+q4f16 → « � ». « Silex » n'est pas une contamination : il vient de la question fixe du second
+tour (« Je suis Silex. Peux-tu m'aider… »), répétée par un modèle dont le calcul diverge dès le
+premier jeton. Les poids q4 sont intègres : la voie processeur retenue lit les mêmes fichiers
+et passe l'essai. L'ancien « mode sûr qui marchait » passait un essai d'un seul tour, puis se
+dégradait (« weather ») : le second tour l'écarte désormais à juste titre. Assouplir l'essai
+livrerait un assistant qui répond faux ; il n'est pas assoupli. La ligne d'état nomme
+maintenant le mode (« q4, calcul 32 bits · mode sûr »), au lieu de deux lignes identiques.
+
+**Ce qui reste à prouver sur l'appareil** : que Vulkan passe l'essai en deux tours sur l'Adreno
+642L. Premier lancement : GGUF absent → voie JavaScript, puis GGUF (219 Mo) en arrière-plan,
+bascule vers le GPU natif à sa réception. Attendu à l'écran : « GPU natif … Adreno ».

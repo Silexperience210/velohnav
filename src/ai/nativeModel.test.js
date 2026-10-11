@@ -429,14 +429,14 @@ describe("façade : le moteur natif d'abord, repli silencieux ensuite", () => {
     expect((await mod.generateDetailed("", [{ role: "user", content: "Salut" }])).text).toBe("Salut !");
   });
 
-  it("greffon muet (status ne répond jamais) : 5 s au plus, puis la voie JavaScript", async () => {
+  it("greffon muet (status ne répond jamais) : 10 s au plus, puis la voie JavaScript", async () => {
     vi.useFakeTimers();
     try {
       const p = fakePlugin();
       p.status.mockImplementation(() => new Promise(() => {}));
       await setup(p);
       const loading = mod.loadModel();
-      await vi.advanceTimersByTimeAsync(4_900);
+      await vi.advanceTimersByTimeAsync(9_900);
       expect(FakeWorker.all).toHaveLength(0);
       await vi.advanceTimersByTimeAsync(200);
       expect(FakeWorker.all).toHaveLength(1);

@@ -13,18 +13,39 @@ import { splitPrompt } from "./chatTemplate.js";
 
 let plugin;   // undefined : pas encore cherché ; null : absent
 
-/** Pour les tests : greffon factice (null : absent). */
+/** Pour les tests : greffon factice (null : absent ; undefined : le chercher à nouveau). */
 export function setNativePlugin(p) { plugin = p; }
+
+// Méthodes du greffon (LocalLlmPlugin.kt) appelées d'ici.
+const METHODS = ["status", "download", "cancelDownload", "deleteModels", "load", "warm", "generate", "cancel", "unload", "addListener"];
+
+/**
+ * Le greffon, dans un objet ordinaire. JAMAIS le proxy de registerPlugin tel quel : une
+ * fonction async qui le rend le fait passer pour une promesse — `await` lit `.then`, le
+ * proxy en fait un appel natif « LocalLlm.then() » qui n'appelle jamais ses rappels, et
+ * l'attente ne finit pas. Relevé sur le téléphone : « native status: no answer after 5 s »
+ * à chaque lancement, le moteur natif n'a jamais tourné et son GGUF n'a jamais été demandé.
+ */
+export function wrapPlugin(proxy) {
+  return Object.fromEntries(METHODS.map((m) => [m, (...args) => proxy[m](...args)]));
+}
 
 async function getPlugin() {
   if (plugin !== undefined) return plugin;
   plugin = null;
   try {
     const cap = globalThis.Capacitor;
-    if (!cap?.isNativePlatform?.() || cap.isPluginAvailable?.("LocalLlm") === false) return null;
+    if (!cap?.isNativePlatform?.()) return null;
+    if (cap.isPluginAvailable?.("LocalLlm") === false) {
+      console.warn("[IA] greffon LocalLlm non enregistré dans cette APK");
+      return null;
+    }
     const { registerPlugin } = await import("@capacitor/core");
-    plugin = registerPlugin("LocalLlm");
-  } catch { plugin = null; }
+    plugin = wrapPlugin(registerPlugin("LocalLlm"));
+  } catch (e) {
+    console.warn("[IA] greffon LocalLlm introuvable :", e?.message || e);
+    plugin = null;
+  }
   return plugin;
 }
 
@@ -65,9 +86,13 @@ export async function nativeStatus() {
     const p = await getPlugin();
     return p ? await p.status({ file: NATIVE_MODEL.file }) : null;
   };
+  const t0 = Date.now();
   try {
-    return (await withTimeout(ask(), LIMITS.nativeStatusMs, "native status")) || null;
+    const s = (await withTimeout(ask(), LIMITS.nativeStatusMs, "native status")) || null;
+    if (s) console.info(`[IA] greffon LocalLlm : réponse en ${Date.now() - t0} ms`, JSON.stringify(s));
+    return s;
   } catch (e) {
+    console.warn(`[IA] greffon LocalLlm sans réponse utile après ${Date.now() - t0} ms :`, e?.message || e);
     return { supported: false, reason: String(e?.message || e).slice(0, 200) };
   }
 }

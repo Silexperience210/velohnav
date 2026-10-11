@@ -39,6 +39,8 @@ import java.util.concurrent.atomic.AtomicBoolean
 @CapacitorPlugin(name = "LocalLlm")
 class LocalLlmPlugin : Plugin() {
 
+    private companion object { const val TAG = "VhLlm" }
+
     private val main = Handler(Looper.getMainLooper())
 
     // ── Fichier du modèle ────────────────────────────────────────────────────
@@ -71,6 +73,9 @@ class LocalLlmPlugin : Plugin() {
             val part = File(f.path + ".part")
             ret.put("partialBytes", if (part.isFile) part.length().toDouble() else 0.0)
         }
+        // Trace logcat (adb logcat -s VhLlm) : la preuve que le JavaScript a atteint le greffon.
+        Log.i(TAG, "status : bibliothèque ${if (packaged) "embarquée" else "absente"}, ${reason ?: "pris en charge"}, " +
+            "${ret.getString("soc")}, modèle ${ret.opt("modelExists")} (${ret.opt("modelBytes")} o, partiel ${ret.opt("partialBytes")} o)")
         call.resolve(ret)
     }
 
@@ -95,6 +100,7 @@ class LocalLlmPlugin : Plugin() {
         }
         downloading = true
         downloadCancel.set(false)
+        Log.i(TAG, "téléchargement de ${f.name} ($bytes o attendus)")
         Thread({
             try {
                 val part = File(f.path + ".part")
@@ -105,8 +111,10 @@ class LocalLlmPlugin : Plugin() {
                     if (got != sha) { part.delete(); throw IllegalStateException("sha256 $got != $sha") }
                 }
                 if (!part.renameTo(f)) throw IllegalStateException("rename failed")
+                Log.i(TAG, "${f.name} reçu, taille et SHA-256 vérifiées")
                 call.resolve(JSObject().put("path", f.path).put("cached", false))
             } catch (e: Exception) {
+                Log.w(TAG, "téléchargement interrompu : ${e.message}")
                 call.reject(e.message ?: e.javaClass.simpleName, if (downloadCancel.get()) "cancelled" else "network")
             } finally {
                 downloading = false
@@ -187,12 +195,14 @@ class LocalLlmPlugin : Plugin() {
         override fun handleMessage(msg: Message) {
             if (msg.what != LlmService.REPLY) return
             if (msg.arg2 > 0) servicePid = msg.arg2
+            Log.i(TAG, "réponse n° ${msg.arg1} du processus :llm (pid ${msg.arg2})")
             pending.remove(msg.arg1)?.invoke(msg.data.getByteArray("json"), null)
         }
     })
 
     private val conn = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
+            Log.i(TAG, "processus :llm relié, ${queued.size} requête(s) en attente")
             service = Messenger(binder)
             queued.forEach { sendNow(it) }
             queued.clear()
@@ -233,6 +243,7 @@ class LocalLlmPlugin : Plugin() {
             if (!bound) {
                 bound = context.bindService(Intent(context, LlmService::class.java), conn,
                     Context.BIND_AUTO_CREATE or Context.BIND_IMPORTANT)
+                Log.i(TAG, "requête n° $id ($label) : liaison au processus :llm ${if (bound) "demandée" else "refusée"}")
                 if (!bound) dropService("bindService refused")
             }
         }

@@ -546,7 +546,10 @@ export const LIMITS = Object.freeze({
   localCheckMs: 4_000,      // HEAD sur /models/… (copie embarquée)
   // Moteur natif : il passe AVANT la voie JavaScript, il ne doit donc jamais la faire
   // attendre sans fin. Au-delà de ces délais, repli vers WebGPU / processeur.
-  nativeStatusMs: 5_000,    // greffon (import compris) et LocalLlm.status()
+  // Greffon (import compris) et LocalLlm.status() — réponse immédiate côté Kotlin. 10 s : le
+  // fil des greffons Capacitor, partagé, peut être occupé au démarrage à froid. (Les 5 s
+  // dépassées sur le téléphone ne venaient pas du délai : voir nativeModel.wrapPlugin.)
+  nativeStatusMs: 10_000,
   // Tous les moteurs natifs d'un chargement réunis : Vulkan figé (initMs.native) laisse
   // 30 s au processeur natif, puis la voie JavaScript part. Un essai raccourci par ce
   // budget ne compte jamais comme un échec définitif.

@@ -64,11 +64,15 @@ class LlmService : Service() {
             }
             val what = msg.what
             worker.execute {
+                val t0 = System.currentTimeMillis()
                 val json = try {
                     run(what, data)
                 } catch (e: Throwable) {
+                    Log.e(TAG, "requête $what en échec", e)
                     """{"ok":false,"error":${quote("${e.javaClass.simpleName}: ${e.message}")}}""".toByteArray()
                 }
+                // Le début de la réponse suffit à lire l'issue (ok, erreur, appareil) dans logcat.
+                Log.i(TAG, "requête $what traitée en ${System.currentTimeMillis() - t0} ms : ${String(json, Charsets.UTF_8).take(300)}")
                 val r = Message.obtain(null, REPLY, id, Process.myPid())
                 r.data = Bundle().apply { putByteArray("json", json) }
                 try { replyTo.send(r) } catch (e: Exception) { Log.w(TAG, "réponse perdue : ${e.message}") }
