@@ -16,7 +16,8 @@ object LlmNative {
     fun interface PieceSink { fun onPiece(piece: ByteArray): Boolean }
 
     external fun devices(): ByteArray
-    external fun load(path: ByteArray, backend: ByteArray, nCtx: Int, nThreads: Int): ByteArray
+    /** `calibrate` false : mode sûr, nombre de fils fixe, sans essais (voir vh_llm.h). */
+    external fun load(path: ByteArray, backend: ByteArray, nCtx: Int, nThreads: Int, calibrate: Boolean): ByteArray
     external fun warm(prefix: ByteArray): ByteArray
     external fun generate(prefix: ByteArray, rest: ByteArray, maxTokens: Int, sink: PieceSink?): ByteArray
     external fun cancel()

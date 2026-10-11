@@ -51,14 +51,21 @@ function saveFailures(fingerprint, failed) {
 }
 // Moteurs natifs en échec sur cet appareil : { fingerprint, failed: { vulkan: "raison", … } }.
 const NATIVE_FAILED_KEY = "velohnav_ai_native_ko";
+// Révision du chargement processeur natif. Un échec « cpu » noté par une révision plus
+// ancienne redevient passager : rejoué une fois, en mode sûr. (Révision 2 : le pool de
+// fils libéré trop tôt au calibrage figeait le chargement sur le téléphone.)
+const NATIVE_CPU_REV = 2;
 function loadNativeFailures(fingerprint) {
   try {
     const r = JSON.parse(store()?.getItem(NATIVE_FAILED_KEY) ?? "null");
-    return r?.fingerprint === fingerprint && r.failed && typeof r.failed === "object" ? r.failed : {};
+    if (r?.fingerprint !== fingerprint || !r.failed || typeof r.failed !== "object") return {};
+    const failed = { ...r.failed };
+    if (failed.cpu && (r.cpuRev ?? 1) < NATIVE_CPU_REV && !String(failed.cpu).startsWith(TRANSIENT)) failed.cpu = `${TRANSIENT}${failed.cpu}`;
+    return failed;
   } catch { return {}; }
 }
 function saveNativeFailures(fingerprint, failed) {
-  try { store()?.setItem(NATIVE_FAILED_KEY, JSON.stringify({ fingerprint, failed })); } catch { /* mode privé */ }
+  try { store()?.setItem(NATIVE_FAILED_KEY, JSON.stringify({ fingerprint, failed, cpuRev: NATIVE_CPU_REV })); } catch { /* mode privé */ }
 }
 
 // ── Journal des chargements (launchJournal.js) : la preuve, lancement après lancement ──
@@ -535,8 +542,15 @@ async function tryNative(onPhase, gen, backends) {
     current = att;
     try {
       if (gen !== generation) throw new ModelError("cancelled");
-      onPhase?.({ phase: "init", device: "native", engine: att.engine.id, attempt: id, mb: variant.mb });
-      const r = await loadNative(backend, allowed);
+      const phase = { phase: "init", device: "native", engine: att.engine.id, attempt: id, mb: variant.mb };
+      onPhase?.(phase);
+      // Mode sûr : un processeur natif déjà en échec (délai passager compris) repart sans
+      // calibrage des fils, le nombre de fils prévu tel quel.
+      const calibrate = !(backend === "cpu" && failed.cpu);
+      const r = await loadNative(backend, allowed, {
+        calibrate,
+        onStep: (step) => { if (gen === generation && current === att) onPhase?.({ ...phase, step }); },
+      });
       if (gen !== generation) { unloadNative(); throw new ModelError("cancelled"); }
       native = att;
       ready = true;

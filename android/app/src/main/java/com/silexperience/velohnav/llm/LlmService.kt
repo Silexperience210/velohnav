@@ -92,7 +92,7 @@ class LlmService : Service() {
         libError?.let { return """{"ok":false,"error":${quote("unsupported: $it")}}""".toByteArray() }
         return when (what) {
             DEVICES -> """{"ok":true,"devices":${String(LlmNative.devices())}}""".toByteArray()
-            LOAD -> withMemory(LlmNative.load(d.getByteArray("path")!!, d.getByteArray("backend")!!, d.getInt("nCtx"), d.getInt("nThreads")), full = true)
+            LOAD -> withMemory(LlmNative.load(d.getByteArray("path")!!, d.getByteArray("backend")!!, d.getInt("nCtx"), d.getInt("nThreads"), d.getBoolean("calibrate", true)), full = true)
             WARM -> LlmNative.warm(d.getByteArray("prefix")!!)
             GENERATE -> withMemory(LlmNative.generate(d.getByteArray("prefix")!!, d.getByteArray("rest")!!, d.getInt("maxTokens"), null), full = false)
             UNLOAD -> { LlmNative.unload(); """{"ok":true}""".toByteArray() }

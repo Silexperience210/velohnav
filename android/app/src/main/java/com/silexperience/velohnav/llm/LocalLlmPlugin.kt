@@ -41,7 +41,10 @@ import java.util.concurrent.atomic.AtomicBoolean
 @CapacitorPlugin(name = "LocalLlm")
 class LocalLlmPlugin : Plugin() {
 
-    private companion object { const val TAG = "VhLlm" }
+    private companion object {
+        const val TAG = "VhLlm"
+        const val BIND_MS = 20_000L   // liaison au processus :llm, au plus
+    }
 
     private val main = Handler(Looper.getMainLooper())
 
@@ -323,13 +326,20 @@ class LocalLlmPlugin : Plugin() {
                     Context.BIND_AUTO_CREATE or Context.BIND_IMPORTANT)
                 Log.i(TAG, "requête n° $id ($label) : liaison au processus :llm ${if (bound) "demandée" else "refusée"}")
                 if (!bound) dropService("bindService refused")
+                // Android peut différer le redémarrage d'un service dont le processus vient de
+                // mourir (Vulkan) : la liaison reste alors muette, et le chargement suivant
+                // attendait tout son délai. Un processus qui démarre répond en 1 à 2 s.
+                else main.postDelayed({
+                    if (service == null && pending.containsKey(id)) dropService("bind: no :llm process after ${BIND_MS / 1000} s")
+                }, BIND_MS)
             }
         }
     }
 
     /** Réponse du moteur rendue telle quelle à l'application (JSON du moteur sous « result »). */
     private fun relay(call: PluginCall) = { json: ByteArray?, crash: String? ->
-        if (json == null) call.reject(crash ?: "crash", "crash")
+        // « bind » : le processus n'a jamais répondu — rien n'a tourné, rien n'est prouvé du moteur.
+        if (json == null) call.reject(crash ?: "crash", if (crash?.startsWith("bind:") == true) "bind" else "crash")
         else call.resolve(JSObject().put("result", String(json, Charsets.UTF_8)).put("pid", servicePid))
     }
 
@@ -346,9 +356,50 @@ class LocalLlmPlugin : Plugin() {
             putByteArray("backend", backend.toByteArray())
             putInt("nCtx", call.getInt("nCtx") ?: 4096)
             putInt("nThreads", call.getInt("nThreads") ?: LlmNative.bigCores())
+            putBoolean("calibrate", call.getBoolean("calibrate") ?: true)
         }
         request(LlmService.LOAD, "load $backend", b, relay(call))
     }
+
+    /**
+     * Où en est la requête en cours, lu sans la déranger : la dernière étape écrite à la
+     * trace du processus :llm (« load cpu: threads 2/3 »…), depuis quand plus rien n'y est
+     * écrit, ou « bind » si le processus n'est pas encore relié (Android peut différer le
+     * redémarrage d'un service mort). L'application l'affiche pendant un chargement long et
+     * le joint à l'erreur « timeout » : on sait quelle sous-étape a figé.
+     */
+    @PluginMethod(returnType = PluginMethod.RETURN_PROMISE)
+    fun stage(call: PluginCall) {
+        main.post {
+            val ret = JSObject()
+                .put("request", lastRequest)
+                .put("requestMs", if (lastRequestAt > 0) (System.currentTimeMillis() - lastRequestAt).toDouble() else 0.0)
+                .put("bound", service != null)
+                .put("queued", queued.size)
+                .put("pid", servicePid)
+            val pid = servicePid
+            val binding = service == null && queued.isNotEmpty()
+            Thread({
+                if (binding) ret.put("stage", "bind")
+                else if (pid > 0) lastStage(LlmNative.traceFile(context.filesDir, pid))?.let { (stage, ms) ->
+                    ret.put("stage", stage).put("idleMs", ms.toDouble())
+                }
+                call.resolve(ret)
+            }, "llm-stage").start()
+        }
+    }
+
+    /** Dernière étape « @ … » de la trace, et depuis quand la trace est muette (date du fichier). */
+    private fun lastStage(f: File): Pair<String, Long>? = try {
+        if (!f.isFile) null else java.io.RandomAccessFile(f, "r").use { r ->
+            val from = maxOf(0L, r.length() - 16_384)
+            val buf = ByteArray((r.length() - from).toInt())
+            r.seek(from); r.readFully(buf)
+            String(buf, Charsets.UTF_8).lines().lastOrNull { it.startsWith("@ ") }?.let {
+                it.removePrefix("@ ").take(160) to (System.currentTimeMillis() - f.lastModified())
+            }
+        }
+    } catch (_: Exception) { null }
 
     @PluginMethod(returnType = PluginMethod.RETURN_PROMISE)
     fun warm(call: PluginCall) {

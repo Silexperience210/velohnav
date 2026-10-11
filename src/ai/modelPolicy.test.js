@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import {
+  nativeStepText,
   NATIVE_ASIDE_KINDS, nativeFallback,
   VARIANTS, LARGEST_TENSOR_BYTES, LIMITS, assessWebGPU, watchdog,
   initialProgress, progressReducer, withTimeout, selfTestVerdict, variantFor,
@@ -535,5 +536,19 @@ describe("banc fixe : vitesse de l'essai à vide du moteur natif", () => {
   });
   it("stats absentes (ancien moteur) : pas de vitesse inventée", () => {
     expect(selfTestBench({}, [undefined, null])).toMatchObject({ tps: null, met: false, loadMs: null, firstMs: null, threads: null });
+  });
+});
+
+describe("nativeStepText : sous-étape du processus :llm, en une ligne", () => {
+  it("rien de connu : chaîne vide", () => {
+    expect(nativeStepText(null)).toBe("");
+    expect(nativeStepText({})).toBe("");
+  });
+  it("processus pas encore relié", () => {
+    expect(nativeStepText({ stage: "bind" })).toBe("liaison au processus :llm");
+  });
+  it("trace muette depuis 5 s ou plus : dit depuis quand", () => {
+    expect(nativeStepText({ stage: "load cpu: model (cpu)", idleMs: 1_200 })).toBe("load cpu: model (cpu)");
+    expect(nativeStepText({ stage: "load cpu: threads 3/3", idleMs: 42_400 })).toBe("load cpu: threads 3/3 · muette 42 s");
   });
 });

@@ -456,6 +456,64 @@ describe("façade : le moteur natif d'abord, repli silencieux ensuite", () => {
     } finally { vi.useRealTimers(); }
   });
 
+  it("processeur natif figé (Xiaomi 11T Pro) : sous-étape à l'écran et dans l'erreur, puis WASM ; relancé en mode sûr", async () => {
+    vi.useFakeTimers();
+    try {
+      store.set("velohnav_ai_native_ko", JSON.stringify({ fingerprint: nativeFingerprint(STATUS), failed: { vulkan: "crash" }, cpuRev: 2 }));
+      const p = fakePlugin();
+      p.load.mockImplementation(() => new Promise(() => {}));
+      p.stage = vi.fn(async () => ({ stage: "load cpu: threads 2/3", idleMs: 30_000 }));
+      await setup(p);
+      const phases = [];
+      const loading = mod.loadModel(undefined, (ph) => phases.push(ph));
+      await answerProbe(null);
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(phases.at(-1)).toMatchObject({ phase: "init", engine: "native_cpu", step: "load cpu: threads 2/3 · muette 30 s" });
+      await vi.advanceTimersByTimeAsync(120_000);
+      await vi.waitFor(() => expect(FakeWorker.all).toHaveLength(2));
+      await ladderReady(FakeWorker.all[1]);
+      await loading;
+      expect(p.load.mock.calls.map((c) => [c[0].backend, c[0].calibrate])).toEqual([["cpu", true]]);
+      const r = mod.modelReport();
+      expect(r.tried).toEqual([{ id: "q4_0/native_cpu", code: "timeout", detail: expect.stringContaining("étape : load cpu: threads 2/3 · muette 30 s") }]);
+      expect(JSON.parse(store.get("velohnav_ai_native_ko")).failed.cpu).toMatch(/^transient: .*étape : load cpu: threads 2\/3/);
+      // Lancement suivant : le processeur natif repart sans calibrage des fils.
+      mod.unloadModel();
+      p.load.mockImplementation(async () => ok({ info: INFO.cpu }));
+      const again = mod.loadModel();
+      await answerProbe(null);
+      await again;
+      expect(p.load.mock.calls.map((c) => [c[0].backend, c[0].calibrate])).toEqual([["cpu", true], ["cpu", false]]);
+      expect(mod.modelReport().chosen).toMatchObject({ engine: "native_cpu" });
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("processus :llm jamais relié (redémarrage différé par Android) : délai passager, rien de condamné", async () => {
+    store.set("velohnav_ai_native_ko", JSON.stringify({ fingerprint: nativeFingerprint(STATUS), failed: { vulkan: "crash" }, cpuRev: 2 }));
+    const p = fakePlugin({ load: { cpu: Object.assign(new Error("bind: no :llm process after 20 s"), { code: "bind" }) } });
+    await setup(p);
+    const loading = mod.loadModel();
+    await answerProbe(null);
+    await vi.waitFor(() => expect(FakeWorker.all).toHaveLength(2));
+    await ladderReady(FakeWorker.all[1]);
+    await loading;
+    expect(mod.modelReport().tried).toEqual([{ id: "q4_0/native_cpu", code: "timeout", detail: "bind: no :llm process after 20 s" }]);
+    expect(JSON.parse(store.get("velohnav_ai_native_ko")).failed.cpu).toBe("transient: bind: no :llm process after 20 s");
+    expect(p.deleteModels).not.toHaveBeenCalled();
+  });
+
+  it("échec processeur noté par une APK d'avant le correctif : rejoué une fois, en mode sûr", async () => {
+    store.set("velohnav_ai_native_ko", JSON.stringify({ fingerprint: nativeFingerprint(STATUS), failed: { vulkan: "crash", cpu: "native load: no answer after 120 s" } }));
+    const p = fakePlugin();
+    await setup(p);
+    const loading = mod.loadModel();
+    await answerProbe(null);
+    await loading;
+    expect(p.load.mock.calls.map((c) => [c[0].backend, c[0].calibrate])).toEqual([["cpu", false]]);
+    expect(mod.modelReport().chosen).toMatchObject({ engine: "native_cpu" });
+    expect(JSON.parse(store.get("velohnav_ai_native_ko")).failed).toEqual({ vulkan: "crash" });
+  });
+
   it("Vulkan figé : délai borné (120 s, arrêt 5 s), puis WebGPU — retenu ; le processeur natif n'est pas tenté, GGUF gardé", async () => {
     vi.useFakeTimers();
     try {

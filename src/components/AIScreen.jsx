@@ -87,7 +87,7 @@ function AIScreen({ stations, aiHistory, setAiHistory,
   const [modelState, setModelState] = useState("off");   // off | loading | ready | error
   const [modelProgress, setModelProgress] = useState(0);
   const [modelError, setModelError] = useState("");   // message réel, affiché en cas d'échec
-  const [modelPhase, setModelPhase] = useState(null);  // { phase: download|init, device, engine, attempt, mb }
+  const [modelPhase, setModelPhase] = useState(null);  // { phase: download|init, device, engine, attempt, mb, step? (sous-étape native) }
   const [modelInfo, setModelInfo] = useState(null);    // modelReport() : tentatives faites
   const gpuAside = useMemo(() => gpuSetAside(modelInfo), [modelInfo]);
   const nativeAside = useMemo(() => nativeFallback(modelInfo), [modelInfo]);
@@ -506,7 +506,7 @@ function AIScreen({ stations, aiHistory, setAiHistory,
           <div style={{ fontSize:10.5, color:"var(--vn-text3)", lineHeight:1.45, overflowWrap:"anywhere" }}>
             {!chatOn ? t("ui.ai.chat.note", { mb: chatModelMB() })
               : modelState==="loading" && modelPhase?.phase==="init"
-                ? t("ui.ai.model.init", { where: attemptLabel(modelPhase.attempt) })
+                ? t("ui.ai.model.init", { where: attemptLabel(modelPhase.attempt) }) + (modelPhase.step ? ` — ${modelPhase.step}` : "")
               : modelState==="loading" ? t("ui.ai.model.loading", { pct:modelProgress })
               : modelState==="error"   ? `${t("ui.ai.model.error")}${modelError ? " — " + modelError.slice(0, 700) : ""}`
               : modelInfo?.chosen

@@ -53,8 +53,9 @@ Java_com_silexperience_velohnav_llm_LlmNative_devices(JNIEnv * env, jobject) {
 
 JNIEXPORT jbyteArray JNICALL
 Java_com_silexperience_velohnav_llm_LlmNative_load(JNIEnv * env, jobject, jbyteArray path, jbyteArray backend,
-                                                   jint n_ctx, jint n_threads) {
+                                                   jint n_ctx, jint n_threads, jboolean calibrate) {
     std::string info, err;
+    g_engine.calibrate = calibrate;
     if (!g_engine.load(bytes(env, path), bytes(env, backend), n_ctx, n_threads, info, err)) return to_bytes(env, error_json(err));
     return to_bytes(env, "{\"ok\":true,\"info\":" + info + "}");
 }

@@ -523,6 +523,17 @@ Demande : au moins 20 j/s de génération sur le processeur natif (llama.cpp) du
   d'abandon de ggml). Un pool de fils par essai : les fils en trop d'un pool plus grand
   tourneraient en attente sur les mêmes cœurs. Coût mesuré sur PC : +0,5 s au chargement.
   Résultat dans `info.threadsTps` (j/s par nombre de fils) et au journal.
+  **Chargement figé sur le Xiaomi 11T Pro (e7ed7ff)** : chaque essai libérait le pool
+  précédent alors que le moteur processeur de ggml gardait son adresse — au calcul suivant,
+  `ggml_threadpool_pause` verrouillait un mutex dans une mémoire rendue (relevé sur PC par
+  interposition : 3 appels sur pool libéré par chargement ; glibc le tolère, bionic non).
+  Désormais les pools précédents sont mis en pause et libérés au déchargement. Calibrage
+  borné à 3 s ; **mode sûr** (`calibrate: false`, fils fixes) dès qu'un échec processeur est
+  noté, et un échec noté avant ce correctif est rejoué une fois (`NATIVE_CPU_REV`).
+  Sous-étape du processus `:llm` (`LocalLlm.stage`, dernière ligne « @ » de sa trace) relevée
+  toutes les 2 s : affichée après « Démarrage du modèle » et jointe à l'erreur « timeout ».
+  Liaison au processus `:llm` bornée à 20 s (redémarrage différé par Android après un
+  plantage Vulkan) : délai passager, rien de condamné.
 - **Banc fixe affiché** : l'essai à vide (mêmes prompts, deux tours) est chronométré —
   chargement, premier jeton, vitesse de génération seule — et la ligne d'état dit « banc fixe :
   N jetons/s (cible ≥ 20 atteinte | sous la cible de 20) · modèle chargé en … · 1er jeton … ·

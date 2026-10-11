@@ -292,9 +292,10 @@ Engine::~Engine() { unload(); }
 void Engine::unload() {
     if (smpl_) llama_sampler_free(smpl_);
     if (ctx_) llama_free(ctx_);
-    if (pool_) ggml_threadpool_free(pool_);
+    // Après le contexte : plus personne ne tient l'adresse d'un pool.
+    for (ggml_threadpool * p : pools_) ggml_threadpool_free(p);
     if (model_) llama_model_free(model_);
-    smpl_ = nullptr; ctx_ = nullptr; pool_ = nullptr; model_ = nullptr;
+    smpl_ = nullptr; ctx_ = nullptr; pools_.clear(); model_ = nullptr;
     ckpt_tokens_.clear(); ckpt_state_.clear();
     ckpt_state_.shrink_to_fit();
 }
@@ -346,6 +347,7 @@ bool Engine::load(const std::string & path, const std::string & backend, int n_c
     // tous les autres (mesuré sur PC : 4 fils sur 2 cœurs permis, 88 → 64 j/s).
     const CpuPlan cpus = plan_cpus(n_threads);
     n_threads = cpus.threads;
+    const int n_threads_req = n_threads;
     llama_context_params cp = llama_context_default_params();
     cp.n_ctx = (uint32_t) n_ctx;
     cp.n_batch = (uint32_t) n_batch_;
@@ -359,7 +361,8 @@ bool Engine::load(const std::string & path, const std::string & backend, int n_c
         cp.type_v = GGML_TYPE_F32;
         cp.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_DISABLED;
     }
-    trace(stage + ": context");
+    trace(stage + ": context" + (cpu ? " (" + std::to_string(n_threads) + " fils, cœurs " + (cpus.cpus.empty() ? std::string("?") : cpu_list(cpus.cpus))
+                                      + ", permis " + cpus.allowed + ", " + cpus.cpuset + ")" : std::string()));
     ctx_ = llama_init_from_model(model_, cp);
     if (!ctx_) {
         err = "context init failed on " + backend + ": " + log_tail();
@@ -371,13 +374,20 @@ bool Engine::load(const std::string & path, const std::string & backend, int n_c
     // l'autre. Un fil privé de cœur fait attendre tous les autres à chaque opération
     // (barrière en boucle active) : mieux vaut mesurer que deviner. Quatre essais au plus,
     // du moins de fils au plus : le premier, sûr, fixe la référence ; un essai 4 fois plus
-    // lent par jeton que le meilleur est interrompu (probe_tps). Moins d'une seconde.
+    // lent par jeton que le meilleur est interrompu (probe_tps). Borné à kCalibMs en tout :
+    // au-delà, les essais restants sont sautés et le meilleur mesuré est gardé.
+    // `calibrate` à false (mode sûr, demandé après un chargement processeur en échec) :
+    // aucun essai, le nombre de fils de plan_cpus tel quel.
     std::string calib;
+    double calib_ms = 0;
     if (cpu && calibrate && n_threads > 1) {
-        trace(stage + ": threads");
+        constexpr double kCalibMs = 3000;
+        const auto tc = std::chrono::steady_clock::now();
         int best = n_threads;
         double best_tps = -1;
         for (int n = std::max(1, n_threads - 3); n <= n_threads; n++) {
+            if (ms_since(tc) > kCalibMs) { calib += std::string(calib.empty() ? "" : ",") + "\"cut\":" + std::to_string(n); break; }
+            trace(stage + ": threads " + std::to_string(n) + "/" + std::to_string(n_threads));
             use_threads(n, cpus.cpus);
             const double tps = probe_tps(best_tps > 0 ? 4000.0 / best_tps : 500);
             char one[32];
@@ -386,7 +396,9 @@ bool Engine::load(const std::string & path, const std::string & backend, int n_c
             if (tps > best_tps) { best_tps = tps; best = n; }
         }
         n_threads = best;
+        calib_ms = ms_since(tc);
     }
+    trace(stage + ": pool " + std::to_string(n_threads));
     use_threads(n_threads, cpus.cpus);
     smpl_ = llama_sampler_chain_init(llama_sampler_chain_default_params());
     llama_sampler_chain_add(smpl_, llama_sampler_init_greedy());
@@ -401,6 +413,8 @@ bool Engine::load(const std::string & path, const std::string & backend, int n_c
          + ",\"nCtx\":" + std::to_string(llama_n_ctx(ctx_))
          + ",\"threads\":" + std::to_string(n_threads)
          + ",\"threadsTps\":{" + calib + "}"
+         + ",\"calibrated\":" + (cpu && calibrate && n_threads_req > 1 ? "true" : "false")
+         + ",\"calibMs\":" + std::to_string((long) calib_ms)
          + ",\"cpus\":\"" + json_escape(cpu_list(cpus.cpus)) + "\""
          + ",\"allowedCpus\":\"" + json_escape(cpus.allowed) + "\""
          + ",\"cpuset\":\"" + json_escape(cpus.cpuset) + "\""
@@ -421,8 +435,14 @@ void Engine::use_threads(int n, const std::vector<int> & cpus) {
     ggml_threadpool * pool = ggml_threadpool_new(&tpp);
     if (pool) llama_attach_threadpool(ctx_, pool, pool);
     else llama_detach_threadpool(ctx_);
-    if (pool_) ggml_threadpool_free(pool_);
-    pool_ = pool;
+    // L'ancien pool n'est PAS libéré ici : le moteur processeur de ggml garde son adresse
+    // jusqu'au calcul suivant, où il le met en pause (ggml_backend_cpu_set_threadpool) —
+    // libéré avant, c'était un verrou lu dans une mémoire rendue. Sur Android (bionic), ce
+    // verrou détruit ou réutilisé peut bloquer le fil pour toujours : le chargement
+    // processeur restait figé au calibrage. Il est mis en pause (ses fils dorment) et
+    // libéré au déchargement, après le contexte.
+    if (!pools_.empty()) ggml_threadpool_pause(pools_.back());
+    if (pool) pools_.push_back(pool);
     llama_set_n_threads(ctx_, n, n);
 }
 

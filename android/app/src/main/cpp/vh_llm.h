@@ -106,7 +106,8 @@ public:
     /**
      * Calibrage des fils sur le processeur (lu au chargement) : chaque nombre de fils de
      * `n_threads` à 1 produit quelques jetons, le plus rapide est gardé. false : `n_threads`
-     * tel quel (plan_cpus).
+     * tel quel (plan_cpus) : le mode sûr, demandé par l'application après un chargement
+     * processeur en échec ou figé.
      */
     bool calibrate = true;
 
@@ -125,7 +126,9 @@ private:
     llama_model * model_ = nullptr;
     llama_context * ctx_ = nullptr;
     llama_sampler * smpl_ = nullptr;
-    ggml_threadpool * pool_ = nullptr;   // fils épinglés sur les cœurs retenus (processeur)
+    // Fils épinglés sur les cœurs retenus (processeur) : le dernier sert, les précédents
+    // (calibrage) dorment en pause jusqu'au déchargement — voir use_threads.
+    std::vector<ggml_threadpool *> pools_;
     int n_batch_ = 512;
 
     // État gardé à la fin de la consigne : jetons + copie de l'état de la séquence 0.

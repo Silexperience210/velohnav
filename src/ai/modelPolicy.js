@@ -158,6 +158,20 @@ export function planNative({ status, failed = {} }) {
   return { queue, skipped };
 }
 
+/**
+ * Sous-étape du processus :llm (LocalLlm.stage) en une ligne courte : « load cpu: threads
+ * 2/3 », suivie de « · muette 12 s » quand la trace n'a plus rien reçu depuis 5 s ou plus
+ * (une étape figée se voit ainsi), ou « liaison au processus :llm » avant qu'il réponde.
+ * Chaîne vide si rien n'est connu.
+ * @param {{ stage?: string, idleMs?: number } | null | undefined} st
+ */
+export function nativeStepText(st) {
+  if (!st?.stage) return "";
+  if (st.stage === "bind") return "liaison au processus :llm";
+  const quiet = Number(st.idleMs) >= 5_000 ? ` · muette ${Math.round(st.idleMs / 1000)} s` : "";
+  return `${String(st.stage).slice(0, 120)}${quiet}`;
+}
+
 /** Empreinte des échecs natifs : un autre appareil, ou un autre fichier, les remet à zéro. */
 export const nativeFingerprint = (status) => `${NATIVE_MODEL.file}|${status?.device || "?"}|${status?.soc || "?"}`;
 
@@ -596,6 +610,9 @@ export const LIMITS = Object.freeze({
   // budget ne compte jamais comme un échec définitif.
   nativeBudgetMs: 150_000,
   nativeUnloadMs: 5_000,    // arrêt du processus :llm après un échec
+  // Relevé de la sous-étape du processus :llm pendant un chargement (LocalLlm.stage) : la
+  // ligne d'état dit laquelle traîne, l'erreur « timeout » laquelle a figé.
+  nativeStageMs: 2_000,
   // GGUF en arrière-plan (la voie JavaScript est déjà prête) : stallMs sans aucun octet,
   // ou cette durée au total, et il est arrêté ; le partiel est repris au lancement suivant.
   nativeDownloadMs: 1_800_000,

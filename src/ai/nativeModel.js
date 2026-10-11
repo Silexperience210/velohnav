@@ -8,7 +8,7 @@
 // Une réponse du moteur est un JSON (vh_llm_jni.cpp) : { ok, error, log } ou { ok, info } /
 // { ok, text, stats }. Un plantage du processus :llm (pilote GPU) rejette avec le code
 // « crash ». Toutes ces erreurs remontent telles quelles, journal du moteur compris.
-import { LIMITS, NATIVE_MODEL, NATIVE_SELF_TEST, SECOND_TURN, secondTurn, selfTestVerdict, selfTestBench, withTimeout } from "./modelPolicy.js";
+import { LIMITS, NATIVE_MODEL, NATIVE_SELF_TEST, SECOND_TURN, secondTurn, selfTestVerdict, selfTestBench, nativeStepText, withTimeout } from "./modelPolicy.js";
 import { splitPrompt } from "./chatTemplate.js";
 
 let plugin;   // undefined : pas encore cherché ; null : absent
@@ -17,7 +17,7 @@ let plugin;   // undefined : pas encore cherché ; null : absent
 export function setNativePlugin(p) { plugin = p; }
 
 // Méthodes du greffon (LocalLlmPlugin.kt) appelées d'ici.
-const METHODS = ["status", "download", "cancelDownload", "deleteModels", "load", "warm", "generate", "cancel", "unload", "addListener"];
+const METHODS = ["status", "download", "cancelDownload", "deleteModels", "load", "stage", "warm", "generate", "cancel", "unload", "addListener"];
 
 /**
  * Le greffon, dans un objet ordinaire. JAMAIS le proxy de registerPlugin tel quel : une
@@ -69,10 +69,11 @@ function parse(res, code) {
   }
   return r;
 }
-// Rejet du greffon (processus :llm mort, liaison refusée…) : son code est gardé.
+// Rejet du greffon (processus :llm mort, liaison refusée…) : son code est gardé. Liaison
+// restée muette (« bind ») : un délai, passager comme tel — le moteur n'a pas tourné.
 const rethrow = (code) => (e) => {
   if (e instanceof NativeError) throw e;
-  throw new NativeError(e?.code === "crash" ? "crash" : code, e?.message || String(e));
+  throw new NativeError(e?.code === "crash" ? "crash" : e?.code === "bind" ? "timeout" : code, e?.message || String(e));
 };
 
 /**
@@ -142,15 +143,18 @@ export async function cancelNativeDownload() {
  * Charge le modèle sur `backend` (« vulkan » ou « cpu ») puis fait l'essai à vide : une
  * phrase française courte (NATIVE_SELF_TEST), jugée par selfTestVerdict. Un GPU qui se
  * charge mais calcule faux (sortie « 鹰 » sur WebGPU Adreno) est donc écarté ici.
+ * `calibrate` : false pour le mode sûr du processeur (nombre de fils fixe, sans essais).
+ * `onStep(texte)` : sous-étape en cours dans le processus :llm (« load cpu: threads 2/3 »),
+ * relevée toutes les LIMITS.nativeStageMs ; elle est aussi jointe à l'erreur « timeout ».
  * @returns {Promise<{ info: object, selfTest: string, selfTestRaw: string[], mem: object|null, loadMs: number, bench: object }>}
  *   mem : mémoire du processus :llm après le chargement (Mo : rssMB, peakMB, pssMB, gfxMB)
  *   bench : vitesse de l'essai à vide (selfTestBench), affichée dans la ligne d'état
  */
-export async function loadNative(backend, timeoutMs) {
+export async function loadNative(backend, timeoutMs, { calibrate = true, onStep } = {}) {
   const p = await getPlugin();
   const t0 = Date.now();
   const run = async () => {
-    const r = parse(await p.load({ file: NATIVE_MODEL.file, backend, nCtx: 4096 }).catch(rethrow("load")), "load");
+    const r = parse(await p.load({ file: NATIVE_MODEL.file, backend, nCtx: 4096, calibrate }).catch(rethrow("load")), "load");
     const turn = async (messages, maxTokens) => {
       const { prefix, rest } = splitPrompt(messages);
       const g = parse(await p.generate({ prefix, rest, maxTokens, phase: "selftest" }).catch(rethrow("selftest")), "selftest");
@@ -169,11 +173,26 @@ export async function loadNative(backend, timeoutMs) {
     return { info: r.info || {}, selfTest: `${a.said} | ${b.said}`, selfTestRaw: [a.raw, b.raw], mem: r.mem || null, loadMs: Date.now() - t0,
       bench: selfTestBench(r.info || {}, [a.stats, b.stats]) };
   };
+  // Sous-étape relevée pendant le chargement : un relevé à la fois, chacun borné (un
+  // greffon muet ne doit pas empiler les appels).
+  let step = "", polling = false;
+  const poll = async () => {
+    if (polling || !p.stage) return;
+    polling = true;
+    try {
+      const st = await withTimeout(p.stage(), LIMITS.nativeStageMs, "native stage");
+      const text = nativeStepText(st);
+      if (text && text !== step) { step = text; onStep?.(text); }
+    } catch { /* relevé suivant */ } finally { polling = false; }
+  };
+  const timer = setInterval(poll, LIMITS.nativeStageMs);
   try {
     return await withTimeout(run(), timeoutMs, "native load", () => { unloadNative(); });
   } catch (e) {
-    if (e?.timedOut) throw new NativeError("timeout", e.message);
+    if (e?.timedOut) throw new NativeError("timeout", `${e.message}${step ? ` · étape : ${step}` : ""}`);
     throw e;
+  } finally {
+    clearInterval(timer);
   }
 }
 
