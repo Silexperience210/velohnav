@@ -10,8 +10,27 @@ import { TRANSIT_STOPS } from "../constants.js";
 import { fmtDist, stationView } from "../ui/format.js";
 import { wmo, reasonLabel } from "../ui/weather.js";
 
-export const approxDist = (a, b) =>
-  Math.sqrt((a.lat - b.lat) ** 2 + (a.lng - b.lng) ** 2) * 111000;
+// Distance plane (m). Un degré de longitude ne vaut que cos(latitude) × 111 km : sans ce
+// facteur, à 49,6° N, les distances est-ouest étaient comptées 1,5 fois trop longues
+// (Rodange → EDELECK : 26,7 km au lieu de 17,5). Écart avec haversine < 0,1 % au pays.
+export const approxDist = (a, b) => {
+  const k = Math.cos(((a.lat + b.lat) / 2) * Math.PI / 180);
+  return Math.sqrt((a.lat - b.lat) ** 2 + ((a.lng - b.lng) * k) ** 2) * 111195;
+};
+
+/**
+ * Station la plus proche parmi celles que `keep` retient, quel que soit l'ordre de la
+ * liste : `find` sur la liste rendait la PREMIÈRE station convenable, pas la plus proche.
+ * Une station sans distance connue ne passe jamais devant une station mesurée.
+ */
+export function closestStation(stations = [], keep = () => true) {
+  let best = null;
+  for (const s of stations) {
+    if (s.status === "CLOSED" || !keep(s)) continue;
+    if (!best || (s.dist ?? Infinity) < (best.dist ?? Infinity)) best = s;
+  }
+  return best;
+}
 
 // Normalisation pour comparer une question à des mots-clés, sans dépendre des accents.
 export const norm = s =>

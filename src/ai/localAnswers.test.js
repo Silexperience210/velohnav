@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { answerLocally, upcoming, norm, approxDist } from "./localAnswers.js";
+import { answerLocally, upcoming, norm, approxDist, closestStation } from "./localAnswers.js";
+import { enrich, haversine } from "../utils.js";
 
 // Traduction factice : on vérifie les DONNÉES transmises aux phrases, pas la prose.
 // C'est ce qui compte : un compteur faux est un bug, une formulation est un détail.
@@ -27,6 +28,55 @@ describe("normalisation", () => {
   it("mesure une distance en mètres", () => {
     expect(Math.round(approxDist({ lat: 49.6116, lng: 6.1319 }, { lat: 49.6116, lng: 6.1319 }))).toBe(0);
     expect(approxDist({ lat: 49.6116, lng: 6.1319 }, { lat: 49.6216, lng: 6.1319 })).toBeGreaterThan(1000);
+  });
+  it("compte la longitude à sa vraie valeur (cos de la latitude), comme haversine", () => {
+    // Rodange → EDELECK : 17,5 km par haversine ; l'ancienne formule disait 26,7 km.
+    const rodange = { lat: 49.5447, lng: 5.8394 }, edeleck = { lat: 49.565477, lng: 6.079436 };
+    for (const [a, b] of [[rodange, edeleck], [FOETZ, edeleck], [FOETZ, { lat: 49.598211, lng: 6.137526 }]])
+      expect(Math.abs(approxDist(a, b) / haversine(a.lat, a.lng, b.lat, b.lng) - 1)).toBeLessThan(0.001);
+    expect(approxDist(rodange, edeleck) / 1000).toBeCloseTo(17.5, 1);
+  });
+});
+
+// Vraies stations GBFS (api.cyclocity.fr, relevé du 11/10/2026) et une vraie position :
+// l'arrêt « Foetz, Am Brill » (Transitous). Les distances sont calculées par l'application
+// (utils.enrich), pas écrites à la main.
+const FOETZ = { lat: 49.52114, lng: 6.010636 };
+const GBFS = [
+  { id: "1",   name: "LEON XIII",               lat: 49.598211, lng: 6.137526, bikes: 7, elec: 2, docks: 10, status: "OPEN" },
+  { id: "107", name: "LEUDELANGE GARE",         lat: 49.586736, lng: 6.05966,  bikes: 11, elec: 4, docks: 9, status: "OPEN" },
+  { id: "108", name: "EDELECK",                 lat: 49.565477, lng: 6.079436, bikes: 3, elec: 3, docks: 13, status: "OPEN" },
+  { id: "109", name: "FOYER",                   lat: 49.569178, lng: 6.08175,  bikes: 3, elec: 0, docks: 10, status: "OPEN" },
+  { id: "126", name: "SALLES DES FÊTES HOLZEM", lat: 49.615901, lng: 5.993194, bikes: 2, elec: 2, docks: 8, status: "OPEN" },
+];
+
+describe("station la plus proche : la plus proche, quel que soit l'ordre de la liste", () => {
+  const mesurees = enrich(GBFS, FOETZ);
+  // Toutes les permutations circulaires et l'ordre inverse : le résultat ne doit pas bouger.
+  const ordres = [...mesurees.map((_, i) => [...mesurees.slice(i), ...mesurees.slice(0, i)]), [...mesurees].reverse()];
+
+  it("depuis Foetz : EDELECK, à 7,0 km — pas la première station de la liste", () => {
+    for (const liste of ordres) {
+      const st = closestStation(liste, (s) => s.bikes > 0);
+      expect(st.name).toBe("EDELECK");
+      expect(st.dist / 1000).toBeCloseTo(7.0, 1);
+    }
+  });
+  it("la distance affichée est celle de la position : 19 km n'est pas possible depuis Foetz", () => {
+    const st = closestStation(mesurees, (s) => s.bikes > 0);
+    const r = answerLocally("station la plus proche ?", { ...base, stations: mesurees, nearest: st, gpsPos: FOETZ, located: true });
+    expect(r.text).toContain('"name":"EDELECK"');
+    expect(r.text).toContain('"dist":"7 km"');
+  });
+  it("vide ou fermée : écartée ; sans vélo électrique : écartée pour un vélo électrique", () => {
+    const liste = mesurees.map((s) => (s.name === "EDELECK" ? { ...s, status: "CLOSED" } : s));
+    expect(closestStation(liste, (s) => s.bikes > 0).name).toBe("FOYER");
+    expect(closestStation(liste, (s) => s.elec > 0).name).toBe("LEUDELANGE GARE");
+  });
+  it("une station sans distance ne passe pas devant une station mesurée", () => {
+    const sansDist = { ...GBFS[0], id: "x", name: "SANS DISTANCE" };
+    expect(closestStation([sansDist, ...mesurees], (s) => s.bikes > 0).name).toBe("EDELECK");
+    expect(closestStation([], () => true)).toBeNull();
   });
 });
 

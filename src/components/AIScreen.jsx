@@ -9,7 +9,7 @@ import { Icon } from "../ui/icons.jsx";
 import { IconButton, ProgressBar, Spinner, Button } from "../ui/primitives.jsx";
 import { wmo, bikeScoreDetail, scoreReasons, scoreTone, reasonLabel } from "../ui/weather.js";
 import { fmtDist, stationView, cardinal } from "../ui/format.js";
-import { answerLocally as localAnswer, upcoming, distLabel } from "../ai/localAnswers.js";
+import { answerLocally as localAnswer, upcoming, distLabel, closestStation } from "../ai/localAnswers.js";
 
 // Conversation libre : le modèle ne voit AUCUNE donnée et n'en rédige aucune. Il
 // choisit un outil (tools.js) ; l'application valide l'appel, l'exécute sur ses
@@ -141,16 +141,10 @@ function AIScreen({ stations, aiHistory, setAiHistory,
   const advice = useMemo(()=>getWeatherAdvice(weather, forecast), [weather, forecast]);
   // Le tri se fait sur la distance : `find` renvoyait la première station de la liste ayant
   // un vélo, donc n'importe laquelle (une station à 19 km au lieu de celle à 150 m).
-  const nearest = useMemo(()=>{
-    const ok = stations.filter(s=>s.bikes>0 && s.status!=="CLOSED");
-    return ok.length ? ok.reduce((a,b)=>((a.dist ?? Infinity)<=(b.dist ?? Infinity)?a:b)) : null;
-  },[stations]);
+  const nearest = useMemo(()=>closestStation(stations, s=>s.bikes>0),[stations]);
   // Pour rendre un vélo il faut des bornes libres : ce n'est pas forcément la même station.
   // Même correction que `nearest` : la plus proche ayant des bornes libres, pas la première venue.
-  const nearestReturn = useMemo(()=>{
-    const ok = stations.filter(s=>s.docks>0 && s.status!=="CLOSED");
-    return ok.length ? ok.reduce((a,b)=>((a.dist ?? Infinity)<=(b.dist ?? Infinity)?a:b)) : null;
-  },[stations]);
+  const nearestReturn = useMemo(()=>closestStation(stations, s=>s.docks>0),[stations]);
   const deps = useMemo(()=>upcoming(busStops, busDeps, 3),[busStops, busDeps]);
   // Journal (logcat) : la station retenue et la position d'où sa distance est calculée,
   // pour vérifier sur l'appareil que la fiche et les départs partent du même point.

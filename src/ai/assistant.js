@@ -17,7 +17,7 @@ import { TRAM, nextDepartures, shortStopName } from "../utils/tram.js";
 import { fmtDuration, walkMinutes, stationView } from "../ui/format.js";
 import { readModelOutput, TOOLS } from "./tools.js";
 import {
-  norm, approxDist, upcoming, distLabel, findPlace, navAnswer, stationDetails,
+  norm, approxDist, closestStation, upcoming, distLabel, findPlace, navAnswer, stationDetails,
   answerNearest, answerDocks, answerDepartures, answerWeather,
 } from "./localAnswers.js";
 
@@ -65,7 +65,7 @@ function findStation(ctx, { name, need }) {
   }
   if (need === "dock") return answerDocks(ctx);
   if (need === "ebike") {
-    const st = open(stations).find((s) => stationView(s).elec > 0);
+    const st = closestStation(stations, (s) => stationView(s).elec > 0);
     return { text: st ? stationDetails(ctx, st) : ctx.t("ui.ai.ans.no_station") };
   }
   return answerNearest(ctx);
