@@ -348,7 +348,7 @@ describe("façade : l'échelle des tentatives, sans rien demander", () => {
     await vi.advanceTimersByTimeAsync(0);
     const req = w.sent.at(-1);
     w.emit({ type: "result", id: req.id, text: "<|tool_call_start|>[weather()<|im_end|>" });
-    await expect(reply).resolves.toEqual({
+    await expect(reply).resolves.toMatchObject({
       raw: "<|tool_call_start|>[weather()<|im_end|>",
       text: "<|tool_call_start|>[weather()",
     });

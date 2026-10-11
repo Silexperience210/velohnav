@@ -286,7 +286,8 @@ self.onmessage = async ({ data }) => {
     await serial(async () => {
       try {
         if (!generator) throw new Error("model not loaded");
-        post({ type: "result", id: msg.id, text: await complete(msg) });
+        const text = await complete(msg);
+        post({ type: "result", id: msg.id, text, tokens: lastGenTokens });
       } catch (e) {
         post({ type: "result", id: msg.id, error: String(e?.message || e) });
       }
@@ -320,6 +321,9 @@ const chatTemplate = (tools) => (msgs, generation) => generator.tokenizer.apply_
   return_dict: true,
 });
 
+// Jetons produits par la dernière réponse : la façade en déduit les jetons/s, affichés
+// pour comparer cette voie au moteur natif sur la même question.
+let lastGenTokens = 0;
 async function complete({ messages, tools, options }) {
   const tok = generator.tokenizer;
   const template = chatTemplate(tools);
@@ -327,6 +331,7 @@ async function complete({ messages, tools, options }) {
   const past = await prefixState(messages, inputs.input_ids.data, template);
   const out = await generator.model.generate({ ...inputs, ...options, ...(past ? { past_key_values: past } : {}) });
   const n = inputs.input_ids.dims.at(-1);
+  lastGenTokens = out.dims.at(-1) - n;
   return tok.decode(out.slice(null, [n, null])[0], { skip_special_tokens: false });
 }
 

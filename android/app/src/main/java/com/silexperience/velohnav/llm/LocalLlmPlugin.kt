@@ -18,6 +18,7 @@ import com.getcapacitor.Plugin
 import com.getcapacitor.PluginCall
 import com.getcapacitor.PluginMethod
 import com.getcapacitor.annotation.CapacitorPlugin
+import dalvik.system.BaseDexClassLoader
 import java.io.File
 import java.io.FileOutputStream
 import java.net.HttpURLConnection
@@ -53,7 +54,11 @@ class LocalLlmPlugin : Plugin() {
     @PluginMethod(returnType = PluginMethod.RETURN_PROMISE)
     fun status(call: PluginCall) {
         val ret = JSObject()
-        val reason = LlmNative.unsupportedReason()
+        // APK construite sans -PvhNative : le greffon est là, la bibliothèque non. Sans ce
+        // contrôle, l'application téléchargerait le modèle GGUF (219 Mo) avant de découvrir
+        // au chargement qu'aucun moteur ne peut le lire.
+        val packaged = (context.classLoader as? BaseDexClassLoader)?.findLibrary("vh_llm") != null
+        val reason = if (!packaged) "not-built" else LlmNative.unsupportedReason()
         ret.put("supported", reason == null)
         ret.put("reason", reason ?: "")
         ret.put("sdk", Build.VERSION.SDK_INT)

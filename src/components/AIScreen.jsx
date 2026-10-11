@@ -32,6 +32,15 @@ function describeModelError(e) {
 const whereLabel = (engine, dtype, mode) => t("ui.ai.model.where", {
   engine: t(`ui.ai.model.engine.${engine}`), dtype: t(`ui.ai.model.dtype.${dtype}`),
 }) + (mode && mode !== "base" ? ` · ${t(`ui.ai.model.mode.${mode}`)}` : "");
+// Moteur natif sur le GPU : le nom du GPU annoncé par Vulkan, preuve de ce qui tourne.
+const chosenLabel = (c) => {
+  const where = whereLabel(c.engine, c.dtype, c.gpuMode);
+  return c.gpuName ? t("ui.ai.model.gpu_name", { where, gpu: c.gpuName }) : where;
+};
+// Vitesse de la dernière réponse : de quoi comparer les voies, sur l'appareil, à la même question.
+const speedLabel = (s) => (s.genOnly
+  ? t("ui.ai.model.speed", { n: s.tokens, tps: s.tps })
+  : t("ui.ai.model.speed_total", { n: s.tokens, s: (s.totalMs / 1000).toFixed(1), tps: s.tps }));
 const attemptLabel = (id) => { const [dtype, engine, mode] = String(id).split("/"); return whereLabel(engine, dtype, mode); };
 
 // Pourquoi le GPU ne sert pas, en clair (gpuSetAside, modelPolicy.js). Version du
@@ -67,6 +76,7 @@ function AIScreen({ stations, aiHistory, setAiHistory,
   const [modelInfo, setModelInfo] = useState(null);    // modelReport() : tentatives faites
   const gpuAside = useMemo(() => gpuSetAside(modelInfo), [modelInfo]);
   const [modelErrCode, setModelErrCode] = useState(null);
+  const [lastSpeed, setLastSpeed] = useState(null);      // vitesse de la dernière réponse du modèle
   const [loadSeq, setLoadSeq] = useState(0);             // incrémenté par « Réessayer »
   // La conversation libre est DÉSACTIVÉE par défaut : le modèle pèse ~300 Mo,
   // il n'est téléchargé que sur demande explicite. Sans lui, l'écran reste utile :
@@ -158,6 +168,7 @@ function AIScreen({ stations, aiHistory, setAiHistory,
     setModelState("loading");
     setModelPhase(null);
     setModelErrCode(null);
+    setLastSpeed(null);
     // Le passage d'une tentative à la suivante (GPU → processeur) se fait dans
     // loadModel, sans rien demander : seul un échec de TOUTES les voies arrive ici.
     loadModel((pct)=>{ if(!dead) setModelProgress(pct); },
@@ -243,6 +254,7 @@ function AIScreen({ stations, aiHistory, setAiHistory,
       // IA locale, zéro réseau. 96 jetons : un appel d'outil en prend une vingtaine.
       const out = await generateDetailed(systemPrompt(t), hist, { maxNewTokens: 96 });
       raw = out.raw;
+      if (out.stats?.tps) setLastSpeed(out.stats);
       reply = resolveModelOutput(out.text, { ...answerCtx, now: new Date() }, local);
     } catch(e) {
       // Tentative écartée en pleine génération (erreur du moteur GPU) : la suivante se
@@ -476,9 +488,12 @@ function AIScreen({ stations, aiHistory, setAiHistory,
               : modelState==="loading" ? t("ui.ai.model.loading", { pct:modelProgress })
               : modelState==="error"   ? `${t("ui.ai.model.error")}${modelError ? " — " + modelError.slice(0, 220) : ""}`
               : modelInfo?.chosen
-                ? t("ui.ai.model.ready_on", { where: whereLabel(modelInfo.chosen.engine, modelInfo.chosen.dtype, modelInfo.chosen.gpuMode) })
+                ? t("ui.ai.model.ready_on", { where: chosenLabel(modelInfo.chosen) })
                 : t("ui.ai.model.ready")}
           </div>
+          {chatOn && modelState==="ready" && lastSpeed && (
+            <div className="vn-num" style={{ fontSize:10.5, color:"var(--vn-text3)", lineHeight:1.45 }}>{speedLabel(lastSpeed)}</div>
+          )}
           {/* Prêt hors du GPU : pourquoi, lisible à l'écran (sans cela, impossible de le savoir sur l'appareil) */}
           {chatOn && modelState==="ready" && gpuAside?.reasons.length > 0 && (
             <div style={{ fontSize:10.5, color:"var(--vn-text3)", lineHeight:1.45, overflowWrap:"anywhere" }}>

@@ -14,8 +14,13 @@ import {
   initialProgress, progressReducer, withTimeout,
   memoryVerdict, heaviestVariant, LEGACY_MODEL_DIRS, selfTestVerdict,
   planAttempts, classifyFailure, deviceFingerprint, failureRecord,
+  MODEL, NATIVE_MODEL, planNative, nativeAttemptId, nativeFingerprint,
 } from "./modelPolicy.js";
 import { readMemoryInfo } from "./deviceMemory.js";
+import {
+  nativeStatus, downloadNative, cancelNativeDownload, loadNative, warmNative,
+  generateNative, cancelNative, unloadNative, deleteNativeModel,
+} from "./nativeModel.js";
 
 export { chooseVariant };
 
@@ -42,9 +47,21 @@ function loadFailures(fingerprint) {
 function saveFailures(fingerprint, failed) {
   try { store()?.setItem(FAILED_KEY, JSON.stringify({ fingerprint, failed })); } catch { /* mode privé */ }
 }
-/** Oublie les échecs mémorisés : « Réessayer » quand plus rien ne restait à tenter. */
+// Moteurs natifs en échec sur cet appareil : { fingerprint, failed: { vulkan: "raison", … } }.
+const NATIVE_FAILED_KEY = "velohnav_ai_native_ko";
+function loadNativeFailures(fingerprint) {
+  try {
+    const r = JSON.parse(store()?.getItem(NATIVE_FAILED_KEY) ?? "null");
+    return r?.fingerprint === fingerprint && r.failed && typeof r.failed === "object" ? r.failed : {};
+  } catch { return {}; }
+}
+function saveNativeFailures(fingerprint, failed) {
+  try { store()?.setItem(NATIVE_FAILED_KEY, JSON.stringify({ fingerprint, failed })); } catch { /* mode privé */ }
+}
+
+/** Oublie les échecs mémorisés (natifs compris) : « Réessayer », « Réessayer le GPU ». */
 export function forgetFailures() {
-  try { store()?.removeItem?.(FAILED_KEY); } catch { /* mode privé */ }
+  try { store()?.removeItem?.(FAILED_KEY); store()?.removeItem?.(NATIVE_FAILED_KEY); } catch { /* mode privé */ }
 }
 
 /** Échec de chargement ou de génération, avec un code traduisible côté interface. */
@@ -68,8 +85,13 @@ export class ModelError extends Error {
 let probeCache;
 // Tentative retenue (ou en cours) : variante + moteur.
 let current = null;
+// Moteur natif retenu ({ id, backend, engine, variant }) ; null : la voie WebGPU / processeur.
+let native = null;
+let nativeFp = "";
 // Tentatives du chargement en cours ou du dernier (modelReport).
 let report = { tried: [], skipped: [], chosen: null };
+// Échecs natifs mémorisés d'un lancement précédent (montrés comme les autres, gpuSetAside).
+let nativeSkipped = [];
 
 /** Taille du modèle à annoncer : celle de la tentative retenue, sinon la variante processeur. */
 export const chatModelMB = () => (current ? current.variant.mb : VARIANTS.wasm.mb);
@@ -123,6 +145,7 @@ export function isModelReady() {
 
 /** Arrête le worker (libère la mémoire et tout ce qui y était bloqué). */
 function killWorker(err) {
+  if (native) { native = null; unloadNative(); }
   if (worker) worker.terminate();
   worker = null;
   ready = false;
@@ -158,7 +181,7 @@ function onRuntimeMessage({ data }) {
   if (!p) return;
   pending.delete(data.id);
   if (data.error) p.reject(new ModelError("generate", { detail: data.error }));
-  else p.resolve(data.text);
+  else p.resolve({ text: data.text, tokens: data.tokens });
 }
 
 /**
@@ -256,8 +279,8 @@ const attemptLine = (x) => `${x.id} → ${x.code}${x.detail ? ` (${x.detail})` :
  * TOUT a échoué, ou si le réseau / la mémoire empêchent d'aller plus loin.
  */
 async function runLadder(onProgress, onPhase, gen) {
-  const tried = [];
-  report = { tried, skipped: [], chosen: null, gpu: null };
+  // Les tentatives natives faites juste avant (runNative) restent dans le rapport.
+  const tried = report.tried;
   let fingerprint = null, failed = {};
   const choose = (probe) => {
     if (probeCache === undefined) probeCache = probe ?? null;
@@ -266,7 +289,7 @@ async function runLadder(onProgress, onPhase, gen) {
     failed = loadFailures(fingerprint);
     const plan = planAttempts({ probe: probeCache, failed });
     // Ce qui vient d'échouer pendant CE chargement figure déjà dans `tried`
-    report.skipped = plan.skipped.filter((x) => !tried.some((y) => y.id === x.id));
+    report.skipped = [...nativeSkipped, ...plan.skipped.filter((x) => !tried.some((y) => y.id === x.id))];
     const a = plan.queue[0] || null;
     if (a) {
       current = a;
@@ -334,17 +357,91 @@ async function runLadder(onProgress, onPhase, gen) {
  * @returns {Promise<void>}
  */
 export function loadModel(onProgress, onPhase) {
-  if (ready && worker) return Promise.resolve();
+  if (ready && (worker || native)) return Promise.resolve();
   if (loadPromise) return loadPromise;
   const gen = generation;
-  loadPromise = checkMemory(heaviestVariant()).then(() => {
+  report = { tried: [], skipped: [], chosen: null, gpu: null };
+  nativeSkipped = [];
+  loadPromise = checkMemory(heaviestVariant()).then(async () => {
     // Désactivé pendant le contrôle mémoire : ne rien démarrer
+    if (gen !== generation) throw new ModelError("cancelled");
+    // Le moteur natif d'abord ; absent ou en échec, l'échelle part sans rien demander.
+    if (await runNative(onProgress, onPhase, gen)) return;
     if (gen !== generation) throw new ModelError("cancelled");
     return runLadder(onProgress, onPhase, gen);
   }).finally(() => {
     loadPromise = null; // succès : `ready` prend le relais ; échec : retry possible
   });
   return loadPromise;
+}
+
+/**
+ * Moteur natif (llama.cpp) : GPU Vulkan, puis processeur natif, sur le même GGUF. Rend true
+ * s'il est retenu. Rend false — sans erreur — si l'APK ne l'embarque pas, si l'appareil ne
+ * peut pas le faire tourner, ou si chaque moteur natif a échoué : l'échelle WebGPU /
+ * processeur prend alors le relais. Un moteur en échec (chargement, plantage du processus
+ * :llm, essai à vide) est mémorisé et n'est plus tenté sur cet appareil.
+ */
+async function runNative(onProgress, onPhase, gen) {
+  const status = await nativeStatus();
+  if (!status) return false;   // navigateur : pas de greffon
+  nativeFp = nativeFingerprint(status);
+  let failed = loadNativeFailures(nativeFp);
+  const plan = planNative({ status, failed });
+  // Échecs d'un lancement précédent : montrés à l'écran ; « non embarqué » ne l'est pas.
+  nativeSkipped = plan.skipped.filter((x) => x.reason.startsWith("failed-before")).map((x) => ({ id: nativeAttemptId(x.backend), reason: x.reason }));
+  console.info(`[IA] moteur natif : ${status.supported ? `disponible (${status.device}, ${status.soc})` : `indisponible (${status.reason})`}`
+    + `${plan.queue.length ? ` ; à tenter : ${plan.queue.join(", ")}` : ""}${plan.skipped.length ? ` ; écartés : ${plan.skipped.map((x) => `${x.backend} [${x.reason}]`).join(", ")}` : ""}`);
+  if (!plan.queue.length) return false;
+
+  const variant = { dtype: NATIVE_MODEL.dtype, device: "native", mb: NATIVE_MODEL.mb, files: [NATIVE_MODEL.file] };
+  let downloaded = false;
+  for (const backend of plan.queue) {
+    const id = nativeAttemptId(backend);
+    const att = { id, backend, variant, engine: { id: backend === "cpu" ? "native_cpu" : backend, device: "native" } };
+    current = att;
+    try {
+      if (!downloaded) {
+        onPhase?.({ phase: "download", device: "native", engine: att.engine.id, attempt: id, mb: variant.mb });
+        await downloadNative(onProgress);
+        downloaded = true;
+      }
+      if (gen !== generation) throw new ModelError("cancelled");
+      onPhase?.({ phase: "init", device: "native", engine: att.engine.id, attempt: id, mb: variant.mb });
+      const r = await loadNative(backend, LIMITS.initMs.native);
+      if (gen !== generation) { unloadNative(); throw new ModelError("cancelled"); }
+      native = att;
+      ready = true;
+      report.skipped = nativeSkipped;
+      report.chosen = {
+        id, dtype: variant.dtype, device: "native", engine: att.engine.id, mb: variant.mb, loadMs: r.loadMs,
+        ...(backend !== "cpu" ? { gpuName: r.info.description || r.info.device || "" } : {}),
+      };
+      console.info(`[IA] retenu : ${id} (${variant.mb} Mo, prêt en ${(r.loadMs / 1000).toFixed(1)} s)`
+        + ` ; appareil ${r.info.device || "?"} ${r.info.description || ""} ; ${r.info.threads ?? "?"} fils ; essai à vide ${JSON.stringify(r.selfTest)}`
+        + `${report.tried.length ? ` ; avant lui : ${report.tried.map(attemptLine).join(" ; ")}` : ""}`);
+      // Un seul modèle sur l'appareil : la copie ONNX de l'autre voie ne sert plus.
+      purgeCache((u) => u.includes(`/${MODEL.id}/`));
+      return true;
+    } catch (e) {
+      if (e?.code === "cancelled" || gen !== generation) {
+        cancelNativeDownload();
+        unloadNative();
+        throw new ModelError("cancelled");
+      }
+      current = null;
+      report.tried.push({ id, code: e?.code || "load", detail: e?.detail || e?.message || String(e) });
+      console.warn(`[IA] moteur natif ${backend} en échec (${e?.code}) :`, e?.detail || e);
+      // Réseau : rien de propre au moteur, on ne le condamne pas (le téléchargement reprendra).
+      if (e?.code === "network") return false;
+      failed = { ...failed, [backend]: String(e?.detail || e?.code || "load").slice(0, 200) };
+      saveNativeFailures(nativeFp, failed);
+      await unloadNative();
+    }
+  }
+  // Plus aucun moteur natif : le GGUF ne servira plus, il ne reste pas en plus du modèle ONNX.
+  deleteNativeModel();
+  return false;
 }
 
 /**
@@ -371,7 +468,10 @@ async function checkMemory(variant) {
 export function unloadModel() {
   generation++;
   if (abortLoad) abortLoad();
-  else if (worker) killWorker(new ModelError("cancelled"));
+  else if (worker || native) killWorker(new ModelError("cancelled"));
+  // Chargement natif en cours : runNative voit `generation` changer et s'arrête ;
+  // le téléchargement et le processus :llm s'arrêtent dès maintenant.
+  else if (loadPromise && current?.engine.device === "native") { cancelNativeDownload(); unloadNative(); }
 }
 
 /**
@@ -383,8 +483,9 @@ export function unloadModel() {
  * @param {object[]} [tools] comme generate : schémas passés au gabarit
  */
 export function warmUp(system, tools) {
-  if (!ready || !worker || !system) return;
-  worker.postMessage({ type: "warm", system, tools });
+  if (!ready || !system) return;
+  if (native) warmNative([{ role: "system", content: system }], tools);
+  else if (worker) worker.postMessage({ type: "warm", system, tools });
 }
 
 // Le gabarit de conversation n'est plus écrit ici à la main (il était propre à Qwen) :
@@ -448,10 +549,57 @@ export async function generateDetailed(system, history, opts = {}) {
     ...(system ? [{ role: "system", content: system }] : []),
     ...history.filter((m) => m.role === "user" || m.role === "assistant" || m.role === "tool"),
   ];
-  const id = ++seq;
   const seconds = Math.round(generateLimitMs() / 1000);
-  const full = await runGeneration(id, messages, opts, seconds);
-  return { raw: String(full ?? ""), text: cleanReply(full) };
+  const t0 = Date.now();
+  if (native) {
+    const { raw, stats } = await runNativeGeneration(messages, opts, seconds);
+    return { raw, text: cleanReply(raw), stats: speed(native, stats.genTokens, stats.genMs, Date.now() - t0) };
+  }
+  const id = ++seq;
+  const out = await runGeneration(id, messages, opts, seconds);
+  // Le worker ne distingue pas le calcul de la consigne de la génération : vitesse sur le total.
+  return { raw: String(out?.text ?? ""), text: cleanReply(out?.text), stats: speed(current, out?.tokens, null, Date.now() - t0) };
+}
+
+/**
+ * Vitesse de la réponse, rendue à l'écran pour comparer les voies sur la même question.
+ * `genMs` : temps de génération seul (moteur natif) ; sinon le temps total de la réponse.
+ */
+function speed(att, tokens, genMs, totalMs) {
+  const n = Number.isFinite(tokens) ? tokens : null;
+  const genOnly = Number.isFinite(genMs) && genMs > 0;
+  const ms = genOnly ? genMs : totalMs;
+  const s = { id: att?.id || "?", engine: att?.engine.id || "?", tokens: n, ms: Math.round(ms), totalMs, genOnly,
+    tps: n && ms > 0 ? Math.round((n / (ms / 1000)) * 10) / 10 : null };
+  console.info(`[IA] réponse ${s.id} : ${n ?? "?"} jetons en ${(ms / 1000).toFixed(2)} s${s.tps ? ` (${s.tps} j/s)` : ""}, total ${(totalMs / 1000).toFixed(2)} s`);
+  return s;
+}
+
+/**
+ * Génération sur le moteur natif, bornée dans le temps. Plantage du processus :llm ou
+ * erreur du moteur : ce moteur est écarté sur l'appareil et `recover` demande à l'interface
+ * de recharger — le moteur natif suivant, ou l'échelle WebGPU / processeur, part seul.
+ */
+async function runNativeGeneration(messages, opts, seconds) {
+  const a = native;
+  try {
+    return await withTimeout(generateNative(messages, { tools: opts.tools, maxNewTokens: opts.maxNewTokens ?? 256 }),
+      generateLimitMs(), "generate", () => { cancelNative(); });
+  } catch (e) {
+    if (e?.timedOut) {
+      const err = new ModelError("generate_timeout", { seconds });
+      killWorker(err);
+      throw err;
+    }
+    const failed = { ...loadNativeFailures(nativeFp), [a.backend]: String(e?.detail || e?.code || "generate").slice(0, 200) };
+    saveNativeFailures(nativeFp, failed);
+    report.tried.push({ id: a.id, code: e?.code || "generate", detail: e?.detail || e?.message });
+    report.chosen = null;
+    console.warn(`[IA] moteur natif ${a.backend} écarté après une erreur de génération :`, e?.detail || e);
+    const err = new ModelError("generate", { detail: e?.detail || e?.message, recover: true, attempts: report.tried });
+    killWorker(err);
+    throw err;
+  }
 }
 
 async function runGeneration(id, messages, opts, seconds) {

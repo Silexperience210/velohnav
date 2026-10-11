@@ -75,6 +75,53 @@ export const VARIANTS = Object.freeze({
   wasm:   variant("q4",    "wasm",   "_q4"),
 });
 
+/**
+ * Modèle du moteur natif (llama.cpp, src/ai/nativeModel.js) : le même LFM2.5-350M, au
+ * format GGUF, publié par LiquidAI sous la même licence LFM 1.0 que l'export ONNX.
+ * Octets et SHA-256 relevés sur l'API /tree du Hub (révision épinglée), vérifiés par le
+ * greffon avant d'accepter le fichier. Q4_0 plutôt que QAD-Q4_0 (même taille), mesuré au
+ * banc scripts/bench-native le 11/10 : réponses en français 10/10 contre 8/10, même vitesse.
+ */
+export const NATIVE_MODEL = Object.freeze({
+  id: "LiquidAI/LFM2.5-350M-GGUF",
+  revision: "657e078c94084481950a2d555a941481f715536b",
+  file: "LFM2.5-350M-Q4_0.gguf",
+  dtype: "q4_0",
+  bytes: 219_309_792,
+  sha256: "85e32858daafad55b7bcd6b97a1343ee0661188e8036f9862d14d6b563142f50",
+  mb: 219,
+});
+
+/**
+ * Moteurs natifs, dans l'ordre : le GPU (Vulkan), puis le processeur de llama.cpp, qui
+ * reste bien plus rapide que le processeur WASM (docs/MODELE.md : 71 contre 1 490 ms par
+ * jeton). Même fichier : passer de l'un à l'autre ne retélécharge rien.
+ */
+export const NATIVE_BACKENDS = Object.freeze(["vulkan", "cpu"]);
+/** Identifiant de tentative (même forme que l'échelle : « quantification/moteur »). */
+export const nativeAttemptId = (backend) => `${NATIVE_MODEL.dtype}/${backend === "cpu" ? "native_cpu" : backend}`;
+
+/**
+ * Moteurs natifs à tenter. `status` : réponse de LocalLlm.status() (null : pas de greffon,
+ * navigateur). APK sans le moteur (« not-built ») ou appareil incompatible : rien à tenter,
+ * et ce n'est pas une erreur — l'échelle WebGPU / processeur prend le relais.
+ * @param {{ status: null|{supported: boolean, reason?: string}, failed?: Record<string,string> }} p
+ * @returns {{ queue: string[], skipped: {backend: string, reason: string}[] }}
+ */
+export function planNative({ status, failed = {} }) {
+  if (!status) return { queue: [], skipped: [] };
+  if (!status.supported) return { queue: [], skipped: NATIVE_BACKENDS.map((backend) => ({ backend, reason: `unsupported: ${status.reason || "?"}` })) };
+  const queue = [], skipped = [];
+  for (const backend of NATIVE_BACKENDS) {
+    if (failed[backend]) skipped.push({ backend, reason: `failed-before: ${failed[backend]}` });
+    else queue.push(backend);
+  }
+  return { queue, skipped };
+}
+
+/** Empreinte des échecs natifs : un autre appareil, ou un autre fichier, les remet à zéro. */
+export const nativeFingerprint = (status) => `${NATIVE_MODEL.file}|${status?.device || "?"}|${status?.soc || "?"}`;
+
 /** Emplacement global où le worker pose le moteur choisi (lu par ortEngine.js). */
 export const ENGINE_SLOT = Symbol.for("velohnav.ort-engine");
 
@@ -464,6 +511,9 @@ export const LIMITS = Object.freeze({
   initMs: Object.freeze({   // de 100 % à « prêt » : cache + moteur + session
     webgpu: 180_000,
     wasm: 300_000,
+    // Moteur natif : chargement du GGUF (mmap) + compilation des nuanceurs Vulkan + essai à
+    // vide. 14,5 s mesurées au premier chargement Vulkan sur PC (cache de nuanceurs vide).
+    native: 120_000,
   }),
   generateMs: Object.freeze({   // une réponse complète
     webgpu: 180_000,
@@ -472,6 +522,9 @@ export const LIMITS = Object.freeze({
     // réponse courte, et une réponse de 96 jetons dépasse 180 s. Avec 180 s, la voie
     // processeur échouait sur toute réponse longue. Téléphone : plus lent, non mesuré.
     wasm: 600_000,
+    // Natif : 96 jetons à 100 j/s (processeur de PC) prennent 1 s ; un téléphone, même dix
+    // fois plus lent, reste loin de cette borne. Au-delà, le processus :llm est tué.
+    native: 120_000,
   }),
   probeMs: 10_000,          // requestAdapter / requestDevice
   localCheckMs: 4_000,      // HEAD sur /models/… (copie embarquée)
@@ -616,10 +669,12 @@ const SKIP_KIND = Object.freeze({
  *   téléchargerait (q4f16 n'est pas en cache s'il a été purgé ; q4 l'est, il sert au processeur).
  */
 export function gpuSetAside(report) {
-  if (!report?.chosen || report.chosen.device === "webgpu") return null;
+  if (!report?.chosen || report.chosen.device === "webgpu" || report.chosen.engine === "vulkan") return null;
   const reasons = [];
   let retry = false, downloadMB = 0;
-  for (const a of ATTEMPTS.filter((x) => x.engine.device === "webgpu")) {
+  // Le GPU natif (Vulkan) d'abord : c'est la voie principale quand l'APK l'embarque.
+  const nativeGpu = { id: nativeAttemptId("vulkan"), variant: { dtype: NATIVE_MODEL.dtype, mb: NATIVE_MODEL.mb } };
+  for (const a of [nativeGpu, ...ATTEMPTS.filter((x) => x.engine.device === "webgpu")]) {
     const t = report.tried?.find((x) => x.id === a.id);
     const s = report.skipped?.find((x) => x.id === a.id);
     let kind, detail;
