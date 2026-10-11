@@ -17,6 +17,7 @@ import {
   MODEL, NATIVE_MODEL, planNative, nativeAttemptId, nativeFingerprint, TRANSIENT,
 } from "./modelPolicy.js";
 import { readMemoryInfo } from "./deviceMemory.js";
+import { JOURNAL_KEY, journalEntry, withReply, parseJournal, pushEntry, replaceLast } from "./launchJournal.js";
 import {
   nativeStatus, downloadNative, cancelNativeDownload, loadNative, warmNative,
   generateNative, cancelNative, unloadNative, deleteNativeModel,
@@ -57,6 +58,25 @@ function loadNativeFailures(fingerprint) {
 }
 function saveNativeFailures(fingerprint, failed) {
   try { store()?.setItem(NATIVE_FAILED_KEY, JSON.stringify({ fingerprint, failed })); } catch { /* mode privé */ }
+}
+
+// ── Journal des chargements (launchJournal.js) : la preuve, lancement après lancement ──
+let journalLive = false;   // l'entrée la plus récente est celle du modèle en service
+const readJournalRaw = () => { try { return store()?.getItem(JOURNAL_KEY) ?? null; } catch { return null; } };
+const writeJournal = (entries) => { try { store()?.setItem(JOURNAL_KEY, JSON.stringify(entries)); } catch { /* mode privé */ } };
+/** Les chargements gardés, du plus ancien au plus récent. */
+export const readJournal = () => parseJournal(readJournalRaw());
+export function clearJournal() { journalLive = false; try { store()?.removeItem?.(JOURNAL_KEY); } catch { /* mode privé */ } }
+function recordLaunch(error = null) {
+  writeJournal(pushEntry(readJournal(), journalEntry(modelReport(), { at: Date.now(), error })));
+  journalLive = !error;
+}
+function recordReply(raw, stats) {
+  if (!journalLive) return;
+  const entries = readJournal();
+  if (!entries.length) return;
+  const next = withReply(entries.at(-1), { raw, stats });
+  if (next !== entries.at(-1)) writeJournal(replaceLast(entries, next));
 }
 
 /** Oublie les échecs mémorisés (natifs compris) : « Réessayer », « Réessayer le GPU ». */
@@ -403,7 +423,7 @@ export function loadModel(onProgress, onPhase) {
     // Désactivé pendant le contrôle mémoire : ne rien démarrer
     if (gen !== generation) throw new ModelError("cancelled");
     // Le moteur natif d'abord, s'il est prêt ; sinon l'échelle part sans rien demander.
-    if (await runNative(onPhase, gen)) { await measureLoadCost(before); return; }
+    if (await runNative(onPhase, gen)) { await measureLoadCost(before); recordLaunch(); return; }
     if (gen !== generation) throw new ModelError("cancelled");
     try {
       await runLadder(onProgress, onPhase, gen);
@@ -415,7 +435,12 @@ export function loadModel(onProgress, onPhase) {
       throw e;
     }
     await measureLoadCost(before);
+    recordLaunch();
     fetchNativeInBackground();
+  }).catch((e) => {
+    // Échec gardé au journal aussi : un lancement sans GPU NI processeur doit s'y voir.
+    if (e?.code !== "cancelled" && gen === generation) recordLaunch({ code: e?.code || "load", detail: e?.detail || e?.message || "" });
+    throw e;
   }).finally(() => {
     loadPromise = null; // succès : `ready` prend le relais ; échec : retry possible
   });
@@ -670,12 +695,17 @@ export async function generateDetailed(system, history, opts = {}) {
   const t0 = Date.now();
   if (native) {
     const { raw, stats } = await runNativeGeneration(messages, opts, seconds);
-    return { raw, text: cleanReply(raw), stats: { ...speed(native, stats.genTokens, stats.genMs, Date.now() - t0), ...(stats.mem ? { mem: stats.mem } : {}) } };
+    const st = { ...speed(native, stats.genTokens, stats.genMs, Date.now() - t0), ...(stats.mem ? { mem: stats.mem } : {}) };
+    recordReply(raw, st);
+    return { raw, text: cleanReply(raw), stats: st };
   }
   const id = ++seq;
   const out = await runGeneration(id, messages, opts, seconds);
   // Le worker ne distingue pas le calcul de la consigne de la génération : vitesse sur le total.
-  return { raw: String(out?.text ?? ""), text: cleanReply(out?.text), stats: speed(current, out?.tokens, null, Date.now() - t0) };
+  const raw = String(out?.text ?? "");
+  const st = speed(current, out?.tokens, null, Date.now() - t0);
+  recordReply(raw, st);
+  return { raw, text: cleanReply(out?.text), stats: st };
 }
 
 /**

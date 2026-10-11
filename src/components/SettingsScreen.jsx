@@ -6,6 +6,8 @@ import { Icon } from "../ui/icons.jsx";
 import { Badge, Button, Card, Field, Input, Row, Section, SegmentedControl, Switch } from "../ui/primitives.jsx";
 import { fmtAgo, positioning } from "../ui/format.js";
 import { TRANSITOUS_SOURCES_URL } from "../utils/transitous.js";
+import { readJournal, clearJournal } from "../ai/localModel.js";
+import { formatJournal, gpuStreak } from "../ai/launchJournal.js";
 
 const LN_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -40,6 +42,58 @@ function KeyField({ label, hint, value, onApply, placeholder }) {
         </div>
       )}
     </Field>
+  );
+}
+
+// Journal des chargements de l'IA locale : la preuve, sur l'appareil, que le GPU sert à
+// chaque lancement (voie, GPU, mémoire, sorties brutes des tours 1 et 2). Copiable tel quel.
+function AiJournal() {
+  const [open, setOpen] = useState(false);
+  const [entries, setEntries] = useState(() => readJournal());
+  const [copyState, flashCopy] = useFlash();
+  useEffect(() => { if (open) setEntries(readJournal()); }, [open]);
+  const streak = gpuStreak(entries);
+  const text = formatJournal(entries);
+  const copy = async () => {
+    try { await navigator.clipboard.writeText(text); flashCopy("success"); } catch { flashCopy("error"); }
+  };
+  return (
+    <>
+      <button type="button" className="vn-row vn-row--btn" aria-expanded={open} aria-controls="set-ai-journal"
+        onClick={() => setOpen(o => !o)} style={{ borderTop: "1px solid var(--vn-border)" }}>
+        <span className="vn-row__icon"><Icon name="cpu" size={16}/></span>
+        <span className="vn-row__body">
+          <span className="vn-row__title" style={{ display: "block" }}>{t("ui.set.ai_journal")}</span>
+          <span className="vn-row__sub" style={{ display: "block" }}>{t("ui.set.ai_journal_sub")}</span>
+        </span>
+        {streak.n > 0 && (
+          <Badge tone={streak.gpu === streak.n ? "good" : "warn"} style={{ marginRight: 8 }}>
+            <span className="vn-num">{t("ui.set.ai_journal_gpu", { gpu: streak.gpu, n: streak.n })}</span>
+          </Badge>
+        )}
+        <span style={{ color: "var(--vn-text3)", transition: "transform 180ms", transform: open ? "rotate(180deg)" : "none" }}>
+          <Icon name="chevronDown" size={18}/>
+        </span>
+      </button>
+      {open && (
+        <div id="set-ai-journal" style={{ padding: "12px 14px 14px", borderTop: "1px solid var(--vn-border)", display: "flex", flexDirection: "column", gap: 10 }}>
+          {entries.length ? (
+            <pre className="vn-mono" style={{ margin: 0, fontSize: 10.5, lineHeight: 1.5, color: "var(--vn-text2)",
+              whiteSpace: "pre-wrap", overflowWrap: "anywhere", maxHeight: 320, overflowY: "auto" }}>{text}</pre>
+          ) : (
+            <div className="vn-field__hint">{t("ui.set.ai_journal_empty")}</div>
+          )}
+          {entries.length > 0 && (
+            <div style={{ display: "flex", gap: 8 }}>
+              <Button size="sm" variant="secondary" state={copyState} onClick={copy}>
+                {copyState === "success" ? t("ui.set.ai_journal_copied") : t("ui.set.ai_journal_copy")}
+              </Button>
+              <Button size="sm" variant="secondary" onClick={() => { clearJournal(); setEntries([]); }}>{t("ui.set.ai_journal_clear")}</Button>
+            </div>
+          )}
+        </div>
+      )}
+    </>
   );
 }
 
@@ -169,6 +223,7 @@ function SettingsScreen({ apiKey, setApiKey, onRefresh, refreshing = false, apiL
                 onApply={v => setMapsKey?.(v)}/>
             </div>
           )}
+          <AiJournal/>
         </Card>
       </Section>
 

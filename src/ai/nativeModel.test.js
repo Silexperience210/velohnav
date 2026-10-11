@@ -156,6 +156,46 @@ describe("façade : le moteur natif d'abord, repli silencieux ensuite", () => {
     expect(out.stats.mem).toEqual({ rssMB: 430, peakMB: 470 });
   });
 
+  it("journal : 5 lancements consécutifs sur le GPU natif, tours 1 et 2 bruts gardés pour chacun", async () => {
+    // Au-delà du premier chargement, l'essai à vide passe aussi par `reply` : une phrase.
+    const say = (req) => (/Salut/.test(req.rest) ? "Salut !" : /Bonsoir/.test(req.rest) ? "Bonsoir !" : "Bien sûr, je peux vous aider.");
+    const p = fakePlugin({ reply: (_, req) => ok({ text: `${say(req)}<|im_end|>`, stats: STATS }) });
+    await setup(p);
+    const { gpuStreak } = await import("./launchJournal.js");
+    for (let i = 0; i < 5; i++) {
+      await mod.loadModel();
+      await mod.generateDetailed("", [{ role: "user", content: "Bonsoir" }]);
+      await mod.generateDetailed("", [{ role: "user", content: "Bonsoir" }, { role: "assistant", content: "Bonsoir !" }, { role: "user", content: "Salut" }]);
+      await mod.generateDetailed("", [{ role: "user", content: "encore" }]);   // tour 3 : pas gardé
+      mod.unloadModel();
+    }
+    const j = mod.readJournal();
+    expect(j).toHaveLength(5);
+    expect(gpuStreak(j)).toEqual({ n: 5, gpu: 5 });
+    for (const e of j) {
+      expect(e.chosen).toMatchObject({ id: "q4_0/vulkan", gpu: "Adreno (TM) 642L" });
+      expect(e.chosen.selfTest).toHaveLength(2);
+      expect(e.replies.map((r) => [r.raw, r.tps])).toEqual([["Bonsoir !<|im_end|>", 40], ["Salut !<|im_end|>", 40]]);
+    }
+  });
+
+  it("journal : un chargement en échec complet y figure aussi, avec sa raison", async () => {
+    const p = fakePlugin({ load: { vulkan: crash(), cpu: crash() } });
+    await setup(p);
+    const loading = mod.loadModel().catch((e) => e);
+    await vi.waitFor(() => expect(FakeWorker.all).toHaveLength(1));
+    const w = FakeWorker.all[0];
+    await vi.waitFor(() => expect(w.sent.length).toBeGreaterThan(0));
+    w.emit({ type: "probe", probe: null });
+    await vi.waitFor(() => expect(w.load).toBeTruthy());
+    w.emit({ type: "error", stage: "engine", message: "no available backend found" });
+    expect((await loading).code).toBe("all_failed");
+    const e = mod.readJournal().at(-1);
+    expect(e.chosen).toBeNull();
+    expect(e.error.code).toBe("all_failed");
+    expect(e.tried.map((x) => x.id)).toEqual(["q4_0/vulkan", "q4_0/native_cpu", "q4/wasm"]);
+  });
+
   it("APK construite sans le moteur : rien téléchargé, l'échelle WebGPU part, aucune erreur", async () => {
     const p = fakePlugin({ status: { supported: false, reason: "not-built" } });
     await setup(p);
