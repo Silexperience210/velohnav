@@ -22,7 +22,9 @@ describe("planNative : quels moteurs natifs tenter", () => {
 });
 
 // ── Façade rejouée avec un faux greffon LocalLlm ──────────────────────
-const STATUS = { supported: true, reason: "", device: "Xiaomi 2107113SG", soc: "QTI SM7325" };
+// modelExists : le GGUF est déjà sur l'appareil (le natif est « prêt »).
+const STATUS = { supported: true, reason: "", device: "Xiaomi 2107113SG", soc: "QTI SM7325", modelExists: true };
+const ABSENT = { ...STATUS, modelExists: false, partialBytes: 0 };
 const ok = (o) => ({ result: JSON.stringify({ ok: true, ...o }) });
 const bad = (error, log = "") => ({ result: JSON.stringify({ ok: false, error, log }) });
 const STATS = { promptTokens: 30, reusedTokens: 0, genTokens: 20, promptMs: 80, genMs: 500, eog: true };
@@ -69,6 +71,19 @@ class FakeWorker {
   constructor() { this.sent = []; FakeWorker.all.push(this); }
   postMessage(m) { this.sent.push(m); }
   terminate() { this.terminated = true; }
+  emit(data) { this.onmessage?.({ data }); }
+  get load() { return this.sent.find((m) => m.type === "load"); }
+}
+const GOOD_PROBE = {
+  adapter: true, isFallbackAdapter: false, info: { vendor: "qualcomm", architecture: "adreno-7xx" }, features: ["shader-f16"],
+  limits: { maxBufferSize: 2 ** 31, maxStorageBufferBindingSize: 2 ** 31 }, device: { ok: true },
+};
+// La voie JavaScript jusqu'à « prêt » : sonde, fichiers reçus, essai à vide juste (deux tours).
+async function ladderReady(w, probe = GOOD_PROBE) {
+  await vi.waitFor(() => expect(w.sent[0]).toEqual({ type: "probe" }));
+  w.emit({ type: "probe", probe });
+  for (const f of w.load.variant.files) w.emit({ type: "progress", ev: { status: "progress", file: f, loaded: 10, total: 10 } });
+  w.emit({ type: "ready", selfTest: "Bonjour ! Comment puis-je vous aider ?", selfTest2: "Bien sûr, je peux vous aider.", loadMs: 9000 });
 }
 
 describe("façade : le moteur natif d'abord, repli silencieux ensuite", () => {
@@ -98,13 +113,14 @@ describe("façade : le moteur natif d'abord, repli silencieux ensuite", () => {
     await mod.loadModel(() => {}, (x) => phases.push(x));
     expect(mod.isModelReady()).toBe(true);
     expect(FakeWorker.all).toHaveLength(0);
-    expect(p.download).toHaveBeenCalledWith(expect.objectContaining({ file: NATIVE_MODEL.file, bytes: NATIVE_MODEL.bytes, sha256: NATIVE_MODEL.sha256 }));
+    expect(p.download).not.toHaveBeenCalled();   // le GGUF est là : rien à attendre
     expect(p.load).toHaveBeenCalledTimes(1);
     expect(p.load.mock.calls[0][0]).toMatchObject({ backend: "vulkan" });
     const r = mod.modelReport();
     expect(r.chosen).toMatchObject({ id: "q4_0/vulkan", engine: "vulkan", device: "native", dtype: "q4_0", gpuName: "Adreno (TM) 642L" });
     expect(gpuSetAside(r)).toBeNull();   // le GPU sert : rien à justifier
-    expect(phases.map((x) => [x.phase, x.attempt])).toEqual([["download", "q4_0/vulkan"], ["init", "q4_0/vulkan"]]);
+    expect(r.native).toBeNull();          // natif retenu : pas de repli à dire
+    expect(phases.map((x) => [x.phase, x.attempt])).toEqual([["init", "q4_0/vulkan"]]);
     expect(mod.chatModelMB()).toBe(219);
   });
 
@@ -138,7 +154,7 @@ describe("façade : le moteur natif d'abord, repli silencieux ensuite", () => {
     const p = fakePlugin({ selfTest: { vulkan: ok({ text: "鹰<|im_end|>", stats: STATS }) } });
     await setup(p);
     await mod.loadModel();
-    expect(p.download).toHaveBeenCalledTimes(1);   // pas de second téléchargement
+    expect(p.download).not.toHaveBeenCalled();   // même fichier, déjà là : rien retéléchargé
     expect(p.load.mock.calls.map((c) => c[0].backend)).toEqual(["vulkan", "cpu"]);
     const r = mod.modelReport();
     expect(r.chosen).toMatchObject({ id: "q4_0/native_cpu", engine: "native_cpu" });
@@ -170,16 +186,73 @@ describe("façade : le moteur natif d'abord, repli silencieux ensuite", () => {
     expect(mod.modelReport().tried.map((x) => [x.id, x.code])).toEqual([["q4_0/vulkan", "crash"], ["q4_0/native_cpu", "load"]]);
     expect(mod.modelReport().tried[1].detail).toContain("llama_model_load: error");   // journal du moteur gardé
     expect(FakeWorker.all[0].sent[0]).toEqual({ type: "probe" });
+    expect(mod.modelReport().native).toMatchObject({ kind: "failed", detail: expect.stringContaining("q4_0/vulkan → crash") });
     mod.unloadModel();
   });
 
-  it("réseau coupé pendant le téléchargement du GGUF : rien de condamné, l'échelle prend le relais", async () => {
-    const p = fakePlugin({ download: async () => { throw Object.assign(new Error("HTTP 503"), { code: "network" }); } });
+  it("natif ABSENT (GGUF pas téléchargé) : repli immédiat vers WebGPU, rien attendu ; le GGUF arrive ensuite en arrière-plan", async () => {
+    let finish;
+    const p = fakePlugin({ status: ABSENT, download: () => new Promise((r) => { finish = r; }) });
+    await setup(p);
+    const loading = mod.loadModel();
+    await vi.waitFor(() => expect(FakeWorker.all).toHaveLength(1));
+    // Aucun moteur natif sollicité, aucun téléchargement de 219 Mo AVANT la voie JavaScript
+    expect(p.load).not.toHaveBeenCalled();
+    expect(p.download).not.toHaveBeenCalled();
+    expect(mod.modelReport().native).toEqual({ kind: "absent", detail: "" });
+    await ladderReady(FakeWorker.all[0]);
+    await loading;
+    // La voie GPU WebGPU qui fonctionne est gardée : le repli ne la remplace pas
+    expect(mod.isModelReady()).toBe(true);
+    expect(mod.modelReport().chosen).toMatchObject({ engine: "webgpu", device: "webgpu" });
+    expect(FakeWorker.all[0].load).toMatchObject({ engine: "webgpu" });
+    // Le modèle est prêt AVANT la fin du téléchargement natif, lancé ensuite en arrière-plan
+    await vi.waitFor(() => expect(p.download).toHaveBeenCalledTimes(1));
+    expect(p.download).toHaveBeenCalledWith(expect.objectContaining({ file: NATIVE_MODEL.file, bytes: NATIVE_MODEL.bytes, sha256: NATIVE_MODEL.sha256 }));
+    expect(store.has("velohnav_ai_native_ko")).toBe(false);   // rien de condamné
+    finish({ cached: false });
+    // Lancement suivant : le GGUF est là, le natif est retenu
+    mod.unloadModel();
+    p.status.mockImplementation(async () => STATUS);
+    await mod.loadModel();
+    expect(mod.modelReport().chosen).toMatchObject({ engine: "vulkan", device: "native" });
+    expect(mod.modelReport().native).toBeNull();
+    expect(FakeWorker.all).toHaveLength(1);
+  });
+
+  it("natif absent, téléchargement en arrière-plan coupé : rien de condamné, le GGUF partiel n'est pas effacé", async () => {
+    const p = fakePlugin({ status: { ...ABSENT, partialBytes: 50 * 2 ** 20 }, download: async () => { throw Object.assign(new Error("HTTP 503"), { code: "network" }); } });
+    await setup(p);
+    const loading = mod.loadModel();
+    await vi.waitFor(() => expect(FakeWorker.all).toHaveLength(1));
+    expect(mod.modelReport().native).toEqual({ kind: "absent", detail: "50 Mo reçus" });
+    await ladderReady(FakeWorker.all[0]);
+    await loading;
+    await vi.waitFor(() => expect(console.warn).toHaveBeenCalledWith(expect.stringMatching(/téléchargement du modèle natif interrompu \(network\)/), expect.anything()));
+    expect(mod.isModelReady()).toBe(true);
+    expect(store.has("velohnav_ai_native_ko")).toBe(false);
+    expect(p.deleteModels).not.toHaveBeenCalled();   // la reprise repartira du fichier partiel
+  });
+
+  it("greffon en échec (status rejette) : traité comme absent, la voie JavaScript part, aucune erreur", async () => {
+    const p = fakePlugin();
+    p.status.mockImplementation(async () => { throw new Error("plugin LocalLlm not implemented"); });
+    await setup(p);
+    const loading = mod.loadModel();
+    await vi.waitFor(() => expect(FakeWorker.all).toHaveLength(1));
+    expect(p.load).not.toHaveBeenCalled();
+    await ladderReady(FakeWorker.all[0]);
+    await expect(loading).resolves.toBeUndefined();
+    expect(mod.modelReport().chosen).toMatchObject({ engine: "webgpu" });
+  });
+
+  it("appareil incompatible : la raison est dite, la voie JavaScript part", async () => {
+    const p = fakePlugin({ status: { ...STATUS, supported: false, reason: "no-vulkan-1.2" } });
     await setup(p);
     mod.loadModel().catch(() => {});
     await vi.waitFor(() => expect(FakeWorker.all).toHaveLength(1));
-    expect(store.has("velohnav_ai_native_ko")).toBe(false);
-    expect(p.deleteModels).not.toHaveBeenCalled();   // la reprise repartira du fichier partiel
+    expect(mod.modelReport().native).toEqual({ kind: "unsupported", detail: "no-vulkan-1.2" });
+    expect(p.download).not.toHaveBeenCalled();
     mod.unloadModel();
   });
 

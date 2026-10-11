@@ -103,6 +103,8 @@ export function modelReport() {
     skipped: report.skipped.map((x) => ({ ...x })),
     chosen: report.chosen ? { ...report.chosen } : null,
     gpu: report.gpu ? { ...report.gpu } : null,
+    // Moteur natif écarté à ce chargement : { kind: absent|unsupported|failed|failed_before|timeout, detail }
+    native: report.native ? { ...report.native } : null,
   };
 }
 
@@ -373,15 +375,17 @@ export function loadModel(onProgress, onPhase) {
   if (ready && (worker || native)) return Promise.resolve();
   if (loadPromise) return loadPromise;
   const gen = generation;
-  report = { tried: [], skipped: [], chosen: null, gpu: null };
+  report = { tried: [], skipped: [], chosen: null, gpu: null, native: null };
   nativeSkipped = [];
+  fetchNativeLater = false;
   loadPromise = checkMemory(heaviestVariant()).then(async () => {
     // Désactivé pendant le contrôle mémoire : ne rien démarrer
     if (gen !== generation) throw new ModelError("cancelled");
-    // Le moteur natif d'abord ; absent ou en échec, l'échelle part sans rien demander.
-    if (await runNative(onProgress, onPhase, gen)) return;
+    // Le moteur natif d'abord, s'il est prêt ; sinon l'échelle part sans rien demander.
+    if (await runNative(onPhase, gen)) return;
     if (gen !== generation) throw new ModelError("cancelled");
-    return runLadder(onProgress, onPhase, gen);
+    await runLadder(onProgress, onPhase, gen);
+    fetchNativeInBackground(gen);
   }).finally(() => {
     loadPromise = null; // succès : `ready` prend le relais ; échec : retry possible
   });
@@ -391,11 +395,12 @@ export function loadModel(onProgress, onPhase) {
 /**
  * Moteur natif (llama.cpp) : GPU Vulkan, puis processeur natif, sur le même GGUF. Rend true
  * s'il est retenu. Rend false — sans erreur — si l'APK ne l'embarque pas, si l'appareil ne
- * peut pas le faire tourner, ou si chaque moteur natif a échoué : l'échelle WebGPU /
+ * peut pas le faire tourner, si le GGUF n'est pas encore sur l'appareil (téléchargé ensuite,
+ * en arrière-plan), ou si chaque moteur natif a échoué : l'échelle WebGPU /
  * processeur prend alors le relais. Un moteur en échec (chargement, plantage du processus
  * :llm, essai à vide) est mémorisé et n'est plus tenté sur cet appareil.
  */
-async function runNative(onProgress, onPhase, gen) {
+async function runNative(onPhase, gen) {
   const status = await nativeStatus();
   if (!status) return false;   // navigateur : pas de greffon
   nativeFp = nativeFingerprint(status);
@@ -404,21 +409,25 @@ async function runNative(onProgress, onPhase, gen) {
   // Échecs d'un lancement précédent : montrés à l'écran ; « non embarqué » ne l'est pas.
   nativeSkipped = plan.skipped.filter((x) => x.reason.startsWith("failed-before")).map((x) => ({ id: nativeAttemptId(x.backend), reason: x.reason }));
   console.info(`[IA] moteur natif : ${status.supported ? `disponible (${status.device}, ${status.soc})` : `indisponible (${status.reason})`}`
-    + `${plan.queue.length ? ` ; à tenter : ${plan.queue.join(", ")}` : ""}${plan.skipped.length ? ` ; écartés : ${plan.skipped.map((x) => `${x.backend} [${x.reason}]`).join(", ")}` : ""}`);
-  if (!plan.queue.length) return false;
+    + `${plan.queue.length ? ` ; à tenter : ${plan.queue.join(", ")}` : ""}${plan.skipped.length ? ` ; écartés : ${plan.skipped.map((x) => `${x.backend} [${x.reason}]`).join(", ")}` : ""}`
+    + `${status.supported ? ` ; modèle ${status.modelExists === true ? "présent" : "absent"}` : ""}`);
+  if (!status.supported) return status.reason === "not-built" ? false : nativeAside("unsupported", status.reason);
+  if (!plan.queue.length) return nativeAside("failed_before", plan.skipped.map((x) => x.reason.replace(/^failed-before:\s*/, "")).join(" ; "));
+  // Modèle absent : on n'attend pas 219 Mo. La voie WebGPU / processeur part tout de suite,
+  // le GGUF arrive en arrière-plan une fois le modèle prêt (fetchNativeLater), pour le
+  // lancement suivant. Avant : le téléchargement passait AVANT tout, sans borne, et le
+  // modèle ne chargeait jamais sur le téléphone.
+  if (status.modelExists !== true) {
+    fetchNativeLater = true;
+    return nativeAside("absent", status.partialBytes > 0 ? `${Math.round(status.partialBytes / 2 ** 20)} Mo reçus` : "");
+  }
 
   const variant = { dtype: NATIVE_MODEL.dtype, device: "native", mb: NATIVE_MODEL.mb, files: [NATIVE_MODEL.file] };
-  let downloaded = false;
   for (const backend of plan.queue) {
     const id = nativeAttemptId(backend);
     const att = { id, backend, variant, engine: { id: backend === "cpu" ? "native_cpu" : backend, device: "native" } };
     current = att;
     try {
-      if (!downloaded) {
-        onPhase?.({ phase: "download", device: "native", engine: att.engine.id, attempt: id, mb: variant.mb });
-        await downloadNative(onProgress);
-        downloaded = true;
-      }
       if (gen !== generation) throw new ModelError("cancelled");
       onPhase?.({ phase: "init", device: "native", engine: att.engine.id, attempt: id, mb: variant.mb });
       const r = await loadNative(backend, LIMITS.initMs.native);
@@ -449,8 +458,6 @@ async function runNative(onProgress, onPhase, gen) {
       current = null;
       report.tried.push({ id, code: e?.code || "load", detail: e?.detail || e?.message || String(e) });
       console.warn(`[IA] moteur natif ${backend} en échec (${e?.code}) :`, e?.detail || e);
-      // Réseau : rien de propre au moteur, on ne le condamne pas (le téléchargement reprendra).
-      if (e?.code === "network") return false;
       // Premier délai dépassé : noté, rejoué au lancement suivant (TRANSIENT) ; le second condamne.
       const transient = e?.code === "timeout" && !String(failed[backend] || "").startsWith(TRANSIENT);
       failed = { ...failed, [backend]: `${transient ? TRANSIENT : ""}${String(e?.detail || e?.code || "load").slice(0, 200)}` };
@@ -458,9 +465,33 @@ async function runNative(onProgress, onPhase, gen) {
       await unloadNative();
     }
   }
-  // Plus aucun moteur natif : le GGUF ne servira plus, il ne reste pas en plus du modèle ONNX.
-  deleteNativeModel();
+  // Plus aucun moteur natif à tenter, même plus tard : le GGUF ne servira plus, il ne reste
+  // pas en plus du modèle ONNX. Un délai passager, lui, garde le fichier pour le rejouer.
+  if (!planNative({ status, failed }).queue.length) deleteNativeModel();
+  const natTried = report.tried.filter((x) => x.id.startsWith(`${NATIVE_MODEL.dtype}/`));
+  return nativeAside(natTried.every((x) => x.code === "timeout") ? "timeout" : "failed", natTried.map(attemptLine).join(" ; "));
+}
+
+/** Le moteur natif n'est pas retenu à ce chargement : la raison, pour la ligne d'état. Rend false. */
+function nativeAside(kind, detail = "") {
+  report.native = { kind, detail: String(detail).slice(0, 240) };
+  console.info(`[IA] natif indisponible (${kind}${detail ? ` : ${detail}` : ""}) → WebGPU / processeur`);
   return false;
+}
+
+// GGUF absent au chargement : téléchargé en arrière-plan une fois la voie WebGPU / processeur
+// prête (pas de concurrence avec son propre téléchargement), pour le lancement suivant.
+let fetchNativeLater = false;
+let nativeFetch = null;   // téléchargement en arrière-plan en cours
+function fetchNativeInBackground(gen) {
+  if (!fetchNativeLater || nativeFetch) return;
+  fetchNativeLater = false;
+  console.info("[IA] modèle natif téléchargé en arrière-plan, pour le prochain lancement");
+  nativeFetch = downloadNative(null)
+    .then(() => { if (gen === generation) console.info("[IA] modèle natif reçu : il servira au prochain chargement"); })
+    // Réseau coupé, délai, annulation : rien de condamné, le fichier partiel est repris la fois suivante.
+    .catch((e) => console.warn(`[IA] téléchargement du modèle natif interrompu (${e?.code}) :`, e?.detail || e))
+    .finally(() => { nativeFetch = null; });
 }
 
 /**
@@ -491,6 +522,8 @@ export function unloadModel() {
   // Chargement natif en cours : runNative voit `generation` changer et s'arrête ;
   // le téléchargement et le processus :llm s'arrêtent dès maintenant.
   else if (loadPromise && current?.engine.device === "native") { cancelNativeDownload(); unloadNative(); }
+  // Conversation désactivée : le GGUF en arrière-plan s'arrête aussi (le partiel est repris plus tard).
+  if (nativeFetch) cancelNativeDownload();
 }
 
 /**
