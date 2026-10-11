@@ -423,14 +423,19 @@ async function runNative(onPhase, gen) {
   }
 
   const variant = { dtype: NATIVE_MODEL.dtype, device: "native", mb: NATIVE_MODEL.mb, files: [NATIVE_MODEL.file] };
+  // Budget commun aux moteurs natifs : épuisé, la voie JavaScript part (rien de condamné).
+  const deadline = Date.now() + LIMITS.nativeBudgetMs;
   for (const backend of plan.queue) {
+    const left = deadline - Date.now();
+    if (left <= 0) { console.info(`[IA] budget natif épuisé : ${backend} sera tenté au prochain chargement`); break; }
+    const allowed = Math.min(LIMITS.initMs.native, left);
     const id = nativeAttemptId(backend);
     const att = { id, backend, variant, engine: { id: backend === "cpu" ? "native_cpu" : backend, device: "native" } };
     current = att;
     try {
       if (gen !== generation) throw new ModelError("cancelled");
       onPhase?.({ phase: "init", device: "native", engine: att.engine.id, attempt: id, mb: variant.mb });
-      const r = await loadNative(backend, LIMITS.initMs.native);
+      const r = await loadNative(backend, allowed);
       if (gen !== generation) { unloadNative(); throw new ModelError("cancelled"); }
       native = att;
       ready = true;
@@ -459,10 +464,13 @@ async function runNative(onPhase, gen) {
       report.tried.push({ id, code: e?.code || "load", detail: e?.detail || e?.message || String(e) });
       console.warn(`[IA] moteur natif ${backend} en échec (${e?.code}) :`, e?.detail || e);
       // Premier délai dépassé : noté, rejoué au lancement suivant (TRANSIENT) ; le second condamne.
-      const transient = e?.code === "timeout" && !String(failed[backend] || "").startsWith(TRANSIENT);
+      // Un délai raccourci par le budget commun reste passager : il ne prouve rien du moteur.
+      const transient = e?.code === "timeout"
+        && (allowed < LIMITS.initMs.native || !String(failed[backend] || "").startsWith(TRANSIENT));
       failed = { ...failed, [backend]: `${transient ? TRANSIENT : ""}${String(e?.detail || e?.code || "load").slice(0, 200)}` };
       saveNativeFailures(nativeFp, failed);
-      await unloadNative();
+      // Un processus :llm qui ne répond plus ne retient pas la voie JavaScript.
+      await withTimeout(unloadNative(), LIMITS.nativeUnloadMs, "native unload").catch(() => {});
     }
   }
   // Plus aucun moteur natif à tenter, même plus tard : le GGUF ne servira plus, il ne reste

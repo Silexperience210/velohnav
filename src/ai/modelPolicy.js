@@ -544,6 +544,17 @@ export const LIMITS = Object.freeze({
   }),
   probeMs: 10_000,          // requestAdapter / requestDevice
   localCheckMs: 4_000,      // HEAD sur /models/… (copie embarquée)
+  // Moteur natif : il passe AVANT la voie JavaScript, il ne doit donc jamais la faire
+  // attendre sans fin. Au-delà de ces délais, repli vers WebGPU / processeur.
+  nativeStatusMs: 5_000,    // greffon (import compris) et LocalLlm.status()
+  // Tous les moteurs natifs d'un chargement réunis : Vulkan figé (initMs.native) laisse
+  // 30 s au processeur natif, puis la voie JavaScript part. Un essai raccourci par ce
+  // budget ne compte jamais comme un échec définitif.
+  nativeBudgetMs: 150_000,
+  nativeUnloadMs: 5_000,    // arrêt du processus :llm après un échec
+  // GGUF en arrière-plan (la voie JavaScript est déjà prête) : stallMs sans aucun octet,
+  // ou cette durée au total, et il est arrêté ; le partiel est repris au lancement suivant.
+  nativeDownloadMs: 1_800_000,
 });
 
 /**

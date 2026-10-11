@@ -8,7 +8,7 @@
 // Une réponse du moteur est un JSON (vh_llm_jni.cpp) : { ok, error, log } ou { ok, info } /
 // { ok, text, stats }. Un plantage du processus :llm (pilote GPU) rejette avec le code
 // « crash ». Toutes ces erreurs remontent telles quelles, journal du moteur compris.
-import { NATIVE_MODEL, NATIVE_SELF_TEST, SECOND_TURN, secondTurn, selfTestVerdict, withTimeout } from "./modelPolicy.js";
+import { LIMITS, NATIVE_MODEL, NATIVE_SELF_TEST, SECOND_TURN, secondTurn, selfTestVerdict, withTimeout } from "./modelPolicy.js";
 import { splitPrompt } from "./chatTemplate.js";
 
 let plugin;   // undefined : pas encore cherché ; null : absent
@@ -59,27 +59,51 @@ const rethrow = (code) => (e) => {
  * @returns {Promise<null | {supported: boolean, reason: string, device: string, soc: string, modelExists?: boolean}>}
  */
 export async function nativeStatus() {
-  const p = await getPlugin();
-  if (!p) return null;
-  try { return await withTimeout(p.status({ file: NATIVE_MODEL.file }), 5000, "native status"); } catch { return null; }
+  // Borné en entier (import du greffon compris). Greffon qui ne répond pas ou qui échoue :
+  // indisponible, avec sa raison (la ligne d'état la montre).
+  const ask = async () => {
+    const p = await getPlugin();
+    return p ? await p.status({ file: NATIVE_MODEL.file }) : null;
+  };
+  try {
+    return (await withTimeout(ask(), LIMITS.nativeStatusMs, "native status")) || null;
+  } catch (e) {
+    return { supported: false, reason: String(e?.message || e).slice(0, 200) };
+  }
 }
 
 /**
  * Télécharge le GGUF (repris s'il était interrompu, taille et SHA-256 vérifiées par le
- * greffon). `onProgress(pct)`. Rien à faire s'il est déjà là.
+ * greffon). `onProgress(pct)`. Rien à faire s'il est déjà là. Borné : `stallMs` sans aucun
+ * octet reçu, ou `maxMs` au total, et il est annulé (NativeError « timeout », partiel gardé).
  */
-export async function downloadNative(onProgress) {
+export async function downloadNative(onProgress, { stallMs = LIMITS.stallMs, maxMs = LIMITS.nativeDownloadMs } = {}) {
   const p = await getPlugin();
+  let stallTimer, stalled;
+  const guard = new Promise((_, reject) => { stalled = reject; });
+  guard.catch(() => {});
+  const arm = () => {
+    clearTimeout(stallTimer);
+    stallTimer = setTimeout(() => stalled(Object.assign(new Error(`download: no data for ${Math.round(stallMs / 1000)} s`), { timedOut: true })), stallMs);
+  };
   const sub = await p.addListener?.("downloadProgress", (ev) => {
+    arm();
     if (ev?.total > 0) onProgress?.(Math.min(100, Math.round((ev.loaded / ev.total) * 100)));
   });
+  arm();
   try {
     const url = `https://huggingface.co/${NATIVE_MODEL.id}/resolve/${NATIVE_MODEL.revision}/${NATIVE_MODEL.file}`;
-    await p.download({ file: NATIVE_MODEL.file, url, bytes: NATIVE_MODEL.bytes, sha256: NATIVE_MODEL.sha256 });
+    const dl = p.download({ file: NATIVE_MODEL.file, url, bytes: NATIVE_MODEL.bytes, sha256: NATIVE_MODEL.sha256 });
+    await withTimeout(Promise.race([dl, guard]), maxMs, "download");
     onProgress?.(100);
   } catch (e) {
+    if (e?.timedOut) {
+      try { await withTimeout(p.cancelDownload(), LIMITS.nativeUnloadMs, "cancel"); } catch { /* il s'arrêtera seul */ }
+      throw new NativeError("timeout", e.message);
+    }
     throw new NativeError(e?.code === "cancelled" ? "cancelled" : "network", e?.message || String(e));
   } finally {
+    clearTimeout(stallTimer);
     sub?.remove?.();
   }
 }

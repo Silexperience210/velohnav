@@ -80,8 +80,8 @@ const GOOD_PROBE = {
 };
 // La voie JavaScript jusqu'à « prêt » : sonde, fichiers reçus, essai à vide juste (deux tours).
 async function ladderReady(w, probe = GOOD_PROBE) {
-  await vi.waitFor(() => expect(w.sent[0]).toEqual({ type: "probe" }));
-  w.emit({ type: "probe", probe });
+  await vi.waitFor(() => expect(w.sent.length).toBeGreaterThan(0));
+  if (w.sent[0].type === "probe") w.emit({ type: "probe", probe });   // sonde déjà faite : pas de seconde
   for (const f of w.load.variant.files) w.emit({ type: "progress", ev: { status: "progress", file: f, loaded: 10, total: 10 } });
   w.emit({ type: "ready", selfTest: "Bonjour ! Comment puis-je vous aider ?", selfTest2: "Bien sûr, je peux vous aider.", loadMs: 9000 });
 }
@@ -241,6 +241,7 @@ describe("façade : le moteur natif d'abord, repli silencieux ensuite", () => {
     const loading = mod.loadModel();
     await vi.waitFor(() => expect(FakeWorker.all).toHaveLength(1));
     expect(p.load).not.toHaveBeenCalled();
+    expect(mod.modelReport().native).toEqual({ kind: "unsupported", detail: "plugin LocalLlm not implemented" });
     await ladderReady(FakeWorker.all[0]);
     await expect(loading).resolves.toBeUndefined();
     expect(mod.modelReport().chosen).toMatchObject({ engine: "webgpu" });
@@ -302,6 +303,95 @@ describe("façade : le moteur natif d'abord, repli silencieux ensuite", () => {
     await mod.loadModel();
     expect(mod.modelReport().chosen).toMatchObject({ engine: "native_cpu" });
     expect((await mod.generateDetailed("", [{ role: "user", content: "Salut" }])).text).toBe("Salut !");
+  });
+
+  it("greffon muet (status ne répond jamais) : 5 s au plus, puis la voie JavaScript", async () => {
+    vi.useFakeTimers();
+    try {
+      const p = fakePlugin();
+      p.status.mockImplementation(() => new Promise(() => {}));
+      await setup(p);
+      const loading = mod.loadModel();
+      await vi.advanceTimersByTimeAsync(4_900);
+      expect(FakeWorker.all).toHaveLength(0);
+      await vi.advanceTimersByTimeAsync(200);
+      expect(FakeWorker.all).toHaveLength(1);
+      expect(mod.modelReport().native).toMatchObject({ kind: "unsupported", detail: expect.stringContaining("native status") });
+      await ladderReady(FakeWorker.all[0]);
+      await loading;
+      expect(mod.modelReport().chosen).toMatchObject({ engine: "webgpu" });
+      expect(p.load).not.toHaveBeenCalled();
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("natif prêt mais figé sur les DEUX moteurs : 150 s au total, puis la voie JavaScript ; rien de condamné, GGUF gardé", async () => {
+    vi.useFakeTimers();
+    try {
+      const p = fakePlugin();
+      p.load.mockImplementation(() => new Promise(() => {}));
+      p.unload.mockImplementation(() => new Promise(() => {}));   // :llm muet, même pour s'arrêter
+      await setup(p);
+      const loading = mod.loadModel();
+      // Vulkan : délai complet (initMs.native, 120 s), puis l'arrêt borné (5 s)
+      await vi.advanceTimersByTimeAsync(126_000);
+      expect(p.load.mock.calls.map((c) => c[0].backend)).toEqual(["vulkan", "cpu"]);
+      expect(FakeWorker.all).toHaveLength(0);
+      // Processeur natif : le reste du budget (jusqu'à 150 s), arrêt borné, voie JavaScript à 155 s
+      await vi.advanceTimersByTimeAsync(28_000);
+      expect(FakeWorker.all).toHaveLength(0);
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(FakeWorker.all).toHaveLength(1);
+      const r = mod.modelReport();
+      expect(r.tried.map((x) => [x.id, x.code])).toEqual([["q4_0/vulkan", "timeout"], ["q4_0/native_cpu", "timeout"]]);
+      expect(r.native).toMatchObject({ kind: "timeout" });
+      const ko = JSON.parse(store.get("velohnav_ai_native_ko")).failed;
+      expect(ko.vulkan).toMatch(/^transient: /);
+      expect(ko.cpu).toMatch(/^transient: /);
+      expect(p.deleteModels).not.toHaveBeenCalled();
+      await ladderReady(FakeWorker.all[0]);
+      await loading;
+      expect(mod.isModelReady()).toBe(true);
+      expect(mod.modelReport().chosen).toMatchObject({ engine: "webgpu" });
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("processeur natif raccourci par le budget, deux lancements de suite : jamais condamné (seul un délai complet compte)", async () => {
+    vi.useFakeTimers();
+    try {
+      const p = fakePlugin();
+      p.load.mockImplementation(() => new Promise(() => {}));
+      await setup(p);
+      for (let i = 0; i < 2; i++) {
+        const loading = mod.loadModel();
+        await vi.advanceTimersByTimeAsync(156_000);
+        await ladderReady(FakeWorker.all.at(-1));
+        await loading;
+        mod.unloadModel();
+      }
+      const ko = JSON.parse(store.get("velohnav_ai_native_ko")).failed;
+      expect(ko.vulkan).not.toMatch(/^transient: /);   // deux délais complets : condamné (comme avant)
+      expect(ko.cpu).toMatch(/^transient: /);          // 30 s seulement : rejoué
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("GGUF en arrière-plan qui ne reçoit plus rien : arrêté après 90 s, rien de condamné, le modèle reste prêt", async () => {
+    vi.useFakeTimers();
+    try {
+      const p = fakePlugin({ status: ABSENT, download: () => new Promise(() => {}) });
+      await setup(p);
+      const loading = mod.loadModel();
+      await vi.waitFor(() => expect(FakeWorker.all).toHaveLength(1));
+      await ladderReady(FakeWorker.all[0]);
+      await loading;
+      await vi.waitFor(() => expect(p.download).toHaveBeenCalledTimes(1));
+      await vi.advanceTimersByTimeAsync(89_000);
+      expect(p.cancelDownload).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(p.cancelDownload).toHaveBeenCalled();
+      expect(console.warn).toHaveBeenCalledWith(expect.stringMatching(/interrompu \(timeout\)/), expect.anything());
+      expect(mod.isModelReady()).toBe(true);
+      expect(store.has("velohnav_ai_native_ko")).toBe(false);
+    } finally { vi.useRealTimers(); }
   });
 
   it("conversation désactivée : le processus :llm est arrêté, sa mémoire rendue", async () => {
