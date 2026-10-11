@@ -92,6 +92,8 @@ for (const backend of backends.split(",")) {
       + `${r.genTokens} j en ${(r.genMs / 1000).toFixed(2)} s · prompt ${r.promptTokens} j dont ${r.reused} repris, ${r.promptMs.toFixed(0)} ms`);
   });
   const n = res.length - 1;
+  const mem = lines.find((l) => l.mem)?.mem;
   console.log(`  ── ${backend} : génération ${(genT / (genMs / 1000)).toFixed(1)} j/s · prompt ${(prT / (prMs / 1000)).toFixed(0)} j/s (hors consigne reprise)`
-    + ` · réponses en ${lang} ${fr}/${n} · affichées ${shown}/${n}`);
+    + ` · réponses en ${lang} ${fr}/${n} · affichées ${shown}/${n}`
+    + `${mem ? ` · mémoire résidente ${Math.round(mem.rssKb / 1024)} Mio, pic ${Math.round(mem.hwmKb / 1024)} Mio` : ""}`);
 }

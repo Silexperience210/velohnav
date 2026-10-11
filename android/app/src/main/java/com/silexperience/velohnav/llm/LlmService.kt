@@ -3,6 +3,7 @@ package com.silexperience.velohnav.llm
 import android.app.Service
 import android.content.Intent
 import android.os.Bundle
+import android.os.Debug
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
@@ -79,12 +80,40 @@ class LlmService : Service() {
         libError?.let { return """{"ok":false,"error":${quote("unsupported: $it")}}""".toByteArray() }
         return when (what) {
             DEVICES -> """{"ok":true,"devices":${String(LlmNative.devices())}}""".toByteArray()
-            LOAD -> LlmNative.load(d.getByteArray("path")!!, d.getByteArray("backend")!!, d.getInt("nCtx"), d.getInt("nThreads"))
+            LOAD -> withMemory(LlmNative.load(d.getByteArray("path")!!, d.getByteArray("backend")!!, d.getInt("nCtx"), d.getInt("nThreads")), full = true)
             WARM -> LlmNative.warm(d.getByteArray("prefix")!!)
-            GENERATE -> LlmNative.generate(d.getByteArray("prefix")!!, d.getByteArray("rest")!!, d.getInt("maxTokens"), null)
+            GENERATE -> withMemory(LlmNative.generate(d.getByteArray("prefix")!!, d.getByteArray("rest")!!, d.getInt("maxTokens"), null), full = false)
             UNLOAD -> { LlmNative.unload(); """{"ok":true}""".toByteArray() }
             else -> """{"ok":false,"error":"unknown request $what"}""".toByteArray()
         }
+    }
+
+    /**
+     * Mémoire du processus :llm jointe à la réponse (« mem », en Mo) : résidente et pic
+     * (/proc/self/status, immédiat). Au chargement seulement, aussi la PSS totale et la part
+     * « graphique » (tampons du pilote GPU) de Debug.MemoryInfo — plus coûteuse à lire (smaps).
+     * Sur téléphone la mémoire est unifiée : les poids envoyés au GPU Vulkan comptent ici.
+     */
+    private fun withMemory(json: ByteArray, full: Boolean): ByteArray {
+        if (json.size < 3 || json[0] != '{'.code.toByte()) return json
+        val m = StringBuilder()
+        try {
+            var rss = -1L; var hwm = -1L
+            java.io.File("/proc/self/status").forEachLine { l ->
+                if (l.startsWith("VmRSS:")) rss = l.substring(6).trim().split(" ")[0].toLong()
+                else if (l.startsWith("VmHWM:")) hwm = l.substring(6).trim().split(" ")[0].toLong()
+            }
+            m.append("\"rssMB\":${rss / 1024},\"peakMB\":${hwm / 1024}")
+            if (full) {
+                val mi = Debug.MemoryInfo().also { Debug.getMemoryInfo(it) }
+                m.append(",\"pssMB\":${mi.totalPss / 1024}")
+                mi.getMemoryStat("summary.graphics")?.toLongOrNull()?.let { m.append(",\"gfxMB\":${it / 1024}") }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "mémoire illisible : ${e.message}")
+            return json
+        }
+        return "{\"mem\":{$m},".toByteArray() + json.copyOfRange(1, json.size)
     }
 
     private val messenger = Messenger(handler)

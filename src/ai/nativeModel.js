@@ -117,7 +117,8 @@ export async function cancelNativeDownload() {
  * Charge le modèle sur `backend` (« vulkan » ou « cpu ») puis fait l'essai à vide : une
  * phrase française courte (NATIVE_SELF_TEST), jugée par selfTestVerdict. Un GPU qui se
  * charge mais calcule faux (sortie « 鹰 » sur WebGPU Adreno) est donc écarté ici.
- * @returns {Promise<{ info: object, selfTest: string, loadMs: number }>}
+ * @returns {Promise<{ info: object, selfTest: string, selfTestRaw: string[], mem: object|null, loadMs: number }>}
+ *   mem : mémoire du processus :llm après le chargement (Mo : rssMB, peakMB, pssMB, gfxMB)
  */
 export async function loadNative(backend, timeoutMs) {
   const p = await getPlugin();
@@ -137,7 +138,8 @@ export async function loadNative(backend, timeoutMs) {
     const b = await turn(secondTurn(NATIVE_SELF_TEST.messages, a.said), NATIVE_SELF_TEST.secondMaxNewTokens);
     const v2 = selfTestVerdict(b.said, { minWords: SECOND_TURN.minWords });
     if (!v2.ok) throw new NativeError("selftest", `tour 2 ${v2.reason}: ${JSON.stringify(a.raw)} puis ${JSON.stringify(b.raw)}`);
-    return { info: r.info || {}, selfTest: `${a.said} | ${b.said}`, loadMs: Date.now() - t0 };
+    // Sorties BRUTES des deux tours : la preuve, à l'écran et au journal, que le GPU calcule juste.
+    return { info: r.info || {}, selfTest: `${a.said} | ${b.said}`, selfTestRaw: [a.raw, b.raw], mem: r.mem || null, loadMs: Date.now() - t0 };
   };
   try {
     return await withTimeout(run(), timeoutMs, "native load", () => { unloadNative(); });
@@ -167,7 +169,7 @@ export async function generateNative(messages, { tools, maxNewTokens = 256 } = {
   // La fin de tour n'est pas rendue en texte par le moteur : la remettre, sans quoi
   // cleanReply prendrait une réponse complète pour une réponse coupée.
   const text = String(r.text ?? "");
-  return { raw: r.stats?.eog && !text.includes("<|im_end|>") ? `${text}<|im_end|>` : text, stats: r.stats || {} };
+  return { raw: r.stats?.eog && !text.includes("<|im_end|>") ? `${text}<|im_end|>` : text, stats: { ...r.stats, ...(r.mem ? { mem: r.mem } : {}) } };
 }
 
 /** Interrompt une génération en cours. */

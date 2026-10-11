@@ -269,9 +269,9 @@ self.onmessage = async ({ data }) => {
       await load(msg);
       // loadMs : du message « load » à l'essai à vide réussi (téléchargement compris)
       const t1 = performance.now();
-      const [selfTest, selfTest2] = await selfTestRun();
+      const { said: [selfTest, selfTest2], raw: selfTestRaw } = await selfTestRun();
       const t2 = performance.now();
-      post({ type: "ready", selfTest, selfTest2, loadMs: Math.round(t2 - t0), selfTestMs: Math.round(t2 - t1), gpu: gpuInfo });
+      post({ type: "ready", selfTest, selfTest2, selfTestRaw, loadMs: Math.round(t2 - t0), selfTestMs: Math.round(t2 - t1), gpu: gpuInfo });
     } catch (e) {
       post({ type: "error", ...errorReport(e) });
     }
@@ -303,16 +303,17 @@ self.onmessage = async ({ data }) => {
  */
 async function selfTestRun() {
   const said = (raw) => raw.split("<|im_end|>")[0].replace(/<\|[a-z_]+\|>/g, "").trim();
-  const first = said(await complete({
+  const raw1 = await complete({
     messages: SELF_TEST.messages,
     options: { max_new_tokens: SELF_TEST.maxNewTokens, do_sample: false },
-  }));
+  });
   // Second tour (secondTurn) : un état faussé entre les tours ne se voit qu'ici.
-  const second = said(await complete({
-    messages: secondTurn(SELF_TEST.messages, first),
+  const raw2 = await complete({
+    messages: secondTurn(SELF_TEST.messages, said(raw1)),
     options: { max_new_tokens: SELF_TEST.secondMaxNewTokens, do_sample: false },
-  }));
-  return [first, second];
+  });
+  // Sorties brutes gardées : la preuve qu'un GPU calcule juste se lit dessus.
+  return { said: [said(raw1), said(raw2)], raw: [raw1, raw2] };
 }
 
 /**

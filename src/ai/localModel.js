@@ -278,7 +278,8 @@ function runAttempt(choose, onProgress, onPhase) {
         w.onmessage = onRuntimeMessage;
         w.onerror = (e) => killWorker(new ModelError("generate", { detail: e?.message || "worker error" }));
         ready = true;
-        done(null, { attempt: att, loadMs: data.loadMs, gpu: data.gpu || null });
+        done(null, { attempt: att, loadMs: data.loadMs, gpu: data.gpu || null,
+          selfTestRaw: Array.isArray(data.selfTestRaw) ? data.selfTestRaw.map(String) : [data.selfTest, data.selfTest2].filter((x) => x !== undefined).map(String) });
       } else if (data.type === "error") {
         // Échec à l'import du moteur : propre à la tentative, pas au réseau.
         const phase = data.stage === "engine" ? "engine" : st.phase;
@@ -368,6 +369,7 @@ async function runLadder(onProgress, onPhase, gen) {
       id: r.attempt.id, dtype: r.attempt.variant.dtype, device: r.attempt.engine.device,
       engine: r.attempt.engine.id, mb: r.attempt.variant.mb,
       ...(Number.isFinite(r.loadMs) ? { loadMs: r.loadMs } : {}),
+      selfTestRaw: r.selfTestRaw || [],
       // Réglage GPU retenu et fonctions retirées du device (subgroups) : dit à l'écran et au journal
       ...(r.attempt.gpu ? { gpuMode: r.attempt.gpu.mode, dropped: r.gpu?.dropped || [] } : {}),
     };
@@ -397,11 +399,11 @@ export function loadModel(onProgress, onPhase) {
   // Un téléchargement terminé a déjà servi (ce chargement le trouve sur l'appareil) ; en cours,
   // il continue et reste suivi.
   if (!nativeFetch && nativeDl) setNativeDl(null);
-  loadPromise = checkMemory(heaviestVariant()).then(async () => {
+  loadPromise = checkMemory(heaviestVariant()).then(async (before) => {
     // Désactivé pendant le contrôle mémoire : ne rien démarrer
     if (gen !== generation) throw new ModelError("cancelled");
     // Le moteur natif d'abord, s'il est prêt ; sinon l'échelle part sans rien demander.
-    if (await runNative(onPhase, gen)) return;
+    if (await runNative(onPhase, gen)) { await measureLoadCost(before); return; }
     if (gen !== generation) throw new ModelError("cancelled");
     try {
       await runLadder(onProgress, onPhase, gen);
@@ -412,6 +414,7 @@ export function loadModel(onProgress, onPhase) {
       if (e?.code !== "cancelled") fetchNativeInBackground();
       throw e;
     }
+    await measureLoadCost(before);
     fetchNativeInBackground();
   }).finally(() => {
     loadPromise = null; // succès : `ready` prend le relais ; échec : retry possible
@@ -473,6 +476,8 @@ async function runNative(onPhase, gen) {
       report.skipped = nativeSkipped;
       report.chosen = {
         id, dtype: variant.dtype, device: "native", engine: att.engine.id, mb: variant.mb, loadMs: r.loadMs,
+        selfTestRaw: r.selfTestRaw || [], ...(r.mem ? { mem: r.mem } : {}),
+        ...(r.info.kv ? { kv: r.info.kv } : {}),
         ...(backend !== "cpu" ? { gpuName: r.info.description || r.info.device || "" } : {}),
       };
       console.info(`[IA] retenu : ${id} (${variant.mb} Mo, prêt en ${(r.loadMs / 1000).toFixed(1)} s)`
@@ -550,6 +555,22 @@ async function checkMemory(variant) {
   const v = memoryVerdict(info, variant);
   console.info(`[IA] mémoire : ${v.reason} (besoin ≈ ${v.needMB} Mo, disponible ${v.availMB ?? "?"} Mo)`);
   if (!v.ok) throw new ModelError("memory", { detail: v.reason, needMB: v.needMB, availMB: v.availMB ?? 0 });
+  return info;
+}
+
+/**
+ * Ce que le chargement a coûté au système : mémoire libre avant, moins mémoire libre une
+ * fois prêt (Android, ActivityManager). Même mesure pour toutes les voies — la WebView
+ * ne voit ni ses tampons GPU ni le processus :llm, le système, lui, voit tout. Approchée :
+ * d'autres applications bougent dans le même temps. Rien si la mémoire libre est inconnue.
+ */
+async function measureLoadCost(before) {
+  if (!Number.isFinite(before?.availBytes) || !report.chosen) return;
+  const after = await readMemoryInfo().catch(() => null);
+  if (!Number.isFinite(after?.availBytes)) return;
+  report.chosen.sysMB = Math.round((before.availBytes - after.availBytes) / 1e6);
+  report.chosen.availMB = Math.round(after.availBytes / 1e6);
+  console.info(`[IA] coût du chargement : ${report.chosen.sysMB} Mo de mémoire système (libre ensuite : ${report.chosen.availMB} Mo)`);
 }
 
 /**
@@ -649,7 +670,7 @@ export async function generateDetailed(system, history, opts = {}) {
   const t0 = Date.now();
   if (native) {
     const { raw, stats } = await runNativeGeneration(messages, opts, seconds);
-    return { raw, text: cleanReply(raw), stats: speed(native, stats.genTokens, stats.genMs, Date.now() - t0) };
+    return { raw, text: cleanReply(raw), stats: { ...speed(native, stats.genTokens, stats.genMs, Date.now() - t0), ...(stats.mem ? { mem: stats.mem } : {}) } };
   }
   const id = ++seq;
   const out = await runGeneration(id, messages, opts, seconds);

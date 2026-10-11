@@ -138,6 +138,24 @@ describe("façade : le moteur natif d'abord, repli silencieux ensuite", () => {
     expect(FakeWorker.all).toHaveLength(0);
   });
 
+  it("preuve rendue : sorties BRUTES des deux tours de l'essai à vide, mémoire du processus :llm, cache kv", async () => {
+    const mem = { rssMB: 412, peakMB: 455, pssMB: 690, gfxMB: 268 };
+    const p = fakePlugin({ load: { vulkan: ok({ info: { ...INFO.vulkan, kv: "f32" }, mem }) } });
+    const gen = p.generate.getMockImplementation();
+    p.generate.mockImplementation(async (req) => {
+      const r = JSON.parse((await gen(req)).result);
+      return ok({ ...r, mem: { rssMB: 430, peakMB: 470 } });
+    });
+    await setup(p);
+    await mod.loadModel();
+    expect(mod.modelReport().chosen).toMatchObject({
+      kv: "f32", mem,
+      selfTestRaw: ["Bonjour ! Comment ça va ?<|im_end|>", "Bien sûr, je peux vous aider.<|im_end|>"],
+    });
+    const out = await mod.generateDetailed("", [{ role: "user", content: "Salut" }]);
+    expect(out.stats.mem).toEqual({ rssMB: 430, peakMB: 470 });
+  });
+
   it("APK construite sans le moteur : rien téléchargé, l'échelle WebGPU part, aucune erreur", async () => {
     const p = fakePlugin({ status: { supported: false, reason: "not-built" } });
     await setup(p);
@@ -205,6 +223,8 @@ describe("façade : le moteur natif d'abord, repli silencieux ensuite", () => {
     // La voie GPU WebGPU qui fonctionne est gardée : le repli ne la remplace pas
     expect(mod.isModelReady()).toBe(true);
     expect(mod.modelReport().chosen).toMatchObject({ engine: "webgpu", device: "webgpu" });
+    // Essai à vide de la voie WebGPU : ses deux tours sont gardés aussi
+    expect(mod.modelReport().chosen.selfTestRaw).toEqual(["Bonjour ! Comment puis-je vous aider ?", "Bien sûr, je peux vous aider."]);
     expect(FakeWorker.all[0].load).toMatchObject({ engine: "webgpu" });
     // Le modèle est prêt AVANT la fin du téléchargement natif, lancé ensuite en arrière-plan
     await vi.waitFor(() => expect(p.download).toHaveBeenCalledTimes(1));

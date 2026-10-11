@@ -57,5 +57,15 @@ int main(int argc, char ** argv) {
                st.gen_tokens, st.prompt_ms, st.gen_ms, st.eog ? "true" : "false");
         fflush(stdout);
     }
+    // Mémoire du processus (Linux) : résidente à la fin et pic. Sur PC avec un GPU dédié, les
+    // poids Vulkan sont en mémoire vidéo et n'y figurent pas ; sur téléphone (mémoire unifiée),
+    // ils compteraient — d'où la mesure faite aussi par le service :llm sur l'appareil.
+    std::ifstream st("/proc/self/status");
+    long rss = -1, hwm = -1;
+    for (std::string l; std::getline(st, l);) {
+        if (l.rfind("VmRSS:", 0) == 0) rss = atol(l.c_str() + 6);
+        else if (l.rfind("VmHWM:", 0) == 0) hwm = atol(l.c_str() + 6);
+    }
+    printf("{\"mem\":{\"rssKb\":%ld,\"hwmKb\":%ld}}\n", rss, hwm);
     return 0;
 }
