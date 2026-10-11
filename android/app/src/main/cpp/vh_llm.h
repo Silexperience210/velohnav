@@ -24,6 +24,18 @@ std::string devices_json();
 /** Dernières lignes du journal de llama.cpp / ggml (avertissements et erreurs surtout). */
 std::string log_tail(size_t max_lines = 12);
 
+/**
+ * Fichier de trace qui survit au plantage du processus : étapes (trace), journal de ggml
+ * et signal reçu y sont écrits par write(), sans tampon. Un SIGSEGV dans le pilote Vulkan
+ * tue le processus avant toute réponse : ce fichier est la seule trace lisible ensuite
+ * (LocalLlmPlugin le joint à l'erreur « crash »). Installe aussi le gestionnaire de
+ * signaux, chaîné à celui du système (le rapport de plantage d'Android reste produit).
+ */
+void trace_to(const std::string & path);
+
+/** Étape en cours (« load vulkan: model », « generate: first token »…), écrite à la trace. */
+void trace(const std::string & stage);
+
 struct GenStats {
     int prompt_tokens = 0;    // jetons du prompt complet
     int reused_tokens = 0;    // dont repris de l'état gardé (consigne)

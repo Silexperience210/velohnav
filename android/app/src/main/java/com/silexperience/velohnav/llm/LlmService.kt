@@ -50,6 +50,12 @@ class LlmService : Service() {
                 libError = "library: ${e.message}"
             }
         }
+        if (libError == null) {
+            // Traces des processus morts depuis longtemps : déjà lues par le greffon ou perdues.
+            filesDir.listFiles { f -> f.name.startsWith("llm-trace-") && System.currentTimeMillis() - f.lastModified() > 10 * 60_000 }
+                ?.forEach { it.delete() }
+            LlmNative.traceTo(LlmNative.traceFile(filesDir, Process.myPid()).path.toByteArray())
+        }
         Log.i(TAG, "service :llm pid ${Process.myPid()}, bibliothèque ${libError ?: "chargée"}")
     }
 
@@ -63,7 +69,9 @@ class LlmService : Service() {
                 return
             }
             val what = msg.what
+            val label = data.getString("label") ?: "request $what"
             worker.execute {
+                if (libError == null) LlmNative.trace("request $label".toByteArray())
                 val t0 = System.currentTimeMillis()
                 val json = try {
                     run(what, data)

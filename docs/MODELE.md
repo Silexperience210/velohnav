@@ -419,3 +419,80 @@ maintenant le mode (« q4, calcul 32 bits · mode sûr »), au lieu de deux lign
 **Ce qui reste à prouver sur l'appareil** : que Vulkan passe l'essai en deux tours sur l'Adreno
 642L. Premier lancement : GGUF absent → voie JavaScript, puis GGUF (219 Mo) en arrière-plan,
 bascule vers le GPU natif à sa réception. Attendu à l'écran : « GPU natif … Adreno ».
+
+## Urgence : « Bonne nuit » à tout sur le processeur, Vulkan qui plante (11/10)
+
+Retour du téléphone (build `velohnav-vulkan.zip`, b569a85) : ligne d'état « processeur · q4,
+calcul 32 bits » (et « mode sûr » parmi les tentatives GPU écartées) après un plantage Vulkan ;
+« Bonsoir » → « Bonne nuit », « Bonjour » → « Bonne nuit » ; 0,8 jeton/s.
+
+### Processeur : le code est juste, les poids en cache ne l'étaient pas (mesuré)
+
+- **Code de la voie** : le VRAI `modelWorker.js` (cache de consigne compris), mêmes fichiers q4
+  (SHA-256 identiques à ceux du Hub), répond juste sous Node en 1 fil
+  (`scripts/bench-chat/worker-node.mjs`) et dans Chrome en page isolée, 4 fils comme la WebView
+  (`ISOLATE=1 Q="Bonsoir|Bonjour|Merci" run.mjs wasm conversation`) : « Bonsoir ! Comment puis-je
+  vous aider aujourd'hui ? », « Bonjour ! … », « Bien sûr ! … ». Cache clés-valeurs : en fp32 sur
+  le processeur WASM (dtype q4 = calcul fp32) ; le « mode sûr » ne concerne que WebGPU ; le gabarit
+  est celui du tokenizer, inchangé.
+- **Plateforme** : le binaire `ort-wasm-simd-threaded.wasm` ne contient aucune instruction
+  « relaxed SIMD » (seules à pouvoir calculer autrement sur ARM et sur x86) : à poids et prompt
+  égaux, le téléphone calcule comme le PC.
+- **Cause** : transformers.js 4.3.1 (`readResponse`) relit un fichier en cache dans un tampon de
+  `Content-Length` octets et laisse à **zéro, sans erreur**, ce que le corps ne fournit pas. Aucun
+  contrôle des fichiers ONNX n'existait (le GGUF, lui, est vérifié). Reproduit dans Chrome, ancien
+  code, `.onnx_data` amputé de 10 % dans le cache (`HUB=1 CACHE=tronque`) : chargement sans
+  erreur, essai à vide **accepté** (« C'est bien à vous ! » / « Oui, je serais ravi »), puis
+  « Bonsoir » → « BTrama, bénédiction. Bonsei… », 3/3 réponses absurdes affichées. Même classe
+  que « Bonne nuit » : phrase française plausible, calcul faux. Le fichier exact du téléphone
+  n'a pas été relu (pas d'accès à l'appareil) : la cause y est **probable, pas prouvée** ; la
+  vérification ajoutée la tranchera au prochain lancement (journal : `integrity`).
+- **Correctif** : chaque fichier en cache est haché une fois (SHA-256 de la révision épinglée),
+  puis marqué vérifié ; faux → retiré, retéléchargé, revérifié ; faux encore → erreur
+  « integrity ». Même scénario corrigé : « size 264266956 != 293629952 », retéléchargé, puis
+  réponses justes sur 2 et 3 tours. Coût : ~3 s au premier chargement sur PC.
+
+### Réponse figée : détectée, la voie écartée
+
+`frozenReply` : la même réponse à des questions différentes d'affilée (2 fois sous 4 mots,
+3 fois sinon) n'est pas montrée ; la voie est mémorisée en échec (« degenerate ») et l'écran
+recharge la suivante. L'historique de conversation est vidé à chaque rechargement après échec :
+réinjecté, celui d'une voie fausse faisait répéter sa faute à la suivante.
+
+### Vulkan : où ça casse — ce qui est désormais capté
+
+Le plantage tue le processus `:llm` ; avant, il ne restait que « crash during load vulkan ».
+Désormais l'erreur porte trois éléments :
+
+1. **L'étape**, écrite par le moteur dans `files/llm-trace-<pid>.txt` par `write()` direct
+   (survit au plantage) : `request load vulkan`, `load vulkan: model (…)`, `load vulkan: context`,
+   `load vulkan: ready`, `request generate selftest` / `generate answer`, `generate: prompt`,
+   `generate: tokens`, `generate: done`, plus le journal de ggml/Vulkan.
+2. **Le signal**, par un gestionnaire chaîné à celui d'Android (le tombstone reste produit) :
+   `!! signal SIGSEGV during load vulkan: context addr 0x…` (vérifié sur PC : trace écrite,
+   processus toujours mort en SIGSEGV).
+3. **La raison système** (`ApplicationExitInfo`, Android 11+) : `native-crash signal 11`,
+   `low-memory` (tué faute de mémoire), `excessive-resource`, `anr`…, avec la RSS/PSS du processus.
+
+Lecture : `crash during load vulkan | exit native-crash signal 11 … | trace: @ load vulkan:
+context / !! signal SIGSEGV …` = plantage du pilote **au chargement** ; `… generate selftest` =
+au **premier generate** ; `exit low-memory` = **mémoire insuffisante**. Visible dans la ligne
+d'état (détail de la tentative), le journal des chargements et `adb logcat -s VhLlm`.
+
+Repli : un plantage condamne Vulkan sur l'appareil (empreinte modèle/appareil), la session
+continue — WebGPU, processeur natif, puis WASM, chacun borné dans le temps. Défaut corrigé au
+passage : `unload()` rendait la main dès le `killProcess`, sans attendre la mort du processus ;
+le moteur suivant pouvait se relier au service du processus mourant et échouer en « crash »
+sans avoir rien fait — explication plausible du passage direct au WASM au lieu du processeur
+natif. `unload()` attend désormais la disparition de `/proc/<pid>` (3 s au plus).
+
+### Plan d'action Vulkan
+
+1. Installer la build corrigée, activer la conversation : lire dans la ligne d'état / le
+   journal la raison complète du plantage Vulkan (étape + signal + raison système).
+2. Selon l'étape : **chargement / contexte** → pilote Adreno incompatible avec les nuanceurs
+   ggml-vulkan : essayer moins de couches sur le GPU ou désactiver des fonctions (fp16, coopmat)
+   via les variables `GGML_VK_DISABLE_*` ; **premier generate** → idem, ciblé sur le nuanceur
+   fautif ; **low-memory** → contexte réduit (`nCtx` 4096 → 2048), KV fp32 sur moins de jetons.
+3. Tant que Vulkan n'est pas prouvé sur l'appareil, il reste tenté une fois puis condamné : il
+   ne bloque jamais la voie processeur (budgets `nativeBudgetMs`, `initMs.native`).

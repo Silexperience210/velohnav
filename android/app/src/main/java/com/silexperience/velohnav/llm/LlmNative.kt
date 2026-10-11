@@ -21,6 +21,12 @@ object LlmNative {
     external fun generate(prefix: ByteArray, rest: ByteArray, maxTokens: Int, sink: PieceSink?): ByteArray
     external fun cancel()
     external fun unload()
+    /** Fichier de trace qui survit au plantage (étapes, journal, signal) : voir vh_llm.h. */
+    external fun traceTo(path: ByteArray)
+    external fun trace(stage: ByteArray)
+
+    /** Trace du processus :llm `pid` (une par processus : celle d'un mort reste lisible). */
+    fun traceFile(dir: File, pid: Int) = File(dir, "llm-trace-$pid.txt")
 
     /**
      * Pourquoi la bibliothèque ne peut pas tourner ici, ou null si elle le peut :

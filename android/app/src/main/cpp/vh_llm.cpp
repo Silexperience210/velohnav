@@ -3,9 +3,14 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
+#include <csignal>
+#include <cstdint>
 #include <cstring>
 #include <deque>
 #include <mutex>
+
+#include <fcntl.h>
+#include <unistd.h>
 
 #include "ggml-backend.h"
 #include "llama.h"
@@ -26,8 +31,56 @@ std::mutex g_log_mu;
 std::deque<std::string> g_log;
 std::string g_line;   // ggml écrit parfois une ligne en plusieurs morceaux
 
+// ── Trace qui survit au plantage ────────────────────────────────────
+// write() direct (aucun tampon à vider : le processus peut mourir à l'instruction
+// suivante). Le gestionnaire de signaux n'utilise que des fonctions async-signal-safe.
+int g_trace_fd = -1;
+char g_stage[160] = "start";
+struct sigaction g_prev[32];
+const int kSignals[] = {SIGSEGV, SIGBUS, SIGILL, SIGFPE, SIGABRT, SIGTRAP};
+
+void trace_write(const char * s, size_t n) {
+    if (g_trace_fd >= 0) { ssize_t w = write(g_trace_fd, s, n); (void) w; }
+}
+
+const char * sig_name(int sig) {
+    switch (sig) {
+        case SIGSEGV: return "SIGSEGV"; case SIGBUS: return "SIGBUS"; case SIGILL: return "SIGILL";
+        case SIGFPE: return "SIGFPE"; case SIGABRT: return "SIGABRT"; case SIGTRAP: return "SIGTRAP";
+        default: return "?";
+    }
+}
+
+void on_signal(int sig, siginfo_t * info, void * uctx) {
+    char b[256];
+    // snprintf n'est pas garanti async-signal-safe : la ligne est assemblée à la main.
+    size_t n = 0;
+    auto put = [&](const char * s) { while (*s && n < sizeof b - 2) b[n++] = *s++; };
+    put("!! signal "); put(sig_name(sig)); put(" during "); put(g_stage);
+    if (info && (sig == SIGSEGV || sig == SIGBUS)) {
+        put(" addr 0x");
+        uintptr_t a = (uintptr_t) info->si_addr;
+        char hex[2 * sizeof a + 1]; int k = 0;
+        for (int i = (int) (2 * sizeof a) - 1; i >= 0; i--) hex[k++] = "0123456789abcdef"[(a >> (4 * i)) & 0xf];
+        hex[k] = 0; put(hex);
+    }
+    b[n++] = '\n';
+    trace_write(b, n);
+    // Le gestionnaire d'avant (debuggerd sur Android) reprend la main : rapport de plantage
+    // et mort du processus, comme sans nous.
+    sigaction(sig, &g_prev[sig], nullptr);
+    if (g_prev[sig].sa_flags & SA_SIGINFO) {
+        if (g_prev[sig].sa_sigaction) { g_prev[sig].sa_sigaction(sig, info, uctx); return; }
+    } else if (g_prev[sig].sa_handler != SIG_DFL && g_prev[sig].sa_handler != SIG_IGN) {
+        g_prev[sig].sa_handler(sig);
+        return;
+    }
+    raise(sig);
+}
+
 void on_log(ggml_log_level level, const char * text, void *) {
     if (!text) return;
+    if (level != GGML_LOG_LEVEL_DEBUG) trace_write(text, strlen(text));
 #ifdef __ANDROID__
     int prio = level == GGML_LOG_LEVEL_ERROR ? ANDROID_LOG_ERROR
              : level == GGML_LOG_LEVEL_WARN  ? ANDROID_LOG_WARN
@@ -107,6 +160,34 @@ void init() {
     });
 }
 
+void trace_to(const std::string & path) {
+    static std::once_flag once;
+    std::call_once(once, [&] {
+        g_trace_fd = open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_APPEND | O_CLOEXEC, 0600);
+        // Pile de secours : un débordement de pile se signale aussi.
+        static char alt[64 * 1024];
+        stack_t ss{};
+        ss.ss_sp = alt; ss.ss_size = sizeof alt;
+        sigaltstack(&ss, nullptr);
+        for (int sig : kSignals) {
+            struct sigaction sa{};
+            sa.sa_sigaction = on_signal;
+            sa.sa_flags = SA_SIGINFO | SA_ONSTACK;
+            sigemptyset(&sa.sa_mask);
+            sigaction(sig, &sa, &g_prev[sig]);
+        }
+    });
+}
+
+void trace(const std::string & stage) {
+    // Copie bornée lue par le gestionnaire de signaux : jamais de chaîne C++ dans un signal.
+    size_t n = std::min(stage.size(), sizeof g_stage - 1);
+    memcpy(g_stage, stage.data(), n);
+    g_stage[n] = 0;
+    std::string l = "@ " + stage + "\n";
+    trace_write(l.data(), l.size());
+}
+
 std::string log_tail(size_t max_lines) {
     std::lock_guard<std::mutex> lk(g_log_mu);
     std::string o;
@@ -149,6 +230,8 @@ bool Engine::load(const std::string & path, const std::string & backend, int n_c
     init();
     unload();
     const auto t0 = std::chrono::steady_clock::now();
+    const std::string stage = "load " + backend;
+    trace(stage + ": devices");
 
     // L'appareil demandé, et lui seul : sans liste explicite, llama.cpp prend tous les
     // GPU et décharge sur eux même avec 0 couche — on ne saurait plus ce qui tourne.
@@ -176,6 +259,7 @@ bool Engine::load(const std::string & path, const std::string & backend, int n_c
     llama_model_params mp = llama_model_default_params();
     mp.devices = devs.data();
     mp.n_gpu_layers = cpu ? 0 : 999;
+    trace(stage + ": model (" + (cpu ? std::string("cpu") : dev_desc) + ")");
     model_ = llama_model_load_from_file(path.c_str(), mp);
     if (!model_) {
         err = "model load failed on " + backend + ": " + log_tail();
@@ -195,6 +279,7 @@ bool Engine::load(const std::string & path, const std::string & backend, int n_c
         cp.type_v = GGML_TYPE_F32;
         cp.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_DISABLED;
     }
+    trace(stage + ": context");
     ctx_ = llama_init_from_model(model_, cp);
     if (!ctx_) {
         err = "context init failed on " + backend + ": " + log_tail();
@@ -203,6 +288,7 @@ bool Engine::load(const std::string & path, const std::string & backend, int n_c
     }
     smpl_ = llama_sampler_chain_init(llama_sampler_chain_default_params());
     llama_sampler_chain_add(smpl_, llama_sampler_init_greedy());
+    trace(stage + ": ready");
 
     char desc[128] = {0};
     llama_model_desc(model_, desc, sizeof desc);
@@ -272,6 +358,7 @@ bool Engine::ensure_prefix(const std::vector<int32_t> & pre, int & reused, std::
 
 bool Engine::warm(const std::string & prefix, std::string & err) {
     if (!ctx_) { err = "not loaded"; return false; }
+    trace("warm");
     cancel_ = false;
     std::vector<int32_t> pre;
     if (!tokenize(prefix, pre, err)) return false;
@@ -297,9 +384,11 @@ bool Engine::generate(const std::string & prefix, const std::string & rest, int 
     }
 
     auto t0 = std::chrono::steady_clock::now();
+    trace("generate: prompt (" + std::to_string(st.prompt_tokens) + " tokens)");
     if (!ensure_prefix(pre, st.reused_tokens, err)) return false;
     if (!decode(tail, 0, err)) return false;
     st.prompt_ms = ms_since(t0);
+    trace("generate: tokens");
 
     const llama_vocab * vocab = llama_model_get_vocab(model_);
     llama_sampler_reset(smpl_);
@@ -332,6 +421,7 @@ bool Engine::generate(const std::string & prefix, const std::string & rest, int 
     out += pending;
     if (on_piece && !pending.empty()) on_piece(pending);
     st.gen_ms = ms_since(t1);
+    trace("generate: done (" + std::to_string(st.gen_tokens) + " tokens)");
     return true;
 }
 

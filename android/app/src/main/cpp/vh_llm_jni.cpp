@@ -90,6 +90,16 @@ Java_com_silexperience_velohnav_llm_LlmNative_generate(JNIEnv * env, jobject, jb
 }
 
 JNIEXPORT void JNICALL
+Java_com_silexperience_velohnav_llm_LlmNative_traceTo(JNIEnv * env, jobject, jbyteArray path) {
+    vh::trace_to(bytes(env, path));
+}
+
+JNIEXPORT void JNICALL
+Java_com_silexperience_velohnav_llm_LlmNative_trace(JNIEnv * env, jobject, jbyteArray stage) {
+    vh::trace(bytes(env, stage));
+}
+
+JNIEXPORT void JNICALL
 Java_com_silexperience_velohnav_llm_LlmNative_cancel(JNIEnv *, jobject) {
     g_engine.cancel();
 }

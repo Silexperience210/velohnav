@@ -1,5 +1,7 @@
 package com.silexperience.velohnav.llm
 
+import android.app.ActivityManager
+import android.app.ApplicationExitInfo
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
@@ -190,6 +192,7 @@ class LocalLlmPlugin : Plugin() {
     private val queued = ArrayList<Message>()
     // Ce que faisait le processus quand il est mort : dit dans l'erreur « crash ».
     private var lastRequest = ""
+    private var lastRequestAt = 0L
 
     private val replies = Messenger(object : Handler(Looper.getMainLooper()) {
         override fun handleMessage(msg: Message) {
@@ -202,8 +205,11 @@ class LocalLlmPlugin : Plugin() {
 
     private val conn = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
-            Log.i(TAG, "processus :llm relié, ${queued.size} requête(s) en attente")
             service = Messenger(binder)
+            // Pid connu dès la liaison : un plantage pendant la PREMIÈRE requête (le chargement)
+            // doit pouvoir être expliqué (trace, raison de sortie), avant toute réponse.
+            if (servicePid <= 0) servicePid = llmPid()
+            Log.i(TAG, "processus :llm relié (pid $servicePid), ${queued.size} requête(s) en attente")
             queued.forEach { sendNow(it) }
             queued.clear()
         }
@@ -211,13 +217,20 @@ class LocalLlmPlugin : Plugin() {
         // Le processus :llm est mort (plantage natif, ou tué par le système)
         override fun onServiceDisconnected(name: ComponentName?) {
             Log.w("VhLlm", "processus :llm mort pendant : $lastRequest")
-            dropService("crash during $lastRequest")
+            dropService("crash during $lastRequest", diagnose = true)
         }
 
-        override fun onBindingDied(name: ComponentName?) = dropService("binding died during $lastRequest")
+        override fun onBindingDied(name: ComponentName?) = dropService("binding died during $lastRequest", diagnose = true)
     }
 
-    private fun dropService(reason: String) {
+    /**
+     * `diagnose` : le processus est mort sans répondre. Les requêtes en cours échouent avec la
+     * raison complète — ce que le système dit de sa mort et la fin de sa trace —, lue hors du
+     * fil principal (la raison de sortie peut arriver un instant après la déconnexion).
+     */
+    private fun dropService(reason: String, diagnose: Boolean = false) {
+        val pid = servicePid
+        val since = lastRequestAt
         service = null
         if (bound) { try { context.unbindService(conn) } catch (_: Exception) {} }
         bound = false
@@ -225,7 +238,70 @@ class LocalLlmPlugin : Plugin() {
         queued.clear()
         val fails = pending.values.toList()
         pending.clear()
-        fails.forEach { it(null, reason) }
+        if (!diagnose) { fails.forEach { it(null, reason) }; return }
+        Thread({
+            val full = crashReport(reason, pid, since)
+            Log.w(TAG, full)
+            main.post { fails.forEach { it(null, full) } }
+        }, "llm-crash-report").start()
+    }
+
+    /** Pid du processus :llm de cette application, ou 0. */
+    private fun llmPid(): Int = try {
+        (context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager).runningAppProcesses
+            ?.firstOrNull { it.processName == "${context.packageName}:llm" }?.pid ?: 0
+    } catch (_: Exception) { 0 }
+
+    /**
+     * Pourquoi le processus :llm est mort, en une ligne : « crash during load vulkan |
+     * exit native-crash SIGSEGV, rss 412 Mo | trace: @ load vulkan: context | !! signal SIGSEGV… ».
+     * Distingue le plantage natif (pilote GPU), la mémoire (tué par le système) et le reste.
+     */
+    private fun crashReport(reason: String, pid: Int, since: Long): String {
+        val parts = mutableListOf(reason)
+        exitReason(pid, since)?.let { parts += "exit $it" }
+        if (pid > 0) {
+            val f = LlmNative.traceFile(context.filesDir, pid)
+            if (f.isFile) {
+                val lines = f.readLines().filter { it.isNotBlank() }
+                // Les étapes et le signal d'abord ; puis la fin du journal du moteur.
+                val keep = (lines.filter { it.startsWith("@ ") || it.startsWith("!! ") }.takeLast(4) +
+                    lines.filter { !it.startsWith("@ ") && !it.startsWith("!! ") }.takeLast(6)).distinct()
+                parts += "trace: ${keep.joinToString(" / ") { it.take(200) }}"
+                f.delete()
+            } else parts += "trace: none"
+        }
+        return parts.joinToString(" | ").take(1500)
+    }
+
+    /** Raison de sortie enregistrée par le système (Android 11+), attendue jusqu'à 1,5 s. */
+    private fun exitReason(pid: Int, since: Long): String? {
+        if (Build.VERSION.SDK_INT < 30) return null
+        val am = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+        repeat(6) {
+            val e = try {
+                am.getHistoricalProcessExitReasons(context.packageName, 0, 8)
+                    .firstOrNull { it.processName.endsWith(":llm") && (pid <= 0 || it.pid == pid) && it.timestamp >= since - 2_000 }
+            } catch (_: Exception) { null }
+            if (e != null) {
+                val kind = when (e.reason) {
+                    ApplicationExitInfo.REASON_CRASH_NATIVE -> "native-crash"
+                    ApplicationExitInfo.REASON_CRASH -> "java-crash"
+                    ApplicationExitInfo.REASON_LOW_MEMORY -> "low-memory"
+                    ApplicationExitInfo.REASON_EXCESSIVE_RESOURCE_USAGE -> "excessive-resource"
+                    ApplicationExitInfo.REASON_SIGNALED -> "signaled"
+                    ApplicationExitInfo.REASON_ANR -> "anr"
+                    ApplicationExitInfo.REASON_EXIT_SELF -> "exit-self"
+                    ApplicationExitInfo.REASON_USER_REQUESTED -> "user-requested"
+                    ApplicationExitInfo.REASON_DEPENDENCY_DIED -> "dependency-died"
+                    else -> "reason-${e.reason}"
+                }
+                val sig = if (e.reason == ApplicationExitInfo.REASON_CRASH_NATIVE || e.reason == ApplicationExitInfo.REASON_SIGNALED) " signal ${e.status}" else ""
+                return "$kind$sig, rss ${e.rss / 1024} Mo, pss ${e.pss / 1024} Mo${e.description?.let { ", ${it.take(160)}" } ?: ""}"
+            }
+            Thread.sleep(250)
+        }
+        return null
     }
 
     private fun sendNow(m: Message) {
@@ -237,6 +313,8 @@ class LocalLlmPlugin : Plugin() {
             val id = ++seq
             pending[id] = done
             lastRequest = label
+            lastRequestAt = System.currentTimeMillis()
+            data.putString("label", label)
             val m = Message.obtain(null, what, id, 0).apply { this.data = data; replyTo = replies }
             if (service != null) { sendNow(m); return@post }
             queued.add(m)
@@ -285,7 +363,8 @@ class LocalLlmPlugin : Plugin() {
             putByteArray("rest", (call.getString("rest") ?: "").toByteArray())
             putInt("maxTokens", call.getInt("maxTokens") ?: 256)
         }
-        request(LlmService.GENERATE, "generate", b, relay(call))
+        // « selftest » (essai à vide du chargement) ou « answer » : dit où le plantage a eu lieu.
+        request(LlmService.GENERATE, "generate ${call.getString("phase") ?: "answer"}", b, relay(call))
     }
 
     @PluginMethod(returnType = PluginMethod.RETURN_PROMISE)
@@ -301,10 +380,20 @@ class LocalLlmPlugin : Plugin() {
     @PluginMethod(returnType = PluginMethod.RETURN_PROMISE)
     fun unload(call: PluginCall) {
         main.post {
-            val pid = servicePid
+            val pid = servicePid.takeIf { it > 0 } ?: llmPid()
             dropService("unloaded")
-            if (pid > 0 && pid != Process.myPid()) Process.killProcess(pid)
-            call.resolve()
+            if (pid <= 0 || pid == Process.myPid()) { call.resolve(); return@post }
+            Process.killProcess(pid)
+            // Rendre la main seulement une fois le processus mort : relié trop tôt, le moteur
+            // suivant (processeur natif après un Vulkan écarté) pouvait se lier au service du
+            // processus mourant, et échouer en « crash » sans avoir rien fait.
+            Thread({
+                val proc = File("/proc/$pid")
+                val t0 = System.currentTimeMillis()
+                while (proc.exists() && System.currentTimeMillis() - t0 < 3_000) Thread.sleep(50)
+                Log.i(TAG, "processus :llm $pid ${if (proc.exists()) "toujours là après 3 s" else "arrêté"}")
+                call.resolve()
+            }, "llm-unload").start()
         }
     }
 

@@ -152,7 +152,7 @@ export async function loadNative(backend, timeoutMs) {
     const r = parse(await p.load({ file: NATIVE_MODEL.file, backend, nCtx: 4096 }).catch(rethrow("load")), "load");
     const turn = async (messages, maxTokens) => {
       const { prefix, rest } = splitPrompt(messages);
-      const g = parse(await p.generate({ prefix, rest, maxTokens }).catch(rethrow("selftest")), "selftest");
+      const g = parse(await p.generate({ prefix, rest, maxTokens, phase: "selftest" }).catch(rethrow("selftest")), "selftest");
       return { raw: String(g.text ?? ""), said: String(g.text ?? "").split("<|im_end|>")[0].replace(/<\|[a-z_]+\|>/g, "").trim() };
     };
     const a = await turn(NATIVE_SELF_TEST.messages, NATIVE_SELF_TEST.maxNewTokens);
@@ -190,7 +190,7 @@ export async function warmNative(messages, tools) {
 export async function generateNative(messages, { tools, maxNewTokens = 256 } = {}) {
   const p = await getPlugin();
   const { prefix, rest } = splitPrompt(messages, { tools });
-  const r = parse(await p.generate({ prefix, rest, maxTokens: maxNewTokens }).catch(rethrow("generate")), "generate");
+  const r = parse(await p.generate({ prefix, rest, maxTokens: maxNewTokens, phase: "answer" }).catch(rethrow("generate")), "generate");
   // La fin de tour n'est pas rendue en texte par le moteur : la remettre, sans quoi
   // cleanReply prendrait une réponse complète pour une réponse coupée.
   const text = String(r.text ?? "");
