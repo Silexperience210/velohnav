@@ -33,7 +33,7 @@ const sys = { role: "system", content: systemPrompt(t) };
 // Cas : l'essai à vide du chargement natif, puis les questions libres du banc de conversation.
 const cases = [
   { q: "(essai à vide)", messages: NATIVE_SELF_TEST.messages, selfTest: true },
-  ...QUESTIONS.map((q) => ({ q, messages: [sys, { role: "user", content: q }] })),
+  ...QUESTIONS.slice(0, Number(process.env.N) || undefined).map((q) => ({ q, messages: [sys, { role: "user", content: q }] })),
 ];
 const dir = mkdtempSync(join(tmpdir(), "vh-native-"));
 const file = join(dir, "cases.bin");
@@ -41,7 +41,7 @@ writeFileSync(file, cases.map((c) => { const { prefix, rest } = splitPrompt(c.me
 const bin = new URL("./vh_llm_bench", import.meta.url).pathname;
 
 for (const backend of backends.split(",")) {
-  const lines = execFileSync(bin, [model, backend, file, "96", threads], { encoding: "utf8", maxBuffer: 1 << 26, stdio: ["ignore", "pipe", "ignore"] })
+  const lines = execFileSync(bin, [model, backend, file, process.env.MAX || "96", threads], { encoding: "utf8", maxBuffer: 1 << 26, stdio: ["ignore", "pipe", "ignore"] })
     .trim().split("\n").map((l) => JSON.parse(l));
   const info = lines.find((l) => l.info)?.info;
   const err = lines.find((l) => l.error !== undefined && l.ok === undefined);

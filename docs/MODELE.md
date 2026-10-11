@@ -260,10 +260,35 @@ principale.
 - **mesuré sur PC** (banc `scripts/bench-native`) : processeur 104,1 j/s, Vulkan
   (RTX 3060) 396,1 j/s de génération, réponses en français 8/10 dans les deux cas, essai à
   vide concluant. Même gabarit, même consigne et même lecture de sortie que l'application.
-- **pas embarqué dans l'APK livrée** : rien n'appelle encore le greffon depuis `src/`, et
-  8,1 Mo compressés feraient passer l'APK de 51 Mo à ~59 Mo, au-delà de la limite de 50 Mo
-  de Telegram. La construction native est donc demandée explicitement (`-PvhNative=1`).
-- **reste à faire** : brancher le greffon dans la chaîne de l'IA (une marche « GPU natif »
-  au-dessus de WebGPU), dire la voie retenue à l'écran, puis mesurer les jetons/s SUR le
-  téléphone. Aucune mesure de téléphone n'est possible ici — et donc, aujourd'hui, aucun
-  élément ne prouve que le GPU de son appareil exécute le modèle.
+- **branché sur l'interface (11/10)** : `src/ai/nativeModel.js` appelle le greffon ;
+  `loadModel` tente GPU Vulkan → processeur natif (même GGUF) → échelle WebGPU / processeur.
+  Repli silencieux ; un moteur natif en échec est mémorisé par appareil. Le greffon dit
+  `not-built` dans l'APK construite sans `-PvhNative` : rien n'y est téléchargé, l'APK
+  normale se comporte comme avant. La ligne d'état nomme la voie réelle (« GPU natif
+  (Vulkan) · q4_0 · <GPU annoncé> », « WebGPU », « processeur ») et la vitesse de la
+  dernière réponse.
+- **modèle natif** : `LiquidAI/LFM2.5-350M-GGUF`, `Q4_0`, 219 Mo, SHA-256 vérifié, licence
+  LFM 1.0 (la même que l'export ONNX). `QAD-Q4_0` écarté au banc : français 8/10 contre 10/10.
+
+### Mesure : natif contre chaîne JS, même question (11/10, sur PC)
+
+Mêmes 3 questions (`cases.QUESTIONS`), même consigne, glouton, 48 jetons au plus, consigne
+calculée d'avance. Commandes :
+`MAX=48 N=3 node scripts/bench-native/run.mjs <Q4_0.gguf> cpu,vulkan` et
+`MAX=48 N=3 ENGINE=wasm node scripts/bench-chat/run.mjs wasm prefixe`.
+
+| Voie | « Qui es-tu ? » | Vitesse | Français |
+|---|---|---|---|
+| chaîne JS, processeur WASM (Chrome, **un fil**) | 40 jetons en 65,4 s | 0,6 j/s (réponse complète) | 3/3 |
+| natif, processeur (4 fils) | 48 jetons en 0,49 s | 106 j/s de génération | 3/3 |
+| natif, GPU Vulkan (RTX 3060) | 48 jetons en 0,12 s | 406 j/s de génération | 3/3 |
+
+Ce qui est **mesuré** : sur ce PC, le moteur natif est ~170× plus rapide que la chaîne JS
+sur le processeur, et le GPU Vulkan ~4× plus rapide que le processeur natif. La WebView de
+l'application calcule avec 4 fils (≈ 3,4× un fil, mesuré plus haut) : l'écart attendu dans
+l'application reste de l'ordre de 50×.
+
+Ce qui est **supposé**, faute de téléphone ici : les jetons/s sur l'Adreno du propriétaire,
+et que Vulkan y calcule juste. L'essai à vide (`NATIVE_SELF_TEST`) écarte un GPU qui rend
+une sortie fausse ; l'écran affiche la vitesse de chaque réponse : poser la même question
+avec l'APK native et l'APK normale donne la comparaison sur l'appareil.

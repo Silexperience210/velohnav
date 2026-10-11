@@ -80,7 +80,7 @@ const chrome = spawn(process.env.CHROME || "google-chrome", [
   ...(process.env.HEADLESS === "0" ? ["--ozone-platform-hint=auto"] : ["--headless=new"]), `--user-data-dir=${profile}`, "--no-first-run", "--enable-unsafe-webgpu",
   "--enable-features=Vulkan", "--ignore-gpu-blocklist",
   ...(process.env.CHROME_FLAGS ? process.env.CHROME_FLAGS.split(" ") : []),
-  process.env.PAGE === "ladder" ? `http://127.0.0.1:${port}/ladder.html?${configs}` : `http://127.0.0.1:${port}/index.html?device=${device}${configs === "conversation" || configs === "prefixe" ? `&mode=${configs}` : configs ? `&configs=${configs}` : ""}${process.env.ENGINE ? `&engine=${process.env.ENGINE}` : ""}${process.env.ATTEMPT ? `&attempt=${encodeURIComponent(process.env.ATTEMPT)}` : ""}`,
+  process.env.PAGE === "ladder" ? `http://127.0.0.1:${port}/ladder.html?${configs}` : `http://127.0.0.1:${port}/index.html?device=${device}${configs === "conversation" || configs === "prefixe" ? `&mode=${configs}` : configs ? `&configs=${configs}` : ""}${process.env.ENGINE ? `&engine=${process.env.ENGINE}` : ""}${process.env.ATTEMPT ? `&attempt=${encodeURIComponent(process.env.ATTEMPT)}` : ""}${process.env.MAX ? `&max=${process.env.MAX}` : ""}${process.env.N ? `&n=${process.env.N}` : ""}`,
 ], { stdio: "ignore" });
 await finished;
 chrome.kill();

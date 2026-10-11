@@ -63,10 +63,10 @@ try {
     log(`consigne calculée d'avance en ${warmMs} ms`);
     for (const q of QUESTIONS.slice(0, Number(params.get("n")) || 3)) {
       t0 = performance.now();
-      const out = await generate([system, { role: "user", content: q }], generationOptions({ maxNewTokens: 24 }));
+      const out = await generate([system, { role: "user", content: q }], generationOptions({ maxNewTokens: Number(params.get("max")) || 24 }));
       const ms = Math.round(performance.now() - t0);
-      await send({ type: "row", cfg: `prefixe (anticipé ${warmMs} ms)`, q, reachesModel: true, raw: out.text ?? "", error: out.error, ms });
-      log(`${q} → ${out.error ? "ERREUR " + out.error : out.text} (${ms} ms)`);
+      await send({ type: "row", cfg: `prefixe (anticipé ${warmMs} ms)`, q, reachesModel: true, raw: out.text ?? "", error: out.error, ms, tokens: out.tokens });
+      log(`${q} → ${out.error ? "ERREUR " + out.error : out.text} (${out.tokens ?? "?"} jetons en ${ms} ms, ${out.tokens ? (out.tokens / (ms / 1000)).toFixed(1) : "?"} j/s)`);
     }
     await send({ type: "done" });
     throw null;
