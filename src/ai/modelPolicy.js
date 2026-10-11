@@ -746,3 +746,18 @@ export function gpuSetAside(report) {
   }
   return { reasons, retry, downloadMB };
 }
+
+// ── Le moteur natif mis de côté : le dire ───────────────────────
+/** Raisons d'un repli du natif vers la voie JavaScript (localModel.js, report.native). */
+export const NATIVE_ASIDE_KINDS = Object.freeze(["absent", "unsupported", "failed", "failed_before", "timeout"]);
+
+/**
+ * Le moteur natif a-t-il été écarté au profit de la voie JavaScript, et pourquoi ?
+ * @param {{ chosen: object|null, native?: {kind: string, detail: string}|null }} report modelReport()
+ * @returns {null | { kind: string, detail: string }} null : natif retenu, ou jamais en jeu
+ *   (navigateur, APK sans le moteur).
+ */
+export function nativeFallback(report) {
+  if (!report?.native || report.chosen?.device === "native") return null;
+  return { kind: report.native.kind, detail: report.native.detail || "" };
+}

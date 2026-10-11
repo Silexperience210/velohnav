@@ -3,7 +3,7 @@ import { t, tn, useI18n } from "../i18n.js";
 import { launchNativeArNav } from "../utils.js";
 import { fetchWeather, getWeatherAdvice } from "../hooks/useWeather.js";
 import { loadModel, unloadModel, generateDetailed, warmUp, chatModelMB, modelReport, forgetFailures } from "../ai/localModel.js";
-import { gpuSetAside } from "../ai/modelPolicy.js";
+import { gpuSetAside, nativeFallback } from "../ai/modelPolicy.js";
 import { systemPrompt, resolveModelOutput, explainFallback } from "../ai/assistant.js";
 import { Icon } from "../ui/icons.jsx";
 import { IconButton, ProgressBar, Spinner, Button } from "../ui/primitives.jsx";
@@ -51,6 +51,12 @@ const gpuAsideLabel = (aside) => aside.reasons.map(r => t(`ui.ai.model.gpu.${r.k
   detail: r.detail, ua: browserVersion(),
 })).join(" ; ");
 
+// Moteur natif écarté (nativeFallback) : pourquoi, et la voie JavaScript qui prend le relais.
+const nativeAsideLabel = (aside, where) => t("ui.ai.model.native_aside", {
+  why: t(`ui.ai.model.native.${aside.kind}`) + (aside.detail ? ` : ${aside.detail}` : ""),
+  where: where || t("ui.ai.model.native_aside_js"),
+});
+
 // Taille réelle du modèle conversationnel, annoncée AVANT tout téléchargement :
 // rien ne part sans que l'utilisateur l'ait décidé.
 // Taille annoncée : celle de la variante que l'appareil sait réellement faire tourner
@@ -75,6 +81,7 @@ function AIScreen({ stations, aiHistory, setAiHistory,
   const [modelPhase, setModelPhase] = useState(null);  // { phase: download|init, device, engine, attempt, mb }
   const [modelInfo, setModelInfo] = useState(null);    // modelReport() : tentatives faites
   const gpuAside = useMemo(() => gpuSetAside(modelInfo), [modelInfo]);
+  const nativeAside = useMemo(() => nativeFallback(modelInfo), [modelInfo]);
   const [modelErrCode, setModelErrCode] = useState(null);
   const [lastSpeed, setLastSpeed] = useState(null);      // vitesse de la dernière réponse du modèle
   const [loadSeq, setLoadSeq] = useState(0);             // incrémenté par « Réessayer »
@@ -161,6 +168,7 @@ function AIScreen({ stations, aiHistory, setAiHistory,
     let dead = false;
     setModelState("loading");
     setModelPhase(null);
+    setModelInfo(null);                  // rapport du chargement précédent : plus à jour
     setModelErrCode(null);
     setLastSpeed(null);
     // Le passage d'une tentative à la suivante (GPU → processeur) se fait dans
@@ -487,6 +495,13 @@ function AIScreen({ stations, aiHistory, setAiHistory,
           </div>
           {chatOn && modelState==="ready" && lastSpeed && (
             <div className="vn-num" style={{ fontSize:10.5, color:"var(--vn-text3)", lineHeight:1.45 }}>{speedLabel(lastSpeed)}</div>
+          )}
+          {/* Moteur natif écarté : la raison et la voie qui prend le relais, pendant et après le chargement */}
+          {chatOn && (modelState==="ready" || modelState==="loading") && nativeAside && (
+            <div style={{ fontSize:10.5, color:"var(--vn-text3)", lineHeight:1.45, overflowWrap:"anywhere" }}>
+              {nativeAsideLabel(nativeAside, modelInfo?.chosen ? chosenLabel(modelInfo.chosen)
+                : modelPhase?.device !== "native" && modelPhase?.attempt ? attemptLabel(modelPhase.attempt) : "")}
+            </div>
           )}
           {/* Prêt hors du GPU : pourquoi, lisible à l'écran (sans cela, impossible de le savoir sur l'appareil) */}
           {chatOn && modelState==="ready" && gpuAside?.reasons.length > 0 && (

@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import {
+  NATIVE_ASIDE_KINDS, nativeFallback,
   VARIANTS, LARGEST_TENSOR_BYTES, LIMITS, assessWebGPU, watchdog,
   initialProgress, progressReducer, withTimeout, selfTestVerdict, variantFor,
   ATTEMPTS, ENGINES, planAttempts, classifyFailure, deviceFingerprint, failureRecord, attemptById, gpuSetAside,
@@ -347,6 +348,13 @@ describe("après l'échec d'une tentative : la suivante part d'elle-même", () =
       expect(fr[`ui.ai.model.dtype.${d}`], d).toBeTruthy();
       expect(en[`ui.ai.model.dtype.${d}`], d).toBeTruthy();
     }
+    for (const k of NATIVE_ASIDE_KINDS) {
+      expect(fr[`ui.ai.model.native.${k}`], k).toBeTruthy();
+      expect(en[`ui.ai.model.native.${k}`], k).toBeTruthy();
+    }
+    expect(fr["ui.ai.model.native_aside"]).toContain("natif indisponible");
+    expect(fr["ui.ai.model.native_aside"]).toContain("→ {where}");
+    expect(fr["ui.ai.model.native_aside_js"]).toBe("WebGPU / processeur");
   });
 });
 
@@ -467,5 +475,18 @@ describe("GPU Adreno : device sans subgroups, réglage « sur », q4 avant q4f16
     const fp = deviceFingerprint(adreno);
     const old = JSON.stringify({ fingerprint: fp.replace(/\|\d+\|/, "|3|"), failed: { "q4f16/webgpu": "self-test", "q4/webgpu": "self-test" } });
     expect(failureRecord({ stored: old, fingerprint: fp })).toEqual({});
+  });
+});
+
+describe("nativeFallback : la raison du repli, pour la ligne d'état", () => {
+  it("natif retenu, ou jamais en jeu (navigateur, APK sans moteur) : rien à dire", () => {
+    expect(nativeFallback({ chosen: { device: "native", engine: "vulkan" }, native: null })).toBeNull();
+    expect(nativeFallback({ chosen: { device: "webgpu" }, native: null })).toBeNull();
+    expect(nativeFallback(null)).toBeNull();
+  });
+  it("natif écarté : sa raison, pendant le chargement comme une fois prêt", () => {
+    expect(nativeFallback({ chosen: null, native: { kind: "absent", detail: "" } })).toEqual({ kind: "absent", detail: "" });
+    expect(nativeFallback({ chosen: { device: "wasm" }, native: { kind: "timeout", detail: "q4_0/vulkan → timeout" } }))
+      .toEqual({ kind: "timeout", detail: "q4_0/vulkan → timeout" });
   });
 });
