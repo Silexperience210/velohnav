@@ -150,6 +150,57 @@ describe("façade : l'échelle des tentatives, sans rien demander", () => {
     expect(console.info).toHaveBeenCalledWith(expect.stringMatching(/^\[IA\] retenu : q4\/wasm/));
   });
 
+  it("Adreno, plusieurs lancements : q4 GPU d'abord ; un délai au premier lancement ne condamne pas le GPU, les suivants le retiennent", async () => {
+    const ADRENO = { ...GOOD_PROBE, info: { vendor: "qualcomm", architecture: "adreno-7xx", description: "Adreno (TM) 642L" }, features: ["shader-f16", "subgroups"] };
+    // Lancement 1 : q4 GPU se fige (application en arrière-plan pendant la compilation)
+    let loading = mod.loadModel();
+    await flush();
+    last().emit({ type: "probe", probe: ADRENO });
+    const w1 = last();
+    expect(w1.load).toMatchObject({ attemptId: "q4/webgpu", variant: { dtype: "q4", device: "webgpu" } });
+    filesDone(w1);
+    await vi.advanceTimersByTimeAsync(181_000);
+    await flush();
+    // Même chargement : la marche suivante est encore le GPU (q4 « sur »), pas le processeur
+    const w2 = last();
+    expect(w2.load).toMatchObject({ attemptId: "q4/webgpu/sur" });
+    filesDone(w2);
+    w2.emit({ type: "ready", selfTest: "Bonjour ! Comment", selfTest2: "Bien sûr, je peux" });
+    await expect(loading).resolves.toBeUndefined();
+    expect(mod.modelReport().chosen).toMatchObject({ id: "q4/webgpu/sur", device: "webgpu" });
+
+    // Lancements 2 et 3 : q4 GPU rejoué en premier (le délai était passager), et retenu
+    for (let launch = 2; launch <= 3; launch++) {
+      mod.unloadModel();
+      loading = mod.loadModel();
+      await flush();
+      const w = last();
+      expect(w.load).toMatchObject({ attemptId: "q4/webgpu" });
+      filesDone(w);
+      w.emit({ type: "ready", selfTest: "Bonjour ! Comment", selfTest2: "Bien sûr, je peux" });
+      await expect(loading).resolves.toBeUndefined();
+      expect(mod.modelReport().chosen).toMatchObject({ id: "q4/webgpu", device: "webgpu", gpuMode: "base" });
+      // La réussite efface la note passagère : rien ne reste contre le GPU
+      expect(JSON.parse(store.get("velohnav_ai_attempts_ko")).failed).toEqual({});
+    }
+  });
+
+  it("le même délai deux lancements d'affilée : là seulement, la tentative est condamnée (erreur lisible gardée)", async () => {
+    const fp = (await import("./modelPolicy.js")).deviceFingerprint(GOOD_PROBE);
+    store.set("velohnav_ai_attempts_ko", JSON.stringify({ fingerprint: fp, failed: { "q4f16/webgpu": "transient: timeout 180 s" } }));
+    mod.loadModel().catch(() => {});
+    await flush();
+    last().emit({ type: "probe", probe: GOOD_PROBE });
+    const w = last();
+    expect(w.load).toMatchObject({ attemptId: "q4f16/webgpu" });   // rejoué
+    filesDone(w);
+    await vi.advanceTimersByTimeAsync(181_000);
+    await flush();
+    expect(JSON.parse(store.get("velohnav_ai_attempts_ko")).failed["q4f16/webgpu"]).toBe("timeout 180 s");
+    expect(last().load).toMatchObject({ attemptId: "q4/webgpu" });
+    mod.unloadModel();
+  });
+
   it("au lancement suivant : les tentatives en échec ne sont pas rejouées, le processeur part directement", async () => {
     store.set("velohnav_ai_attempts_ko", JSON.stringify({
       fingerprint: (await import("./modelPolicy.js")).deviceFingerprint(GOOD_PROBE),

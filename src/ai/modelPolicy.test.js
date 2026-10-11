@@ -3,7 +3,7 @@ import {
   VARIANTS, LARGEST_TENSOR_BYTES, LIMITS, assessWebGPU, watchdog,
   initialProgress, progressReducer, withTimeout, selfTestVerdict, variantFor,
   ATTEMPTS, ENGINES, planAttempts, classifyFailure, deviceFingerprint, failureRecord, attemptById, gpuSetAside,
-  gpuDeviceRequest, gpuSessionOptions, TRANSPOSE_NODES, isAdreno,
+  gpuDeviceRequest, gpuSessionOptions, TRANSPOSE_NODES, isAdreno, TRANSIENT, planNative,
 } from "./modelPolicy.js";
 
 // Sonde d'un GPU capable de porter q4f16, modifiée cas par cas.
@@ -282,11 +282,22 @@ describe("après l'échec d'une tentative : la suivante part d'elle-même", () =
 
   it("échec moteur à l'initialisation, à l'import ou à l'essai à vide : tentative condamnée, on continue", () => {
     for (const phase of ["init", "engine"]) {
-      for (const timedOut of [false, true]) {
-        const d = classifyFailure({ attempt: A("q4/webgpu"), phase, timedOut });
-        expect(d).toMatchObject({ condemn: true, continue: true, code: timedOut ? "init_timeout" : "init" });
-      }
+      expect(classifyFailure({ attempt: A("q4/webgpu"), phase })).toMatchObject({ condemn: true, continue: true, code: "init" });
     }
+  });
+
+  it("premier délai au démarrage : noté passager, PAS condamné ; le second d'affilée condamne", () => {
+    const first = classifyFailure({ attempt: A("q4/webgpu"), phase: "init", timedOut: true });
+    expect(first).toMatchObject({ condemn: false, transient: true, continue: true, code: "init_timeout" });
+    const again = classifyFailure({ attempt: A("q4/webgpu"), phase: "init", timedOut: true, failed: { "q4/webgpu": `${TRANSIENT}timeout 180 s` } });
+    expect(again).toMatchObject({ condemn: true, continue: true, code: "init_timeout" });
+  });
+
+  it("un délai passager mémorisé ne fait pas sauter la tentative au lancement suivant : le GPU est rejoué", () => {
+    const { queue, skipped } = planAttempts({ probe: goodProbe(), failed: { "q4/webgpu": `${TRANSIENT}timeout 180 s` } });
+    expect(queue.map((a) => a.id)).toContain("q4/webgpu");
+    expect(skipped.find((x) => x.id === "q4/webgpu")).toBeUndefined();
+    expect(planNative({ status: { supported: true }, failed: { vulkan: `${TRANSIENT}native load: no answer` } }).queue).toEqual(["vulkan", "cpu"]);
   });
 
   it("q4f16 purgé dès que sa tentative GPU a échoué (plus aucune ne s'en sert)", () => {

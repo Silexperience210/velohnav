@@ -14,7 +14,7 @@ import {
   initialProgress, progressReducer, withTimeout,
   memoryVerdict, heaviestVariant, LEGACY_MODEL_DIRS, selfTestVerdict, SECOND_TURN,
   planAttempts, classifyFailure, deviceFingerprint, failureRecord,
-  MODEL, NATIVE_MODEL, planNative, nativeAttemptId, nativeFingerprint,
+  MODEL, NATIVE_MODEL, planNative, nativeAttemptId, nativeFingerprint, TRANSIENT,
 } from "./modelPolicy.js";
 import { readMemoryInfo } from "./deviceMemory.js";
 import {
@@ -293,7 +293,8 @@ async function runLadder(onProgress, onPhase, gen) {
     report.gpu = gpuSummary(probeCache);
     fingerprint = deviceFingerprint(probeCache);
     failed = loadFailures(fingerprint);
-    const plan = planAttempts({ probe: probeCache, failed });
+    // Ce qui a échoué pendant CE chargement n'est pas rejoué (un échec passager compris)
+    const plan = planAttempts({ probe: probeCache, failed: { ...failed, ...Object.fromEntries(tried.map((x) => [x.id, x.code])) } });
     // Ce qui vient d'échouer pendant CE chargement figure déjà dans `tried`
     report.skipped = [...nativeSkipped, ...plan.skipped.filter((x) => !tried.some((y) => y.id === x.id))];
     const a = plan.queue[0] || null;
@@ -325,8 +326,8 @@ async function runLadder(onProgress, onPhase, gen) {
       const d = classifyFailure({ attempt: a, phase: e.phase, timedOut: e.timedOut, failed });
       tried.push({ id: a.id, code: d.code, detail: e.detail });
       console.warn(`[IA] tentative ${a.id} en échec (${d.code}, phase ${e.phase}) :`, e.detail);
-      if (d.condemn) {
-        failed = { ...failed, [a.id]: String(e.detail || d.code).slice(0, 200) };
+      if (d.condemn || d.transient) {
+        failed = { ...failed, [a.id]: `${d.transient ? TRANSIENT : ""}${String(e.detail || d.code).slice(0, 200)}` };
         saveFailures(fingerprint, failed);
       }
       if (d.purgeDtype) purgeCachedVariant(d.purgeDtype);
@@ -338,6 +339,12 @@ async function runLadder(onProgress, onPhase, gen) {
       const lines = [...tried.map(attemptLine), ...report.skipped.filter((x) => x.reason.startsWith("failed-before")).map((x) => `${x.id} → ${x.reason}`)];
       console.warn("[IA] aucune tentative n'a abouti :", lines.join(" ; "));
       throw new ModelError("all_failed", { detail: lines.join(" ; "), attempts: tried });
+    }
+    // Réussite : un délai passager noté pour elle ne compte plus
+    if (failed[r.attempt.id]) {
+      const { [r.attempt.id]: _, ...rest } = failed;
+      failed = rest;
+      saveFailures(fingerprint, failed);
     }
     report.chosen = {
       id: r.attempt.id, dtype: r.attempt.variant.dtype, device: r.attempt.engine.device,
@@ -418,6 +425,10 @@ async function runNative(onProgress, onPhase, gen) {
       if (gen !== generation) { unloadNative(); throw new ModelError("cancelled"); }
       native = att;
       ready = true;
+      if (failed[backend]) {
+        const { [backend]: _, ...rest } = failed;
+        saveNativeFailures(nativeFp, rest);
+      }
       report.skipped = nativeSkipped;
       report.chosen = {
         id, dtype: variant.dtype, device: "native", engine: att.engine.id, mb: variant.mb, loadMs: r.loadMs,
@@ -440,7 +451,9 @@ async function runNative(onProgress, onPhase, gen) {
       console.warn(`[IA] moteur natif ${backend} en échec (${e?.code}) :`, e?.detail || e);
       // Réseau : rien de propre au moteur, on ne le condamne pas (le téléchargement reprendra).
       if (e?.code === "network") return false;
-      failed = { ...failed, [backend]: String(e?.detail || e?.code || "load").slice(0, 200) };
+      // Premier délai dépassé : noté, rejoué au lancement suivant (TRANSIENT) ; le second condamne.
+      const transient = e?.code === "timeout" && !String(failed[backend] || "").startsWith(TRANSIENT);
+      failed = { ...failed, [backend]: `${transient ? TRANSIENT : ""}${String(e?.detail || e?.code || "load").slice(0, 200)}` };
       saveNativeFailures(nativeFp, failed);
       await unloadNative();
     }

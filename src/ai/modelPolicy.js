@@ -113,7 +113,7 @@ export function planNative({ status, failed = {} }) {
   if (!status.supported) return { queue: [], skipped: NATIVE_BACKENDS.map((backend) => ({ backend, reason: `unsupported: ${status.reason || "?"}` })) };
   const queue = [], skipped = [];
   for (const backend of NATIVE_BACKENDS) {
-    if (failed[backend]) skipped.push({ backend, reason: `failed-before: ${failed[backend]}` });
+    if (isCondemned(failed[backend])) skipped.push({ backend, reason: `failed-before: ${failed[backend]}` });
     else queue.push(backend);
   }
   return { queue, skipped };
@@ -390,7 +390,7 @@ export function planAttempts({ probe, failed = {} }) {
   const queue = [], skipped = [];
   for (const a of orderFor(probe)) {
     let why = null;
-    if (failed[a.id]) why = `failed-before: ${failed[a.id]}`;
+    if (isCondemned(failed[a.id])) why = `failed-before: ${failed[a.id]}`;
     else if (a.engine.device === "webgpu") {
       const v = a.variant.dtype === "q4f16" ? gpuF16 : gpuF32;
       if (!v.ok) why = v.reason;
@@ -400,6 +400,17 @@ export function planAttempts({ probe, failed = {} }) {
   }
   return { queue, skipped };
 }
+
+/**
+ * Échec PASSAGER mémorisé : un délai dépassé au démarrage ne prouve rien contre le GPU.
+ * Sur le téléphone, l'application passée en arrière-plan pendant la compilation des
+ * nuanceurs suspend le GPU, pas le chien de garde : avant, ce délai condamnait le GPU
+ * pour toujours sur l'appareil — même build, lancements suivants sur le processeur.
+ * Un délai est noté « transient: … » et la tentative est rejouée au lancement suivant ;
+ * c'est le SECOND délai d'affilée qui la condamne. Une réussite efface la note.
+ */
+export const TRANSIENT = "transient: ";
+const isCondemned = (reason) => !!reason && !String(reason).startsWith(TRANSIENT);
 
 /**
  * Échecs mémorisés, lus depuis le stockage. Ne vaut que pour la même empreinte.
@@ -426,7 +437,8 @@ export function failureRecord({ stored, legacyF16 = null, fingerprint }) {
  *  - réseau (setup, download) : on s'arrête, sans rien condamner — le même essai
  *    reprendra, fichiers déjà reçus compris ;
  *  - moteur (import du moteur, initialisation, essai à vide) : la tentative est
- *    condamnée sur cet appareil et la suivante part d'elle-même ;
+ *    condamnée sur cet appareil et la suivante part d'elle-même ; un premier DÉLAI au
+ *    démarrage est seulement noté (`transient`, voir TRANSIENT), la suivante part aussi ;
  *  - génération : une erreur du moteur sur le GPU condamne la tentative (une session
  *    peut se créer puis échouer à chaque réponse, mesuré) ; un délai dépassé ne prouve
  *    rien et ne condamne pas ; sur le processeur, rien après lui : on ne condamne pas.
@@ -439,6 +451,10 @@ export function classifyFailure({ attempt: a, phase, timedOut = false, failed = 
   const none = { condemn: false, continue: false, purgeDtype: null };
   if (phase === "setup" || phase === "download") return { ...none, code: `${phase}${sfx}` };
   if (phase === "generate" && (timedOut || a.engine.device !== "webgpu")) return { ...none, code: `generate${sfx}` };
+  // Premier délai au démarrage : noté, pas condamné (TRANSIENT) ; la suivante part.
+  if (timedOut && !String(failed[a.id] || "").startsWith(TRANSIENT)) {
+    return { condemn: false, transient: true, continue: true, purgeDtype: null, code: `init${sfx}` };
+  }
   const after = { ...failed, [a.id]: "x" };
   const dtypeDead = ATTEMPTS.filter((o) => o.variant.dtype === a.variant.dtype).every((o) => after[o.id]);
   // q4 sert aussi au processeur : jamais purgé

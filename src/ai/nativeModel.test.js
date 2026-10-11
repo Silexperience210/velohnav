@@ -196,6 +196,27 @@ describe("façade : le moteur natif d'abord, repli silencieux ensuite", () => {
       detail: 'tour 2 one-word: "Bonne nuit, cette question.<|im_end|>" puis "weather<|im_end|>"' }]);
   });
 
+  it("Vulkan figé au premier lancement (délai) : processeur natif cette fois, Vulkan REJOUÉ et retenu au suivant", async () => {
+    vi.useFakeTimers();
+    try {
+      let hang = true;
+      const p = fakePlugin();
+      const load = p.load.getMockImplementation();
+      p.load.mockImplementation((req) => (req.backend === "vulkan" && hang ? new Promise(() => {}) : load(req)));
+      await setup(p);
+      const first = mod.loadModel();
+      await vi.advanceTimersByTimeAsync(121_000);
+      await first;
+      expect(mod.modelReport().chosen).toMatchObject({ engine: "native_cpu" });
+      expect(JSON.parse(store.get("velohnav_ai_native_ko")).failed.vulkan).toMatch(/^transient: /);
+      hang = false;
+      mod.unloadModel();
+      await mod.loadModel();
+      expect(mod.modelReport().chosen).toMatchObject({ engine: "vulkan" });
+      expect(JSON.parse(store.get("velohnav_ai_native_ko")).failed).toEqual({});
+    } finally { vi.useRealTimers(); }
+  });
+
   it("le processus :llm meurt en pleine réponse : Vulkan écarté, `recover`, le rechargement prend le processeur natif", async () => {
     const p = fakePlugin({ reply: (b) => { if (b === "vulkan") throw crash(); return ok({ text: "Salut !<|im_end|>", stats: STATS }); } });
     await setup(p);
