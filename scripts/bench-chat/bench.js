@@ -2,7 +2,7 @@
 // l'application (src/ai/modelWorker.js) et le vrai chemin d'affichage
 // (systemPrompt avec ses outils, cleanReply, resolveModelOutput) : seule change la
 // configuration de génération comparée.
-import { VARIANTS, SELF_TEST } from "../../src/ai/modelPolicy.js";
+import { VARIANTS, SELF_TEST, MODEL, hubFileUrl } from "../../src/ai/modelPolicy.js";
 import { systemPrompt, resolveModelOutput } from "../../src/ai/assistant.js";
 import { answerLocally } from "../../src/ai/localAnswers.js";
 import { cleanReply, generationOptions } from "../../src/ai/localModel.js";
@@ -40,6 +40,21 @@ try {
   const probe = once("probe");
   w.postMessage({ type: "probe" });
   const p = (await probe).probe;
+  // CACHE=tronque|exact (run.mjs, avec HUB=1 : pas de copie embarquée) : le cache de
+  // transformers.js rempli comme sur le téléphone, sous les URL du Hub, le .onnx_data
+  // complet ou amputé de 10 % (Content-Length annoncé complet, comme cacheHeaders).
+  if (params.get("cache")) {
+    const cache = await caches.open("transformers-cache");
+    for (const f of ["config.json", "generation_config.json", "tokenizer.json", "tokenizer_config.json", "chat_template.jinja", ...variant.files]) {
+      const r = await fetch(`/models/${MODEL.localDir}/${f}`);
+      if (!r.ok) continue;
+      let buf = new Uint8Array(await r.arrayBuffer());
+      const full = buf.length;
+      if (params.get("cache") === "tronque" && f.endsWith(".onnx_data")) buf = buf.slice(0, Math.floor(full * 0.9));
+      await cache.put(hubFileUrl(f), new Response(buf, { headers: { "content-length": String(full) } }));
+    }
+    log(`cache rempli (${params.get("cache")})`);
+  }
   const ready = once("ready");
   const engine = params.get("engine") || (variant.device === "wasm" ? "wasm" : "webgpu");
   const t0load = performance.now();
@@ -49,7 +64,7 @@ try {
   if (r.type === "error") throw new Error(`${r.message}\n   journal : ${JSON.stringify(r.log)}`);
   await send({ type: "meta", attempt: params.get("attempt"), gpu: r.gpu, device: variant.device, dtype: variant.dtype, engine, probe: p, ua: navigator.userAgent,
                isolated: self.crossOriginIsolated, cores: navigator.hardwareConcurrency,
-               loadMs: Math.round(performance.now() - t0load), selfTest: r.selfTest, selfTestMs: r.selfTestMs });
+               loadMs: Math.round(performance.now() - t0load), selfTest: r.selfTest, selfTestMs: r.selfTestMs, integrity: r.integrity });
   // Contexte vide : un outil appelé retombe sur l'assistant déterministe, ce n'est pas l'objet du banc.
   const ctx = { stations: [], t, now: new Date() };
   if (params.get("mode") === "prefixe") {
@@ -76,8 +91,11 @@ try {
     // CHAT_TURNS messages où n'entrent que les réponses libres montrées, options de
     // l'application. Une erreur du worker est rapportée telle quelle (l'application,
     // elle, la rattrapait sans rien dire).
+    // Q=« Bonsoir|Bonjour » (run.mjs) : les questions du téléphone ; consigne calculée
+    // d'avance (« warm ») comme le fait AIScreen dès le modèle prêt.
+    w.postMessage({ type: "warm", system: systemPrompt(t) });
     let aiHistory = [];
-    for (const q of CONVERSATION) {
+    for (const q of params.get("q")?.split("|") ?? CONVERSATION) {
       const local = answerLocally(q, { t, stations: [] });
       const hist = [...aiHistory, { role: "user", content: q }].slice(-6);
       const messages = [{ role: "system", content: systemPrompt(t) }, ...hist];

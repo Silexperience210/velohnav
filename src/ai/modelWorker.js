@@ -19,6 +19,7 @@
 import { LIMITS, MODEL, SELF_TEST, secondTurn, hubFileUrl, cacheHeaders, withTimeout, ENGINES, ENGINE_SLOT,
          attemptById, gpuDeviceRequest, gpuSessionOptions } from "./modelPolicy.js";
 import { reusablePrefix, sameIds, prefixMessages, shareable, copyCache } from "./promptCache.js";
+import { ensureIntact } from "./modelIntegrity.js";
 
 const MODEL_ID = MODEL.id;
 // Copie embarquée éventuelle (public/models/ via scripts/fetch-model.sh).
@@ -189,6 +190,22 @@ async function prefetchToCache(file, bytes) {
 }
 
 /**
+ * Fichiers en cache vérifiés (taille, SHA-256) AVANT d'être lus par transformers.js, qui
+ * accepterait un fichier incomplet sans rien dire (modelIntegrity.js). Une seule fois par
+ * fichier reçu. Le cache illisible n'empêche pas de charger ; un fichier faux deux fois, si.
+ */
+let integrity = [];   // constat par fichier, joint au message « ready »
+async function verifyCache(variant) {
+  integrity = [];
+  if (typeof caches === "undefined") return;
+  let cache;
+  try { cache = await caches.open(CACHE_NAME); } catch (e) { console.warn("[IA] cache illisible, fichiers non vérifiés :", e?.message || e); return; }
+  integrity = await ensureIntact(cache, variant, prefetchToCache,
+    (file) => post({ type: "progress", ev: { status: "verify", file } }));
+  console.info(`[IA] intégrité : ${integrity.map((x) => `${x.file} ${x.reason}`).join(", ")}`);
+}
+
+/**
  * Device WebGPU fourni à onnxruntime : sans subgroups (gpuDeviceRequest, modelPolicy.js).
  * Sans lui, onnxruntime crée le sien avec toutes les fonctions de l'adaptateur.
  * Rend { device, dropped, info } ; ce qui a été retiré est journalisé et remonte.
@@ -230,6 +247,7 @@ async function load({ variant, engine, modelId, attemptId }) {
     // Graphe puis poids (.onnx_data, le gros), l'un après l'autre : jamais deux flux
     // de plusieurs centaines de Mo en même temps.
     for (const file of variant.files || [variant.file]) await prefetchToCache(file, variant.bytes?.[file]);
+    await verifyCache(variant);
   }
   let session_options;
   if (variant.device === "webgpu") {
@@ -271,7 +289,7 @@ self.onmessage = async ({ data }) => {
       const t1 = performance.now();
       const { said: [selfTest, selfTest2], raw: selfTestRaw } = await selfTestRun();
       const t2 = performance.now();
-      post({ type: "ready", selfTest, selfTest2, selfTestRaw, loadMs: Math.round(t2 - t0), selfTestMs: Math.round(t2 - t1), gpu: gpuInfo });
+      post({ type: "ready", selfTest, selfTest2, selfTestRaw, loadMs: Math.round(t2 - t0), selfTestMs: Math.round(t2 - t1), gpu: gpuInfo, integrity });
     } catch (e) {
       post({ type: "error", ...errorReport(e) });
     }

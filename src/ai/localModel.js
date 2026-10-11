@@ -298,11 +298,11 @@ function runAttempt(choose, onProgress, onPhase) {
         w.onmessage = onRuntimeMessage;
         w.onerror = (e) => killWorker(new ModelError("generate", { detail: e?.message || "worker error" }));
         ready = true;
-        done(null, { attempt: att, loadMs: data.loadMs, gpu: data.gpu || null,
+        done(null, { attempt: att, loadMs: data.loadMs, gpu: data.gpu || null, integrity: Array.isArray(data.integrity) ? data.integrity : [],
           selfTestRaw: Array.isArray(data.selfTestRaw) ? data.selfTestRaw.map(String) : [data.selfTest, data.selfTest2].filter((x) => x !== undefined).map(String) });
       } else if (data.type === "error") {
         // Échec à l'import du moteur : propre à la tentative, pas au réseau.
-        const phase = data.stage === "engine" ? "engine" : st.phase;
+        const phase = data.stage === "engine" || data.stage === "integrity" ? data.stage : st.phase;
         // Le message d'onnxruntime est souvent générique (« failed to call OrtRun() ») :
         // la cause est dans son journal (console du worker), qu'on joint au message.
         const log = Array.isArray(data.log) ? data.log.filter((l) => l && !String(data.message).includes(l)) : [];
@@ -408,6 +408,8 @@ async function ladder(onProgress, onPhase, gen, gpuOnly) {
       engine: r.attempt.engine.id, mb: r.attempt.variant.mb,
       ...(Number.isFinite(r.loadMs) ? { loadMs: r.loadMs } : {}),
       selfTestRaw: r.selfTestRaw || [],
+      // Fichiers vérifiés (taille, SHA-256) à ce chargement : « verified », « ok », « refetched: … »
+      ...(r.integrity?.length ? { integrity: r.integrity } : {}),
       // Réglage GPU retenu et fonctions retirées du device (subgroups) : dit à l'écran et au journal
       ...(r.attempt.gpu ? { gpuMode: r.attempt.gpu.mode, dropped: r.gpu?.dropped || [] } : {}),
     };

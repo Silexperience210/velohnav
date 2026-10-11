@@ -421,6 +421,18 @@ describe("façade : l'échelle des tentatives, sans rien demander", () => {
     });
   });
 
+  it("fichier du modèle faux même après retéléchargement : erreur « integrity », rien de condamné", async () => {
+    const loading = mod.loadModel().then(() => "resolved", (e) => e);
+    await flush();
+    const w = last();
+    w.emit({ type: "probe", probe: null });
+    w.emit({ type: "error", stage: "integrity", message: "integrity onnx/model_q4.onnx_data: size 264266956 != 293629952" });
+    const e = await loading;
+    expect(e).toMatchObject({ code: "integrity" });
+    expect(e.detail).toContain("size 264266956");
+    expect(store.has("velohnav_ai_attempts_ko")).toBe(false);
+  });
+
   it("erreur du moteur pendant la génération sur le processeur : rejetée avec son message, rien après lui", async () => {
     const loading = mod.loadModel();
     await flush();

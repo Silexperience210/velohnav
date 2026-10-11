@@ -346,6 +346,7 @@ export default {
   "ui.ai.model.fail.init_timeout":     "aucune réponse du moteur après {s} s de démarrage",
   "ui.ai.model.fail.all_failed":       "le modèle n'a démarré ni sur le GPU ni sur le processeur de cet appareil. « Réessayer » reprend tous les essais",
   "ui.ai.model.fail.generate":         "le modèle s'est arrêté pendant la réponse",
+  "ui.ai.model.fail.integrity":        "le fichier du modèle reçu est incomplet ou altéré, même après un second téléchargement — vérifie la connexion et l'espace libre, puis réessaie",
   "ui.ai.model.fail.generate_timeout": "le modèle n'a pas répondu en {s} s ; il redémarrera à la prochaine question",
   "ui.ai.model.fail.memory":           "mémoire insuffisante : le modèle demande environ {need} Mo libres, l'appareil en a {avail}. Ferme d'autres applications puis réessaie — les réponses ci-dessus restent disponibles",
   "ui.ai.model.gpu_aside":   "GPU non utilisé — {why}",

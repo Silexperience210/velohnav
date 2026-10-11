@@ -42,7 +42,7 @@ const server = http.createServer((req, res) => {
     req.on("data", (c) => { body += c; });
     req.on("end", () => {
       const m = JSON.parse(body);
-      if (m.type === "meta") { meta = m; console.log(`[banc] ${m.attempt ? `tentative ${m.attempt}, ` : ""}${m.gpu ? `device GPU ${JSON.stringify(m.gpu)}, ` : ""}${m.device}/${m.dtype} moteur ${m.engine}${m.isolated ? ` (page isolée, ${m.cores} cœurs)` : " (un fil)"} : chargé en ${m.loadMs} ms, essai à vide ${JSON.stringify(m.selfTest)} en ${m.selfTestMs} ms`, JSON.stringify(m.probe)); }
+      if (m.type === "meta") { meta = m; console.log(`[banc] ${m.attempt ? `tentative ${m.attempt}, ` : ""}${m.gpu ? `device GPU ${JSON.stringify(m.gpu)}, ` : ""}${m.device}/${m.dtype} moteur ${m.engine}${m.isolated ? ` (page isolée, ${m.cores} cœurs)` : " (un fil)"} : chargé en ${m.loadMs} ms, essai à vide ${JSON.stringify(m.selfTest)} en ${m.selfTestMs} ms${m.integrity ? ` ; intégrité ${JSON.stringify(m.integrity)}` : ""}`, JSON.stringify(m.probe)); }
       else if (m.type === "row") {
         rows.push(m);
         console.log(`[${m.cfg}] ${m.q}${m.reachesModel ? "" : "  (reconnu sans modèle)"}\n   brut : ${JSON.stringify(m.raw)}`
@@ -62,6 +62,8 @@ const server = http.createServer((req, res) => {
     res.setHeader("cross-origin-opener-policy", "same-origin");
     res.setHeader("cross-origin-embedder-policy", "require-corp");
   }
+  // HUB=1 : la copie embarquée est dite absente (HEAD), le worker passe par le cache du Hub.
+  if (process.env.HUB === "1" && req.method === "HEAD" && url.startsWith("/models/")) { res.statusCode = 404; return res.end(); }
   const file = url.startsWith("/models/") ? path.join(modelsDir, url.slice(8)) : path.join(out, url === "/" ? "index.html" : url);
   fs.stat(file, (err, st) => {
     if (err || !st.isFile()) { res.statusCode = 404; return res.end(); }
@@ -80,7 +82,7 @@ const chrome = spawn(process.env.CHROME || "google-chrome", [
   ...(process.env.HEADLESS === "0" ? ["--ozone-platform-hint=auto"] : ["--headless=new"]), `--user-data-dir=${profile}`, "--no-first-run", "--enable-unsafe-webgpu",
   "--enable-features=Vulkan", "--ignore-gpu-blocklist",
   ...(process.env.CHROME_FLAGS ? process.env.CHROME_FLAGS.split(" ") : []),
-  process.env.PAGE === "ladder" ? `http://127.0.0.1:${port}/ladder.html?${configs}` : `http://127.0.0.1:${port}/index.html?device=${device}${configs === "conversation" || configs === "prefixe" ? `&mode=${configs}` : configs ? `&configs=${configs}` : ""}${process.env.ENGINE ? `&engine=${process.env.ENGINE}` : ""}${process.env.ATTEMPT ? `&attempt=${encodeURIComponent(process.env.ATTEMPT)}` : ""}${process.env.MAX ? `&max=${process.env.MAX}` : ""}${process.env.N ? `&n=${process.env.N}` : ""}`,
+  process.env.PAGE === "ladder" ? `http://127.0.0.1:${port}/ladder.html?${configs}` : `http://127.0.0.1:${port}/index.html?device=${device}${configs === "conversation" || configs === "prefixe" ? `&mode=${configs}` : configs ? `&configs=${configs}` : ""}${process.env.ENGINE ? `&engine=${process.env.ENGINE}` : ""}${process.env.ATTEMPT ? `&attempt=${encodeURIComponent(process.env.ATTEMPT)}` : ""}${process.env.MAX ? `&max=${process.env.MAX}` : ""}${process.env.N ? `&n=${process.env.N}` : ""}${process.env.Q ? `&q=${encodeURIComponent(process.env.Q)}` : ""}${process.env.CACHE ? `&cache=${process.env.CACHE}` : ""}`,
 ], { stdio: "ignore" });
 await finished;
 chrome.kill();

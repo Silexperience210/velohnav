@@ -46,6 +46,25 @@ const FILE_BYTES = Object.freeze({
   "onnx/model_q4.onnx_data": 293_629_952,
 });
 
+/**
+ * SHA-256 de chaque fichier (champ lfs.oid de l'API /tree du Hub, révision ci-dessus ;
+ * recalculés sur la copie de ~/.cache/vn-models : identiques).
+ *
+ * Pourquoi : transformers.js relit un fichier en cache dans un tampon de Content-Length
+ * octets (readResponse) et laisse à ZÉRO, sans aucune erreur, ce que le corps ne fournit
+ * pas. Un .onnx_data incomplet en cache donne donc un modèle qui se charge, passe l'essai
+ * à vide, puis répond n'importe quoi. Mesuré (scripts/bench-chat/worker-node.mjs, vrai
+ * worker, poids tronqués de 10 %) : essai à vide « C'est bien à vous ! » / « Oui, je
+ * serais ravi » — accepté —, puis « Bonsoir » → « BTrama, bénédiction. Bonsei… ». C'est
+ * la classe du « Bonne nuit » à tout relevé sur le téléphone en processeur q4.
+ */
+const FILE_SHA256 = Object.freeze({
+  "onnx/model_q4f16.onnx": "3012c28a119828561c90196331435d91c43c1a6ab4898ac79715585fff1dff85",
+  "onnx/model_q4f16.onnx_data": "9256ecd417b801b441d926ebe5ead4ebf50ac1a5a0f8f7914cf60d9d6452ef69",
+  "onnx/model_q4.onnx": "d1a705712e93aafaba1346b32245fa59e7857a46e2272003c0e8c524977e0de8",
+  "onnx/model_q4.onnx_data": "71ec6ad38a4c463dcb3dba671d06a1d9861be3a23e51290d818b95c0b7d2a5db",
+});
+
 const variant = (dtype, device, suffix) => {
   const files = [`onnx/model${suffix}.onnx`, `onnx/model${suffix}.onnx_data`];
   const bytes = Object.freeze(Object.fromEntries(files.map((f) => [f, FILE_BYTES[f]])));
@@ -57,8 +76,28 @@ const variant = (dtype, device, suffix) => {
     // Tous les fichiers de poids, le graphe d'abord : le dernier est le gros.
     files: Object.freeze(files),
     bytes,
+    sha256: Object.freeze(Object.fromEntries(files.map((f) => [f, FILE_SHA256[f]]))),
   });
 };
+
+/**
+ * Clé du cache qui atteste qu'un fichier en cache a été vérifié (taille et SHA-256) :
+ * la vérification complète (294 Mo à hacher) n'est faite qu'une fois par fichier reçu.
+ * L'empreinte est dans la clé : un autre fichier attendu n'est jamais pris pour vérifié.
+ */
+export const verifiedKey = (url, sha256) => `${url}?vh-verified=${sha256}`;
+
+/**
+ * Verdict sur un fichier relu en entier.
+ * @param {{ bytes: number, sha256: string }} got ce qui a été lu
+ * @param {{ bytes?: number, sha256?: string }} want ce qui est attendu
+ * @returns {{ ok: boolean, reason: string }}
+ */
+export function integrityVerdict(got, want) {
+  if (Number.isFinite(want?.bytes) && got.bytes !== want.bytes) return { ok: false, reason: `size ${got.bytes} != ${want.bytes}` };
+  if (want?.sha256 && got.sha256 !== want.sha256) return { ok: false, reason: `sha256 ${String(got.sha256).slice(0, 12)}… != ${want.sha256.slice(0, 12)}…` };
+  return { ok: true, reason: "ok" };
+}
 
 /** Variantes du modèle (255 Mo en q4f16, 294 Mo en q4). */
 export const VARIANTS = Object.freeze({
@@ -443,13 +482,15 @@ export function failureRecord({ stored, legacyF16 = null, fingerprint }) {
  *    peut se créer puis échouer à chaque réponse, mesuré) ; un délai dépassé ne prouve
  *    rien et ne condamne pas ; sur le processeur, rien après lui : on ne condamne pas.
  * purge : dtype dont les fichiers ne serviront plus (toutes ses tentatives condamnées).
- * @param {{ attempt: object, phase: "setup"|"engine"|"download"|"init"|"generate", timedOut?: boolean,
+ * @param {{ attempt: object, phase: "setup"|"engine"|"download"|"integrity"|"init"|"generate", timedOut?: boolean,
  *           failed?: Record<string,string> }} f
  */
 export function classifyFailure({ attempt: a, phase, timedOut = false, failed = {} }) {
   const sfx = timedOut ? "_timeout" : "";
   const none = { condemn: false, continue: false, purgeDtype: null };
-  if (phase === "setup" || phase === "download") return { ...none, code: `${phase}${sfx}` };
+  // integrity : un fichier en cache faux, retéléchargé, faux encore — le réseau ou le
+  // stockage, pas le moteur. Rien de condamné, le prochain chargement revérifie.
+  if (phase === "setup" || phase === "download" || phase === "integrity") return { ...none, code: `${phase}${sfx}` };
   if (phase === "generate" && (timedOut || a.engine.device !== "webgpu")) return { ...none, code: `generate${sfx}` };
   // Premier délai au démarrage : noté, pas condamné (TRANSIENT) ; la suivante part.
   if (timedOut && !String(failed[a.id] || "").startsWith(TRANSIENT)) {
