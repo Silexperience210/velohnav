@@ -292,3 +292,39 @@ Ce qui est **supposé**, faute de téléphone ici : les jetons/s sur l'Adreno du
 et que Vulkan y calcule juste. L'essai à vide (`NATIVE_SELF_TEST`) écarte un GPU qui rend
 une sortie fausse ; l'écran affiche la vitesse de chaque réponse : poser la même question
 avec l'APK native et l'APK normale donne la comparaison sur l'appareil.
+
+### Sortie qui se dégrade au fil des tours ; GPU abandonné d'un lancement à l'autre (11/10)
+
+Relevé sur le téléphone (GPU WebGPU, mode sûr) : « Bonsoir » → `Bonne nuit, cette question.`,
+puis `weather<|im_end|>`, `WeBostir<|im_end|>`. Et, d'une build à l'autre, tantôt le GPU,
+tantôt « processeur · q4 » avec « Réessayer le GPU ».
+
+**Cause établie dans le code — GPU abandonné** : un délai d'initialisation dépassé
+condamnait la tentative GPU pour toujours sur l'appareil. Un délai ne prouve rien (application
+en arrière-plan pendant la compilation des nuanceurs, cache de nuanceurs vide). Désormais un
+premier délai est noté passager (`TRANSIENT`), rejoué au lancement suivant ; le second d'affilée
+condamne. Vaut pour WebGPU et pour le moteur natif. Testé sans appareil (trois lancements).
+
+**Sortie dégradée — mesures sur PC** (`CONV=1 MAX=48 node scripts/bench-native/run.mjs <gguf> vulkan`,
+conversation du téléphone rejouée, réponses brutes reprises à chaque tour) :
+
+| Voie | Bonsoir | Je suis Silex | Salut | Bonjour |
+|---|---|---|---|---|
+| Vulkan, kv fp32 | « Bonsoir ! Comment puis-je vous aider aujourd'hui ? » | « Pourriez-vous me dire quel est le lieu où vous souhaitez aller ? » | idem | « …la station de vélo la plus proche… » |
+| Vulkan, kv fp16 (`VH_GPU_EXACT=0`) | identique mot pour mot | identique | identique | identique |
+| processeur natif | identique au 1er tour | phrase complète | phrase complète | phrase complète |
+
+NVIDIA ne reproduit donc pas le défaut : aucune dégradation, quelle que soit la précision. Ce qui
+est **supposé** (non mesurable ici) : que le fp16 d'Adreno dans le cache clés-valeurs en soit la
+cause. Ce qui est **fait** contre lui :
+- moteur natif sur GPU : cache clés-valeurs fp32, flash attention désactivée (`gpu_exact`).
+  Coût mesuré (RTX 3060, 6 questions, 96 jetons) : génération 355 contre 420 j/s, prompt
+  1 185 contre 5 520 j/s — la consigne étant calculée d'avance, seule la question paie ;
+- essai à vide en **deux tours** (natif et WebGPU) : le second reprend la réponse du premier et
+  doit être une phrase (3 mots). Un GPU qui répond juste au 1er tour puis « weather » est
+  écarté au chargement, sorties brutes des deux tours à l'écran. Vérifié sur le vrai modèle :
+  « Bien sûr, je peux t'aider à trouver un vélo. » (processeur et Vulkan), pas de faux négatif.
+
+Le mode « sûr » WebGPU reste une marche de repli, pas le défaut : sur Adreno l'échelle essaie
+q4 GPU **sans** béquille d'abord. À lire sur le téléphone : la ligne d'état (voie, kv), la
+vitesse de chaque réponse, et si le second tour passe sur Vulkan.
