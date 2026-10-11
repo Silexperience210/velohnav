@@ -35,11 +35,10 @@ android {
         }
 
         // Moteur conversationnel natif (llama.cpp, GPU Vulkan) : src/main/cpp.
-        // Construit SEULEMENT sur demande : ./gradlew assembleDebug -PvhNative=1
-        // Par défaut la bibliothèque n'est pas embarquée : elle n'est pas encore branchée
-        // sur l'interface (aucun appel depuis src/), et l'ajouter coûterait ~8 Mo
-        // compressés à une APK déjà proche de la limite d'envoi de 50 Mo. La construction
-        // ci-dessous est celle de l'APK livrée.
+        // Construit avec -PvhNative=1 : c'est le DÉFAUT de la CI (APK livrée), la voie GPU
+        // principale sur Android (docs/MODELE.md). Sans le drapeau (construction locale
+        // rapide, sans NDK), l'APK n'a que la voie WebGPU / processeur et le greffon
+        // répond « not-built ».
         // arm64 seulement (téléphones récents) ; niveau d'API 28 : ggml-vulkan appelle
         // vkGetPhysicalDeviceFeatures2, absent de libvulkan.so avant Android 9 — LlmNative
         // ne charge pas la bibliothèque en dessous. Optimisée même en debug : un -O0 rendrait

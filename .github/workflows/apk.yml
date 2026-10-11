@@ -4,14 +4,15 @@ on:
   push:
     branches: [main]
     tags: ['v*']
-  # workflow_dispatch avec entrée : la construction par défaut reste SANS moteur
-  # natif ; l'entrée vhNative=1 demande la construction avec llama.cpp/Vulkan.
+  # Le moteur natif (llama.cpp/Vulkan) est construit PAR DÉFAUT : c'est la voie GPU
+  # principale sur Android (docs/MODELE.md). workflow_dispatch avec vhNative=0 construit
+  # l'APK sans lui (voie WebGPU / processeur seule).
   workflow_dispatch:
     inputs:
       vhNative:
-        description: "Moteur natif llama.cpp/Vulkan (-PvhNative=1) — APK ~59 Mo au lieu de ~51 Mo"
+        description: "Moteur natif llama.cpp/Vulkan (-PvhNative=1) ; 0 pour l'APK sans moteur natif"
         required: false
-        default: "0"
+        default: "1"
         type: string
 
 # FIX: permissions explicites pour softprops/action-gh-release
@@ -78,18 +79,17 @@ jobs:
       - name: Make gradlew executable
         run: chmod +x android/gradlew
 
-      # ── Moteur natif llama.cpp/Vulkan — seulement si l'entrée vhNative=1 ──────
-      # La construction par défaut (push main/tag, ou dispatch sans entrée) reste
-      # strictement celle d'avant : aucun NDK à installer, drapeau vide.
+      # ── Moteur natif llama.cpp/Vulkan — par défaut (push main/tag compris) ──────
+      # Seule l'entrée vhNative=0 (ou false) de workflow_dispatch construit sans lui.
       - name: Moteur natif demandé ?
         id: native
         run: |
-          if [ "${{ inputs.vhNative }}" = "1" ] || [ "${{ inputs.vhNative }}" = "true" ]; then
+          if [ "${{ inputs.vhNative }}" = "0" ] || [ "${{ inputs.vhNative }}" = "false" ]; then
+            echo "flag=" >> "$GITHUB_OUTPUT"
+            echo "Construction SANS moteur natif (vhNative=0)"
+          else
             echo "flag=-PvhNative=1" >> "$GITHUB_OUTPUT"
             echo "Moteur natif ACTIF : -PvhNative=1 (llama.cpp + Vulkan, arm64-v8a)"
-          else
-            echo "flag=" >> "$GITHUB_OUTPUT"
-            echo "Construction par défaut, SANS moteur natif"
           fi
 
       # NDK 28.2.13676358 et CMake 3.31.6 : exigés par android/app/build.gradle quand

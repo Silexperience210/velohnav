@@ -328,3 +328,60 @@ cause. Ce qui est **fait** contre lui :
 Le mode « sûr » WebGPU reste une marche de repli, pas le défaut : sur Adreno l'échelle essaie
 q4 GPU **sans** béquille d'abord. À lire sur le téléphone : la ligne d'état (voie, kv), la
 vitesse de chaque réponse, et si le second tour passe sur Vulkan.
+
+## GPU à chaque lancement : stratégie retenue (11/10)
+
+**Décision : moteur natif (llama.cpp, Vulkan) par défaut sur Android ; WebGPU en repli.**
+La CI construit désormais l'APK avec `-PvhNative=1` (désactivable : `vhNative=0`).
+
+Pourquoi, mesuré ou établi dans le code :
+- **taille** : APK debug avec moteur natif 50,2 Mo brut / 47,9 Mo zippé, contre 51,0 / 49,2 Mo
+  sans (le natif est arm64 seule, les bibliothèques x86/armv7 d'ARCore partent) : sous la
+  limite d'envoi de 50 Mo ;
+- **vitesse et mémoire sur PC** (`MAX=48 N=3 node scripts/bench-native/run.mjs <Q4_0.gguf> cpu,vulkan`,
+  RTX 3060, mêmes 3 questions, réponses en français 3/3 dans les deux cas) :
+
+  | Voie | Génération | Pic mémoire du processus |
+  |---|---|---|
+  | natif, processeur (4 fils) | 99,9 j/s | 611 Mio |
+  | natif, Vulkan | 232,5 j/s | 393 Mio hôte + 461 Mio GPU (`nvidia-smi`) |
+  | WebGPU q4, Chrome (mesure du 10/10, plus haut) | 258 à 1 507 ms par réponse | non mesuré |
+
+  Sur téléphone, la mémoire est unifiée : le total Vulkan (≈ 0,85 Go au pire) est du même ordre
+  que l'estimation de la voie ONNX (≈ 1,2 Go exigés) — le contrôle mémoire n'écarte pas le natif
+  avant la voie JavaScript ;
+- **fiabilité** : la voie WebGPU dépend de la version de la WebView et d'un build de
+  développement d'onnxruntime-web ; sur l'Adreno du propriétaire elle a produit « 鹰 », « 龙 »
+  (subgroups), « Sub requires f16 » (q4f16) et une sortie dégradée au fil des tours. Vulkan
+  est fourni par le système depuis Android 7, llama.cpp ne passe pas par la WebView.
+
+Ce qui reste **supposé** : que Vulkan calcule juste et vite sur l'Adreno 642L (SM7325). Aucune
+mesure n'est possible ici. Le backend Vulkan de llama.cpp a des défauts connus sur certains
+pilotes Adreno ; l'essai à vide en deux tours écarte un Vulkan qui calcule faux.
+
+### Ordre des voies : le GPU d'abord, toutes voies confondues
+
+GPU natif (Vulkan) → WebGPU (q4, q4 « sûr », q4f16 ; q4 d'abord sur Adreno, sans subgroups)
+→ processeur natif → processeur WASM. Avant, un Vulkan en échec menait au processeur natif
+sans essayer WebGPU. Une coupure réseau ou un refus mémoire pendant les essais WebGPU laisse
+partir le processeur natif ; le GGUF est gardé tant qu'il peut servir.
+
+### Le GGUF : fiable et visible
+
+Reprise (fichier `.part` + `Range`), SHA-256 vérifié, arrêt après 90 s sans octet ou 30 min
+au total (partiel gardé). Il est maintenant téléchargé même si la voie JavaScript échoue en
+entier, sa progression s'affiche (« GPU natif : modèle en réception · 42 % »), et l'écran
+bascule vers le GPU natif dès sa réception, sans attendre le lancement suivant.
+
+### La preuve sur l'appareil : le journal des chargements
+
+Réglages → Avancé → « Journal de l'IA locale ». Pour chacun des 10 derniers chargements :
+voie et GPU annoncé, temps de chargement, cache kv, mémoire du processus `:llm` (rss, pic,
+PSS, part graphique) et coût en mémoire système, sorties **brutes** des deux tours de l'essai
+à vide et des deux premières réponses (jetons/s compris), voies essayées ou écartées et
+pourquoi. Le badge « GPU n/5 » donne le critère d'acceptation : 5 lancements consécutifs,
+GPU à chaque fois. Le texte se copie tel quel.
+
+**Non fait ici, faute d'appareil :** les 5 lancements sur le Xiaomi 2107113SG. La procédure :
+installer l'APK de la CI (moteur natif), activer la conversation libre, poser « Bonsoir » puis
+« Je suis Silex », fermer l'application ; recommencer 5 fois ; copier le journal.
