@@ -550,6 +550,7 @@ async function tryNative(onPhase, gen, backends) {
         id, dtype: variant.dtype, device: "native", engine: att.engine.id, mb: variant.mb, loadMs: r.loadMs,
         selfTestRaw: r.selfTestRaw || [], ...(r.mem ? { mem: r.mem } : {}),
         ...(r.info.kv ? { kv: r.info.kv } : {}),
+        ...(r.bench ? { bench: r.bench } : {}),
         ...(backend !== "cpu" ? { gpuName: r.info.description || r.info.device || "" } : {}),
       };
       console.info(`[IA] retenu : ${id} (${variant.mb} Mo, prêt en ${(r.loadMs / 1000).toFixed(1)} s)`

@@ -148,6 +148,14 @@ describe("façade : le moteur natif d'abord, repli silencieux ensuite", () => {
     expect(FakeWorker.all).toHaveLength(0);
   });
 
+  it("banc fixe : la vitesse de l'essai à vide est rendue avec le choix retenu", async () => {
+    const p = fakePlugin({ load: { vulkan: ok({ info: { ...INFO.vulkan, loadMs: 900, threads: 3, cpus: "4-7" } }) } });
+    await setup(p);
+    await mod.loadModel();
+    // Deux tours de STATS : 40 jetons en 1 s ; premier jeton = consigne (promptMs) faute de firstMs
+    expect(mod.modelReport().chosen.bench).toEqual({ loadMs: 900, firstMs: 80, tokens: 40, tps: 40, target: 20, met: true, threads: 3, cpus: "4-7" });
+  });
+
   it("preuve rendue : sorties BRUTES des deux tours de l'essai à vide, mémoire du processus :llm, cache kv", async () => {
     const mem = { rssMB: 412, peakMB: 455, pssMB: 690, gfxMB: 268 };
     const p = fakePlugin({ load: { vulkan: ok({ info: { ...INFO.vulkan, kv: "f32" }, mem }) } });

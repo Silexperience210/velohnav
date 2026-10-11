@@ -32,6 +32,7 @@ export function journalEntry(report, { at, error = null }) {
       ...(Number.isFinite(c.loadMs) ? { loadMs: c.loadMs } : {}),
       ...(c.mem ? { mem: { ...c.mem } } : {}),
       ...(Number.isFinite(c.sysMB) ? { sysMB: c.sysMB } : {}),
+      ...(Number.isFinite(c.bench?.tps) ? { bench: { tps: c.bench.tps, firstMs: c.bench.firstMs, threads: c.bench.threads, cpus: c.bench.cpus } } : {}),
       selfTest: (c.selfTestRaw || []).map((x) => clip(x)),
     } : null,
     // GPU WebGPU annoncé (sonde) : sur la voie JavaScript, c'est le seul nom du GPU
@@ -106,6 +107,10 @@ export function formatJournal(entries) {
         + `${Number.isFinite(c.loadMs) ? ` · prêt ${(c.loadMs / 1000).toFixed(1)} s` : ""}${c.kv ? ` · kv ${c.kv}` : ""}`);
       if (c.mem || Number.isFinite(c.sysMB)) {
         lines.push(`  mém : ${[c.mem ? `:llm ${memLine(c.mem)}` : "", Number.isFinite(c.sysMB) ? `système ${mb(c.sysMB)}` : ""].filter(Boolean).join(" · ")}`);
+      }
+      if (c.bench) {
+        lines.push(`  banc : ${c.bench.tps} j/s${Number.isFinite(c.bench.firstMs) ? ` · 1er jeton ${c.bench.firstMs} ms` : ""}`
+          + `${Number.isFinite(c.bench.threads) ? ` · ${c.bench.threads} fils${c.bench.cpus ? ` (cœurs ${c.bench.cpus})` : ""}` : ""}`);
       }
       c.selfTest.forEach((s, i) => lines.push(`  essai ${i + 1} : ${JSON.stringify(s)}`));
     } else {

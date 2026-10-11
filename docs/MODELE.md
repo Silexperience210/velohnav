@@ -496,3 +496,70 @@ natif. `unload()` attend désormais la disparition de `/proc/<pid>` (3 s au plus
    fautif ; **low-memory** → contexte réduit (`nCtx` 4096 → 2048), KV fp32 sur moins de jetons.
 3. Tant que Vulkan n'est pas prouvé sur l'appareil, il reste tenté une fois puis condamné : il
    ne bloque jamais la voie processeur (budgets `nativeBudgetMs`, `initMs.native`).
+
+## Processeur natif : objectif ≥ 20 jetons/s (12/10)
+
+Demande : au moins 20 j/s de génération sur le processeur natif (llama.cpp) du Xiaomi 11T Pro
+(Snapdragon 888 : 4 × A55 1,8 GHz, 3 × A78 2,42 GHz, 1 × X1 2,84 GHz), relevé de départ 0,8 j/s.
+
+### D'où vient le 0,8 j/s
+
+- Le relevé du 11/10 accompagnait la ligne d'état « processeur · q4, calcul 32 bits » : c'est le
+  libellé de la voie **WASM** (onnxruntime), pas de llama.cpp, qui s'affiche « processeur (moteur
+  natif) ». La voie WASM fait 0,6 j/s sur PC en un fil (tableau plus haut) : le chiffre lui
+  correspond. Le processeur natif n'a peut-être jamais tourné sur le téléphone.
+- Le natif peut toutefois tomber exactement à ce chiffre : la barrière de ggml entre deux
+  opérations est une **attente active**. Un fil privé de cœur (cœurs pris par la WebView ou le
+  rendu, groupe de cœurs réduit par le système) fait attendre tous les autres à chaque opération.
+  Mesuré sur PC, 4 fils sur 4 cœurs dont 2 occupés par une autre charge : **0,8 j/s** à l'essai
+  de calibrage, 31,7 j/s en régime établi ; 2 fils dans la même situation : 87 j/s.
+
+### Correctifs
+
+- **Fils limités aux cœurs permis**, épinglés sur les gros (`plan_cpus` : fréquence maximale
+  au-dessus des petits cœurs, parmi `Cpus_allowed_list`) — sur le SD888 : cœurs 4-7.
+- **Calibrage au chargement** (`Engine::calibrate`) : 1 à 4 fils, quelques jetons chacun, le plus
+  rapide est gardé ; un essai 4 × plus lent par jeton que le meilleur est interrompu (rappel
+  d'abandon de ggml). Un pool de fils par essai : les fils en trop d'un pool plus grand
+  tourneraient en attente sur les mêmes cœurs. Coût mesuré sur PC : +0,5 s au chargement.
+  Résultat dans `info.threadsTps` (j/s par nombre de fils) et au journal.
+- **Banc fixe affiché** : l'essai à vide (mêmes prompts, deux tours) est chronométré —
+  chargement, premier jeton, vitesse de génération seule — et la ligne d'état dit « banc fixe :
+  N jetons/s (cible ≥ 20 atteinte | sous la cible de 20) · modèle chargé en … · 1er jeton … ·
+  N fils » (en rouge sous la cible). Même ligne au journal des chargements (« banc : »).
+
+### Réglages audités (banc fixe, PC i7-8750H, 4 fils, essai à vide 2 tours)
+
+| réglage | mesure | décision |
+|---|---|---|
+| nCtx 1024 / 2048 / 4096 | 114,6 / 116,7 / 114,9 j/s | 4096 gardé : aucun effet sur la vitesse, la consigne a besoin de place |
+| Q4_0 QAD (livré) | 114,6 j/s, 2 tours justes | **gardé** |
+| Q4_0 / Q4_K_S / Q4_K_M / IQ4_NL / IQ4_XS | 108–117 j/s, 2 tours justes | même vitesse (borne mémoire) ; le QAD est entraîné pour Q4_0 |
+| Q5_K_M / Q6_K / Q8_0 / F16 | 95 / 85 / 72 / 40 j/s | plus lents, rien à gagner |
+| compilation | `armv8.2-a+dotprod+fp16`, sans OpenMP, réempaquetage actif | juste pour le SD888 : sans i8mm, ggml réempaquette Q4_0 en `q4_0_4x4` (dotprod), son format le plus rapide sur cette puce |
+| n_batch / n_ubatch 512 | consigne calculée d'avance, 1er jeton ~0,1 s | gardé |
+
+### Plan B (si le téléphone reste sous 20 j/s)
+
+`llama-bench`, génération 64 jetons, 4 fils, même PC — vitesse **relative** à LFM2.5-350M :
+
+| modèle (Q4_0) | j/s | rapport |
+|---|---|---|
+| LFM2.5-350M (livré) | 118 | 1 |
+| SmolLM2-360M-Instruct | 106 | 0,90 |
+| Qwen2.5-0.5B-Instruct | 75 | 0,64 |
+| Qwen3-0.6B | 67 | 0,57 |
+| LFM2-700M | 60 | 0,51 |
+| Phi-3.5-mini | 12,8 | 0,11 |
+
+Aucun modèle n'est plus rapide que celui livré : si le SD888 donne X j/s avec LFM2.5-350M, les
+autres donneront environ X × rapport. Phi-3.5-mini est exclu d'office (≈ 0,11 X).
+
+### Ce qui reste à prouver sur le téléphone
+
+Pas d'appareil branché pendant ce travail : **aucune mesure sur le SD888**. Deux voies :
+1. installer l'APK, activer la conversation, lire la ligne « banc fixe » (et « processeur
+   (moteur natif) » dans la ligne d'état — si elle dit « processeur » seul, c'est la voie WASM) ;
+2. téléphone en USB : `scripts/bench-native/android.sh` puis
+   `ADB=1 SELFTEST=1 node scripts/bench-native/run.mjs <gguf> cpu fr 4` (même code que l'APK,
+   calibrage compris ; `VH_CALIB=0` pour comparer à fils fixes).

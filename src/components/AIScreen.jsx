@@ -41,6 +41,12 @@ const chosenLabel = (c) => {
 const speedLabel = (s) => (s.genOnly
   ? t("ui.ai.model.speed", { n: s.tokens, tps: s.tps })
   : t("ui.ai.model.speed_total", { n: s.tokens, s: (s.totalMs / 1000).toFixed(1), tps: s.tps }));
+// Banc fixe du moteur natif (essai à vide, mêmes prompts à chaque chargement) : la vitesse
+// de génération face à la cible, vérifiable par l'utilisateur à chaque lancement.
+const benchLabel = (b) => t("ui.ai.model.bench_line", {
+  tps: b.tps, verdict: t(b.met ? "ui.ai.model.bench_met" : "ui.ai.model.bench_missed", { target: b.target }),
+  load: Number.isFinite(b.loadMs) ? (b.loadMs / 1000).toFixed(1) : "?", first: b.firstMs ?? "?", threads: b.threads ?? "?",
+});
 const attemptLabel = (id) => { const [dtype, engine, mode] = String(id).split("/"); return whereLabel(engine, dtype, mode); };
 
 // Pourquoi le GPU ne sert pas, en clair (gpuSetAside, modelPolicy.js). Version du
@@ -507,6 +513,9 @@ function AIScreen({ stations, aiHistory, setAiHistory,
                 ? t("ui.ai.model.ready_on", { where: chosenLabel(modelInfo.chosen) })
                 : t("ui.ai.model.ready")}
           </div>
+          {chatOn && modelState==="ready" && Number.isFinite(modelInfo?.chosen?.bench?.tps) && (
+            <div className="vn-num" style={{ fontSize:10.5, color: modelInfo.chosen.bench.met ? "var(--vn-text3)" : "var(--vn-bad)", lineHeight:1.45 }}>{benchLabel(modelInfo.chosen.bench)}</div>
+          )}
           {chatOn && modelState==="ready" && lastSpeed && (
             <div className="vn-num" style={{ fontSize:10.5, color:"var(--vn-text3)", lineHeight:1.45 }}>{speedLabel(lastSpeed)}</div>
           )}

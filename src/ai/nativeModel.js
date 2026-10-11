@@ -8,7 +8,7 @@
 // Une réponse du moteur est un JSON (vh_llm_jni.cpp) : { ok, error, log } ou { ok, info } /
 // { ok, text, stats }. Un plantage du processus :llm (pilote GPU) rejette avec le code
 // « crash ». Toutes ces erreurs remontent telles quelles, journal du moteur compris.
-import { LIMITS, NATIVE_MODEL, NATIVE_SELF_TEST, SECOND_TURN, secondTurn, selfTestVerdict, withTimeout } from "./modelPolicy.js";
+import { LIMITS, NATIVE_MODEL, NATIVE_SELF_TEST, SECOND_TURN, secondTurn, selfTestVerdict, selfTestBench, withTimeout } from "./modelPolicy.js";
 import { splitPrompt } from "./chatTemplate.js";
 
 let plugin;   // undefined : pas encore cherché ; null : absent
@@ -142,8 +142,9 @@ export async function cancelNativeDownload() {
  * Charge le modèle sur `backend` (« vulkan » ou « cpu ») puis fait l'essai à vide : une
  * phrase française courte (NATIVE_SELF_TEST), jugée par selfTestVerdict. Un GPU qui se
  * charge mais calcule faux (sortie « 鹰 » sur WebGPU Adreno) est donc écarté ici.
- * @returns {Promise<{ info: object, selfTest: string, selfTestRaw: string[], mem: object|null, loadMs: number }>}
+ * @returns {Promise<{ info: object, selfTest: string, selfTestRaw: string[], mem: object|null, loadMs: number, bench: object }>}
  *   mem : mémoire du processus :llm après le chargement (Mo : rssMB, peakMB, pssMB, gfxMB)
+ *   bench : vitesse de l'essai à vide (selfTestBench), affichée dans la ligne d'état
  */
 export async function loadNative(backend, timeoutMs) {
   const p = await getPlugin();
@@ -153,7 +154,7 @@ export async function loadNative(backend, timeoutMs) {
     const turn = async (messages, maxTokens) => {
       const { prefix, rest } = splitPrompt(messages);
       const g = parse(await p.generate({ prefix, rest, maxTokens, phase: "selftest" }).catch(rethrow("selftest")), "selftest");
-      return { raw: String(g.text ?? ""), said: String(g.text ?? "").split("<|im_end|>")[0].replace(/<\|[a-z_]+\|>/g, "").trim() };
+      return { raw: String(g.text ?? ""), said: String(g.text ?? "").split("<|im_end|>")[0].replace(/<\|[a-z_]+\|>/g, "").trim(), stats: g.stats };
     };
     const a = await turn(NATIVE_SELF_TEST.messages, NATIVE_SELF_TEST.maxNewTokens);
     const v = selfTestVerdict(a.said);
@@ -164,7 +165,9 @@ export async function loadNative(backend, timeoutMs) {
     const v2 = selfTestVerdict(b.said, { minWords: SECOND_TURN.minWords });
     if (!v2.ok) throw new NativeError("selftest", `tour 2 ${v2.reason}: ${JSON.stringify(a.raw)} puis ${JSON.stringify(b.raw)}`);
     // Sorties BRUTES des deux tours : la preuve, à l'écran et au journal, que le GPU calcule juste.
-    return { info: r.info || {}, selfTest: `${a.said} | ${b.said}`, selfTestRaw: [a.raw, b.raw], mem: r.mem || null, loadMs: Date.now() - t0 };
+    // Banc fixe : mêmes prompts à chaque chargement, la vitesse comparable d'un lancement à l'autre.
+    return { info: r.info || {}, selfTest: `${a.said} | ${b.said}`, selfTestRaw: [a.raw, b.raw], mem: r.mem || null, loadMs: Date.now() - t0,
+      bench: selfTestBench(r.info || {}, [a.stats, b.stats]) };
   };
   try {
     return await withTimeout(run(), timeoutMs, "native load", () => { unloadNative(); });

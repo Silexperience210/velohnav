@@ -67,7 +67,7 @@ if (process.env.SELFTEST) {
     const b = turn(secondTurn(NATIVE_SELF_TEST.messages, said(a.r.text)), NATIVE_SELF_TEST.secondMaxNewTokens);
     const v1 = selfTestVerdict(said(a.r.text)), v2 = selfTestVerdict(said(b.r.text), { minWords: SECOND_TURN.minWords });
     const bench = selfTestBench(a.info, [a.r, b.r]);
-    console.log(`══ ${backend} ══ ${a.info.device} · ${a.info.threads} fils, cœurs ${a.info.cpus || "?"} (permis ${a.info.allowedCpus || "?"}, ${a.info.cpuset || "?"})`);
+    console.log(`══ ${backend} ══ ${a.info.device} · ${a.info.threads} fils, cœurs ${a.info.cpus || "?"} (permis ${a.info.allowedCpus || "?"}, ${a.info.cpuset || "?"}) · calibrage j/s par fils ${JSON.stringify(a.info.threadsTps || {})}`);
     console.log(`  tour 1 : ${JSON.stringify(a.r.text)} → ${v1.ok ? "ok" : v1.reason}`);
     console.log(`  tour 2 : ${JSON.stringify(b.r.text)} → ${v2.ok ? "ok" : v2.reason}`);
     console.log(`  banc fixe : chargement ${bench.loadMs} ms · 1er jeton ${bench.firstMs} ms · ${bench.tokens} jetons à ${bench.tps} j/s · cible ≥ ${bench.target} j/s : ${bench.met ? "ATTEINTE" : "non atteinte"}`);

@@ -27,7 +27,8 @@ export function benchRun({ bin, model, backend, cases, max, threads }) {
     const m = push(model);
     sent.delete(cases);
     const c = push(cases);
-    out = adb(["shell", `chmod 755 ${b} && ${process.env.VH_NCTX ? `VH_NCTX=${process.env.VH_NCTX} ` : ""}${b} ${m} ${backend} ${c} ${max} ${threads} 2>/dev/null`]);
+    const env = ["VH_NCTX", "VH_CALIB"].filter((k) => process.env[k]).map((k) => `${k}=${process.env[k]} `).join("");
+    out = adb(["shell", `chmod 755 ${b} && ${env}${b} ${m} ${backend} ${c} ${max} ${threads} 2>/dev/null`]);
   } else {
     out = execFileSync(bin, [model, backend, cases, max, threads], { encoding: "utf8", maxBuffer: 1 << 26, stdio: ["ignore", "pipe", "ignore"] });
   }

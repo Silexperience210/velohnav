@@ -103,10 +103,24 @@ public:
      */
     bool gpu_exact = true;
 
+    /**
+     * Calibrage des fils sur le processeur (lu au chargement) : chaque nombre de fils de
+     * `n_threads` à 1 produit quelques jetons, le plus rapide est gardé. false : `n_threads`
+     * tel quel (plan_cpus).
+     */
+    bool calibrate = true;
+
 private:
     bool tokenize(const std::string & text, std::vector<int32_t> & out, std::string & err) const;
     bool decode(const std::vector<int32_t> & toks, size_t from, std::string & err);
     bool ensure_prefix(const std::vector<int32_t> & pre, int & reused, std::string & err);
+    /** Pool de `n` fils sur `cpus` (vide : placement du système), attaché au contexte. */
+    void use_threads(int n, const std::vector<int> & cpus);
+    /**
+     * Jetons/s de génération avec le pool en place (quelques jetons, mémoire vidée après) ;
+     * 0 si un jeton dépasse `max_token_ms` (interrompu).
+     */
+    double probe_tps(double max_token_ms);
 
     llama_model * model_ = nullptr;
     llama_context * ctx_ = nullptr;

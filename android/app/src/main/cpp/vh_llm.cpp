@@ -366,12 +366,28 @@ bool Engine::load(const std::string & path, const std::string & backend, int n_c
         unload();
         return false;
     }
-    if (!cpus.cpus.empty()) {
-        ggml_threadpool_params tpp = ggml_threadpool_params_default(n_threads);
-        for (int c : cpus.cpus) tpp.cpumask[c] = true;
-        pool_ = ggml_threadpool_new(&tpp);
-        if (pool_) llama_attach_threadpool(ctx_, pool_, pool_);
+    // Calibrage : le bon nombre de fils dépend de ce qui tourne à côté (WebView, rendu) et
+    // du groupe de cœurs donné au processus, qui varient d'un téléphone et d'un instant à
+    // l'autre. Un fil privé de cœur fait attendre tous les autres à chaque opération
+    // (barrière en boucle active) : mieux vaut mesurer que deviner. Quatre essais au plus,
+    // du moins de fils au plus : le premier, sûr, fixe la référence ; un essai 4 fois plus
+    // lent par jeton que le meilleur est interrompu (probe_tps). Moins d'une seconde.
+    std::string calib;
+    if (cpu && calibrate && n_threads > 1) {
+        trace(stage + ": threads");
+        int best = n_threads;
+        double best_tps = -1;
+        for (int n = std::max(1, n_threads - 3); n <= n_threads; n++) {
+            use_threads(n, cpus.cpus);
+            const double tps = probe_tps(best_tps > 0 ? 4000.0 / best_tps : 500);
+            char one[32];
+            snprintf(one, sizeof one, "%s\"%d\":%.1f", calib.empty() ? "" : ",", n, tps);
+            calib += one;
+            if (tps > best_tps) { best_tps = tps; best = n; }
+        }
+        n_threads = best;
     }
+    use_threads(n_threads, cpus.cpus);
     smpl_ = llama_sampler_chain_init(llama_sampler_chain_default_params());
     llama_sampler_chain_add(smpl_, llama_sampler_init_greedy());
     trace(stage + ": ready");
@@ -384,7 +400,8 @@ bool Engine::load(const std::string & path, const std::string & backend, int n_c
          + ",\"model\":\"" + json_escape(desc) + "\""
          + ",\"nCtx\":" + std::to_string(llama_n_ctx(ctx_))
          + ",\"threads\":" + std::to_string(n_threads)
-         + ",\"cpus\":\"" + json_escape(pool_ ? cpu_list(cpus.cpus) : "") + "\""
+         + ",\"threadsTps\":{" + calib + "}"
+         + ",\"cpus\":\"" + json_escape(cpu_list(cpus.cpus)) + "\""
          + ",\"allowedCpus\":\"" + json_escape(cpus.allowed) + "\""
          + ",\"cpuset\":\"" + json_escape(cpus.cpuset) + "\""
          + ",\"nBatch\":" + std::to_string(n_batch_)
@@ -394,6 +411,49 @@ bool Engine::load(const std::string & path, const std::string & backend, int n_c
          + ",\"system\":\"" + json_escape(llama_print_system_info()) + "\""
          + ",\"log\":\"" + json_escape(log_tail(40)) + "\"}";
     return true;
+}
+
+void Engine::use_threads(int n, const std::vector<int> & cpus) {
+    // Un pool par nombre de fils : les fils en trop d'un pool plus grand attendraient le
+    // travail en boucle active, sur les mêmes cœurs que ceux qui calculent.
+    ggml_threadpool_params tpp = ggml_threadpool_params_default(n);
+    for (int c : cpus) tpp.cpumask[c] = true;
+    ggml_threadpool * pool = ggml_threadpool_new(&tpp);
+    if (pool) llama_attach_threadpool(ctx_, pool, pool);
+    else llama_detach_threadpool(ctx_);
+    if (pool_) ggml_threadpool_free(pool_);
+    pool_ = pool;
+    llama_set_n_threads(ctx_, n, n);
+}
+
+double Engine::probe_tps(double max_token_ms) {
+    const llama_vocab * vocab = llama_model_get_vocab(model_);
+    llama_token tok = llama_vocab_bos(vocab);
+    if (tok < 0) tok = 0;
+    llama_memory_t mem = llama_get_memory(ctx_);
+    llama_memory_clear(mem, true);
+    // Un jeton plus long que `max_token_ms` est interrompu entre deux opérations (rappel
+    // d'abandon de ggml) : un réglage pathologique (mesuré sur PC, 4 fils dont 2 privés de
+    // cœur : 0,8 j/s, 1,25 s par jeton) est écarté sans retarder le chargement.
+    struct Deadline { std::chrono::steady_clock::time_point at; } dl;
+    llama_set_abort_callback(ctx_, [](void * d) {
+        return std::chrono::steady_clock::now() > static_cast<Deadline *>(d)->at;
+    }, &dl);
+    // Le premier jeton réveille les fils et remplit les caches : non compté, délai doublé. Au plus 8
+    // jetons de plus, ou 300 ms en tout.
+    const auto start = std::chrono::steady_clock::now();
+    double ms = 0;
+    int n = 0;
+    bool aborted = false;
+    for (int i = 0; i < 9 && ms_since(start) < 300; i++) {
+        const auto t0 = std::chrono::steady_clock::now();
+        dl.at = t0 + std::chrono::microseconds((long long) (max_token_ms * (i == 0 ? 2 : 1) * 1000));
+        if (llama_decode(ctx_, llama_batch_get_one(&tok, 1)) != 0) { aborted = true; break; }
+        if (i > 0) { ms += ms_since(t0); n++; }
+    }
+    llama_set_abort_callback(ctx_, nullptr, nullptr);
+    llama_memory_clear(mem, true);
+    return !aborted && n > 0 && ms > 0 ? n * 1000.0 / ms : 0;
 }
 
 bool Engine::tokenize(const std::string & text, std::vector<int32_t> & out, std::string & err) const {

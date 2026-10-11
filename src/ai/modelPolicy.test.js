@@ -5,6 +5,7 @@ import {
   initialProgress, progressReducer, withTimeout, selfTestVerdict, variantFor,
   ATTEMPTS, ENGINES, planAttempts, classifyFailure, deviceFingerprint, failureRecord, attemptById, gpuSetAside,
   gpuDeviceRequest, gpuSessionOptions, TRANSPOSE_NODES, isAdreno, TRANSIENT, planNative, frozenReply,
+  selfTestBench, SPEED_TARGET_TPS,
 } from "./modelPolicy.js";
 
 // Sonde d'un GPU capable de porter q4f16, modifiée cas par cas.
@@ -518,5 +519,21 @@ describe("réponse figée d'un tour à l'autre : la voie calcule faux", () => {
   });
   it("casse, accents et ponctuation ignorés", () => {
     expect(frozenReply(T(["x", "Très bien."], ["y", "tres bien"]))).toMatchObject({ times: 2 });
+  });
+});
+
+describe("banc fixe : vitesse de l'essai à vide du moteur natif", () => {
+  const info = { loadMs: 812.4, threads: 2, cpus: "4-7" };
+  it("jetons des deux tours sur leur seul temps de génération ; 1er jeton à part", () => {
+    const b = selfTestBench(info, [{ genTokens: 12, genMs: 300, firstMs: 140.6 }, { genTokens: 13, genMs: 325, firstMs: 90 }]);
+    expect(b).toEqual({ loadMs: 812, firstMs: 141, tokens: 25, tps: 40, target: SPEED_TARGET_TPS, met: true, threads: 2, cpus: "4-7" });
+  });
+  it("sous la cible : dit, jamais arrondi vers le haut", () => {
+    expect(SPEED_TARGET_TPS).toBe(20);
+    const b = selfTestBench(info, [{ genTokens: 19, genMs: 1000 }, { genTokens: 0, genMs: 0 }]);
+    expect(b).toMatchObject({ tps: 19, met: false });
+  });
+  it("stats absentes (ancien moteur) : pas de vitesse inventée", () => {
+    expect(selfTestBench({}, [undefined, null])).toMatchObject({ tps: null, met: false, loadMs: null, firstMs: null, threads: null });
   });
 });

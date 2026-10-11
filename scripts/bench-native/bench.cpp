@@ -2,7 +2,7 @@
 // dans l'APK, mêmes prompts que l'application (préparés par run.mjs).
 //
 //   vh_llm_bench <modèle.gguf> <cpu|vulkan> <cas> <max_tokens> [threads=4]
-// VH_NCTX : taille du contexte (4096 par défaut, comme l'application).
+// VH_NCTX : taille du contexte (4096 par défaut, comme l'application) ; VH_CALIB=0 : fils fixes.
 // <cas> : enregistrements séparés par \x1e, consigne et suite séparées par \x1f.
 // Sortie : une ligne JSON par cas.
 #include <cstdio>
@@ -43,6 +43,8 @@ int main(int argc, char ** argv) {
     vh::Engine eng;
     // VH_GPU_EXACT=0 : réglage d'avant (cache clés-valeurs fp16, flash attention auto)
     if (const char * e = getenv("VH_GPU_EXACT")) eng.gpu_exact = atoi(e) != 0;
+    // VH_CALIB=0 : pas de calibrage des fils (exactement [threads] fils)
+    if (const char * e = getenv("VH_CALIB")) eng.calibrate = atoi(e) != 0;
     std::string info, err;
     const int n_ctx = getenv("VH_NCTX") ? atoi(getenv("VH_NCTX")) : 4096;
     if (!eng.load(argv[1], argv[2], n_ctx, argc > 5 ? atoi(argv[5]) : 4, info, err)) {

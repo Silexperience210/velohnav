@@ -4,7 +4,8 @@ import { journalEntry, withReply, parseJournal, pushEntry, replaceLast, gpuStrea
 const AT = new Date(2026, 9, 11, 19, 12, 5).getTime();
 const NATIVE = {
   chosen: { id: "q4_0/vulkan", engine: "vulkan", device: "native", dtype: "q4_0", gpuName: "Adreno (TM) 642L", kv: "f32", loadMs: 4200,
-    mem: { rssMB: 412, peakMB: 455, pssMB: 690, gfxMB: 268 }, sysMB: 820, selfTestRaw: ["Bonjour !<|im_end|>", "Bien sûr, je peux t'aider.<|im_end|>"] },
+    mem: { rssMB: 412, peakMB: 455, pssMB: 690, gfxMB: 268 }, sysMB: 820,
+    bench: { loadMs: 900, firstMs: 141, tokens: 25, tps: 40, target: 20, met: true, threads: 2, cpus: "4-7" }, selfTestRaw: ["Bonjour !<|im_end|>", "Bien sûr, je peux t'aider.<|im_end|>"] },
   tried: [], skipped: [], gpu: null, native: null,
 };
 const WEBGPU_SUR = {
@@ -66,6 +67,7 @@ describe("journal des chargements", () => {
       "",
       "2026-10-11 19:12:05 · GPU · q4_0/vulkan · Adreno (TM) 642L · prêt 4.2 s · kv f32",
       "  mém : :llm rss 412 Mo, pic 455 Mo, pss 690 Mo, gpu 268 Mo · système 820 Mo",
+      "  banc : 40 j/s · 1er jeton 141 ms · 2 fils (cœurs 4-7)",
       "  essai 1 : \"Bonjour !<|im_end|>\"",
       "  essai 2 : \"Bien sûr, je peux t'aider.<|im_end|>\"",
       "  tour 1 : 5 j, 41.2 j/s · rss 430 Mo, pic 470 Mo · \"Bonsoir !<|im_end|>\"",
