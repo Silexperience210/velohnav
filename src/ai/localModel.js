@@ -322,8 +322,24 @@ const attemptLine = (x) => `${x.id} → ${x.code}${x.detail ? ` (${x.detail})` :
  * en échec (moteur, initialisation, essai à vide) est mémorisée et la suivante part
  * d'elle-même ; le processeur est la dernière. L'utilisateur ne voit une erreur que si
  * TOUT a échoué, ou si le réseau / la mémoire empêchent d'aller plus loin.
+ *
+ * `gpuOnly` : seulement les tentatives WebGPU, entre le GPU natif et le processeur natif.
+ * Rend alors false — sans erreur — si aucune n'aboutit, réseau et mémoire compris : le
+ * processeur natif, déjà sur l'appareil, prend le relais.
+ * @returns {Promise<boolean>} true : une tentative est retenue
  */
-async function runLadder(onProgress, onPhase, gen) {
+async function runLadder(onProgress, onPhase, gen, { gpuOnly = false } = {}) {
+  try {
+    return await ladder(onProgress, onPhase, gen, gpuOnly);
+  } catch (e) {
+    if (!gpuOnly || e?.code === "cancelled" || gen !== generation) throw e;
+    console.warn(`[IA] WebGPU sans succès (${e?.code}) : le processeur natif prend le relais`, e?.detail || "");
+    current = null;
+    return false;
+  }
+}
+
+async function ladder(onProgress, onPhase, gen, gpuOnly) {
   // Les tentatives natives faites juste avant (runNative) restent dans le rapport.
   const tried = report.tried;
   let fingerprint = null, failed = {};
@@ -334,6 +350,7 @@ async function runLadder(onProgress, onPhase, gen) {
     failed = loadFailures(fingerprint);
     // Ce qui a échoué pendant CE chargement n'est pas rejoué (un échec passager compris)
     const plan = planAttempts({ probe: probeCache, failed: { ...failed, ...Object.fromEntries(tried.map((x) => [x.id, x.code])) } });
+    if (gpuOnly) plan.queue = plan.queue.filter((a) => a.engine.device === "webgpu");
     // Ce qui vient d'échouer pendant CE chargement figure déjà dans `tried`
     report.skipped = [...nativeSkipped, ...plan.skipped.filter((x) => !tried.some((y) => y.id === x.id))];
     const a = plan.queue[0] || null;
@@ -375,6 +392,7 @@ async function runLadder(onProgress, onPhase, gen) {
     }
     if (!r.attempt) {
       current = null;
+      if (gpuOnly) return false;
       const lines = [...tried.map(attemptLine), ...report.skipped.filter((x) => x.reason.startsWith("failed-before")).map((x) => `${x.id} → ${x.reason}`)];
       console.warn("[IA] aucune tentative n'a abouti :", lines.join(" ; "));
       throw new ModelError("all_failed", { detail: lines.join(" ; "), attempts: tried });
@@ -398,7 +416,7 @@ async function runLadder(onProgress, onPhase, gen) {
       + `${r.gpu?.dropped?.length ? ` ; device sans ${r.gpu.dropped.join(", ")}` : ""}`
       + `${report.gpu ? ` ; GPU : ${gpuLine(report.gpu)}` : ""}`
       + `${tried.length ? ` ; avant lui : ${tried.map(attemptLine).join(" ; ")}` : ""}`);
-    return;
+    return true;
   }
 }
 
@@ -422,9 +440,18 @@ export function loadModel(onProgress, onPhase) {
   loadPromise = checkMemory(heaviestVariant()).then(async (before) => {
     // Désactivé pendant le contrôle mémoire : ne rien démarrer
     if (gen !== generation) throw new ModelError("cancelled");
-    // Le moteur natif d'abord, s'il est prêt ; sinon l'échelle part sans rien demander.
-    if (await runNative(onPhase, gen)) { await measureLoadCost(before); recordLaunch(); return; }
+    // Le GPU d'abord, toutes voies confondues : Vulkan natif, puis WebGPU ; le processeur
+    // ensuite : natif, puis WASM. Avant, un Vulkan en échec menait droit au processeur natif,
+    // sans que WebGPU soit essayé : le processeur l'emportait alors qu'un GPU pouvait servir.
+    const ok = async () => { await measureLoadCost(before); recordLaunch(); };
+    if (await runNative(onPhase, gen, "gpu")) return ok();
     if (gen !== generation) throw new ModelError("cancelled");
+    if (nativeCpuLeft) {
+      if (await runLadder(onProgress, onPhase, gen, { gpuOnly: true })) return ok();
+      if (gen !== generation) throw new ModelError("cancelled");
+      if (await runNative(onPhase, gen, "cpu")) return ok();
+      if (gen !== generation) throw new ModelError("cancelled");
+    }
     try {
       await runLadder(onProgress, onPhase, gen);
     } catch (e) {
@@ -448,18 +475,24 @@ export function loadModel(onProgress, onPhase) {
 }
 
 /**
- * Moteur natif (llama.cpp) : GPU Vulkan, puis processeur natif, sur le même GGUF. Rend true
- * s'il est retenu. Rend false — sans erreur — si l'APK ne l'embarque pas, si l'appareil ne
- * peut pas le faire tourner, si le GGUF n'est pas encore sur l'appareil (téléchargé ensuite,
- * en arrière-plan), ou si chaque moteur natif a échoué : l'échelle WebGPU /
- * processeur prend alors le relais. Un moteur en échec (chargement, plantage du processus
- * :llm, essai à vide) est mémorisé et n'est plus tenté sur cet appareil.
+ * Moteur natif (llama.cpp), sur un même GGUF, en deux temps : `stage` « gpu » (Vulkan),
+ * premier essai du chargement ; « cpu » (processeur natif), après les tentatives WebGPU.
+ * Rend true s'il est retenu. Rend false — sans erreur — si l'APK ne l'embarque pas, si
+ * l'appareil ne peut pas le faire tourner, si le GGUF n'est pas encore sur l'appareil
+ * (téléchargé ensuite, en arrière-plan), ou si le moteur demandé a échoué. Un moteur en
+ * échec (chargement, plantage du processus :llm, essai à vide) est mémorisé et n'est plus
+ * tenté sur cet appareil. `nativeCpuLeft` dit si le processeur natif reste à tenter.
  */
-async function runNative(onPhase, gen) {
+let nativeCtx = null;      // { status, failed } du chargement en cours
+let nativeCpuLeft = false;
+async function runNative(onPhase, gen, stage) {
+  if (stage === "cpu") return nativeCtx ? tryNative(onPhase, gen, ["cpu"]) : false;
+  nativeCtx = null;
+  nativeCpuLeft = false;
   const status = await nativeStatus();
   if (!status) return false;   // navigateur : pas de greffon
   nativeFp = nativeFingerprint(status);
-  let failed = loadNativeFailures(nativeFp);
+  const failed = loadNativeFailures(nativeFp);
   const plan = planNative({ status, failed });
   // Échecs d'un lancement précédent : montrés à l'écran ; « non embarqué » ne l'est pas.
   nativeSkipped = plan.skipped.filter((x) => x.reason.startsWith("failed-before")).map((x) => ({ id: nativeAttemptId(x.backend), reason: x.reason }));
@@ -477,10 +510,19 @@ async function runNative(onPhase, gen) {
     return nativeAside("absent", status.partialBytes > 0 ? `${Math.round(status.partialBytes / 2 ** 20)} Mo reçus` : "");
   }
 
+  nativeCtx = { status, failed };
+  nativeCpuLeft = plan.queue.includes("cpu");
+  return tryNative(onPhase, gen, plan.queue.filter((b) => b !== "cpu"));
+}
+
+async function tryNative(onPhase, gen, backends) {
+  const { status } = nativeCtx;
+  let { failed } = nativeCtx;
+  if (backends.includes("cpu")) nativeCpuLeft = false;
   const variant = { dtype: NATIVE_MODEL.dtype, device: "native", mb: NATIVE_MODEL.mb, files: [NATIVE_MODEL.file] };
-  // Budget commun aux moteurs natifs : épuisé, la voie JavaScript part (rien de condamné).
+  // Budget des moteurs natifs de cet essai : épuisé, la voie suivante part (rien de condamné).
   const deadline = Date.now() + LIMITS.nativeBudgetMs;
-  for (const backend of plan.queue) {
+  for (const backend of backends) {
     const left = deadline - Date.now();
     if (left <= 0) { console.info(`[IA] budget natif épuisé : ${backend} sera tenté au prochain chargement`); break; }
     const allowed = Math.min(LIMITS.initMs.native, left);
@@ -498,7 +540,8 @@ async function runNative(onPhase, gen) {
         const { [backend]: _, ...rest } = failed;
         saveNativeFailures(nativeFp, rest);
       }
-      report.skipped = nativeSkipped;
+      // Les raisons des tentatives WebGPU sautées juste avant (sonde) restent à l'écran
+      report.skipped = [...nativeSkipped, ...report.skipped.filter((x) => !nativeSkipped.some((y) => y.id === x.id))];
       report.chosen = {
         id, dtype: variant.dtype, device: "native", engine: att.engine.id, mb: variant.mb, loadMs: r.loadMs,
         selfTestRaw: r.selfTestRaw || [], ...(r.mem ? { mem: r.mem } : {}),
@@ -525,6 +568,7 @@ async function runNative(onPhase, gen) {
       const transient = e?.code === "timeout"
         && (allowed < LIMITS.initMs.native || !String(failed[backend] || "").startsWith(TRANSIENT));
       failed = { ...failed, [backend]: `${transient ? TRANSIENT : ""}${String(e?.detail || e?.code || "load").slice(0, 200)}` };
+      nativeCtx.failed = failed;
       saveNativeFailures(nativeFp, failed);
       // Un processus :llm qui ne répond plus ne retient pas la voie JavaScript.
       await withTimeout(unloadNative(), LIMITS.nativeUnloadMs, "native unload").catch(() => {});
@@ -532,8 +576,9 @@ async function runNative(onPhase, gen) {
   }
   // Plus aucun moteur natif à tenter, même plus tard : le GGUF ne servira plus, il ne reste
   // pas en plus du modèle ONNX. Un délai passager, lui, garde le fichier pour le rejouer.
-  if (!planNative({ status, failed }).queue.length) deleteNativeModel();
+  if (!nativeCpuLeft && !planNative({ status, failed }).queue.length) deleteNativeModel();
   const natTried = report.tried.filter((x) => x.id.startsWith(`${NATIVE_MODEL.dtype}/`));
+  if (!natTried.length) return nativeAside("failed_before", Object.values(failed).join(" ; "));
   return nativeAside(natTried.every((x) => x.code === "timeout") ? "timeout" : "failed", natTried.map(attemptLine).join(" ; "));
 }
 

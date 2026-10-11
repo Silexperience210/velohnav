@@ -78,6 +78,16 @@ const GOOD_PROBE = {
   adapter: true, isFallbackAdapter: false, info: { vendor: "qualcomm", architecture: "adreno-7xx" }, features: ["shader-f16"],
   limits: { maxBufferSize: 2 ** 31, maxStorageBufferBindingSize: 2 ** 31 }, device: { ok: true },
 };
+// Sonde de la voie WebGPU : `probe` null = pas de WebGPU sur l'appareil, ses tentatives
+// sont sautées. Rend le worker qui a sondé.
+async function answerProbe(probe = null) {
+  await vi.waitFor(() => expect(FakeWorker.all.length).toBeGreaterThan(0));
+  const w = FakeWorker.all.at(-1);
+  await vi.waitFor(() => expect(w.sent.length).toBeGreaterThan(0));
+  if (w.sent[0].type === "probe") w.emit({ type: "probe", probe });
+  return w;
+}
+const WEBGPU_SKIPPED = { ids: ["q4f16/webgpu", "q4/webgpu", "q4/webgpu/sur"], kind: "no_webgpu", detail: "" };
 // La voie JavaScript jusqu'à « prêt » : sonde, fichiers reçus, essai à vide juste (deux tours).
 async function ladderReady(w, probe = GOOD_PROBE) {
   await vi.waitFor(() => expect(w.sent.length).toBeGreaterThan(0));
@@ -183,10 +193,10 @@ describe("façade : le moteur natif d'abord, repli silencieux ensuite", () => {
     const p = fakePlugin({ load: { vulkan: crash(), cpu: crash() } });
     await setup(p);
     const loading = mod.loadModel().catch((e) => e);
-    await vi.waitFor(() => expect(FakeWorker.all).toHaveLength(1));
-    const w = FakeWorker.all[0];
-    await vi.waitFor(() => expect(w.sent.length).toBeGreaterThan(0));
-    w.emit({ type: "probe", probe: null });
+    await answerProbe(null);   // Vulkan en échec → WebGPU sondé : absent
+    // processeur natif en échec → processeur WASM, dernier recours
+    await vi.waitFor(() => expect(FakeWorker.all).toHaveLength(2));
+    const w = FakeWorker.all[1];
     await vi.waitFor(() => expect(w.load).toBeTruthy());
     w.emit({ type: "error", stage: "engine", message: "no available backend found" });
     expect((await loading).code).toBe("all_failed");
@@ -208,28 +218,34 @@ describe("façade : le moteur natif d'abord, repli silencieux ensuite", () => {
     mod.unloadModel();
   });
 
-  it("Vulkan calcule faux (essai à vide « 鹰 ») : processeur natif, même fichier, Vulkan mémorisé", async () => {
+  it("Vulkan calcule faux (essai à vide « 鹰 ») et pas de WebGPU : processeur natif, même fichier, Vulkan mémorisé", async () => {
     const p = fakePlugin({ selfTest: { vulkan: ok({ text: "鹰<|im_end|>", stats: STATS }) } });
     await setup(p);
-    await mod.loadModel();
+    const loading = mod.loadModel();
+    await answerProbe(null);
+    await loading;
     expect(p.download).not.toHaveBeenCalled();   // même fichier, déjà là : rien retéléchargé
     expect(p.load.mock.calls.map((c) => c[0].backend)).toEqual(["vulkan", "cpu"]);
     const r = mod.modelReport();
     expect(r.chosen).toMatchObject({ id: "q4_0/native_cpu", engine: "native_cpu" });
     expect(r.tried).toEqual([{ id: "q4_0/vulkan", code: "selftest", detail: 'no-word: "鹰<|im_end|>"' }]);
     // L'écran dit pourquoi le GPU ne sert pas, et qu'on peut le retenter sans rien télécharger
-    expect(gpuSetAside(r)).toEqual({ reasons: [{ ids: ["q4_0/vulkan"], kind: "failed", detail: 'no-word: "鹰<|im_end|>"' }], retry: true, downloadMB: 0 });
+    expect(gpuSetAside(r)).toEqual({ reasons: [{ ids: ["q4_0/vulkan"], kind: "failed", detail: 'no-word: "鹰<|im_end|>"' }, WEBGPU_SKIPPED], retry: true, downloadMB: 0 });
     expect(JSON.parse(store.get("velohnav_ai_native_ko"))).toMatchObject({ fingerprint: nativeFingerprint(STATUS), failed: { vulkan: expect.any(String) } });
-    expect(FakeWorker.all).toHaveLength(0);
+    expect(FakeWorker.all).toHaveLength(1);           // la sonde WebGPU, rien d'autre
+    expect(FakeWorker.all[0].load).toBeUndefined();
+    expect(p.deleteModels).not.toHaveBeenCalled();    // le GGUF sert au processeur natif
   });
 
   it("lancement suivant : Vulkan n'est pas rejoué, le processeur natif part directement", async () => {
     store.set("velohnav_ai_native_ko", JSON.stringify({ fingerprint: nativeFingerprint(STATUS), failed: { vulkan: "crash" } }));
     const p = fakePlugin();
     await setup(p);
-    await mod.loadModel();
+    const loading = mod.loadModel();
+    await answerProbe(null);
+    await loading;
     expect(p.load.mock.calls.map((c) => c[0].backend)).toEqual(["cpu"]);
-    expect(mod.modelReport().skipped).toEqual([{ id: "q4_0/vulkan", reason: "failed-before: crash" }]);
+    expect(mod.modelReport().skipped[0]).toEqual({ id: "q4_0/vulkan", reason: "failed-before: crash" });
     // « Réessayer le GPU » oublie aussi les échecs natifs
     mod.forgetFailures();
     expect(store.has("velohnav_ai_native_ko")).toBe(false);
@@ -239,7 +255,8 @@ describe("façade : le moteur natif d'abord, repli silencieux ensuite", () => {
     const p = fakePlugin({ load: { vulkan: crash(), cpu: bad("model load failed on cpu", "llama_model_load: error") } });
     await setup(p);
     mod.loadModel().catch(() => {});
-    await vi.waitFor(() => expect(FakeWorker.all).toHaveLength(1));
+    await answerProbe(null);
+    await vi.waitFor(() => expect(FakeWorker.all).toHaveLength(2));   // processeur WASM, dernier recours
     expect(p.deleteModels).toHaveBeenCalledWith({ keep: "" });
     expect(mod.modelReport().tried.map((x) => [x.id, x.code])).toEqual([["q4_0/vulkan", "crash"], ["q4_0/native_cpu", "load"]]);
     expect(mod.modelReport().tried[1].detail).toContain("llama_model_load: error");   // journal du moteur gardé
@@ -359,10 +376,12 @@ describe("façade : le moteur natif d'abord, repli silencieux ensuite", () => {
     mod.unloadModel();
   });
 
-  it("Vulkan juste au premier tour, puis un mot faux (« weather », relevé sur téléphone) : écarté, processeur natif", async () => {
+  it("Vulkan juste au premier tour, puis un mot faux (« weather », relevé sur téléphone) : écarté, processeur natif (pas de WebGPU)", async () => {
     const p = fakePlugin({ selfTest: { vulkan: [ok({ text: "Bonne nuit, cette question.<|im_end|>", stats: STATS }), ok({ text: "weather<|im_end|>", stats: STATS })] } });
     await setup(p);
-    await mod.loadModel();
+    const loading = mod.loadModel();
+    await answerProbe(null);
+    await loading;
     // Le second tour reprend la réponse du premier, comme une vraie conversation
     expect(p.calls[1].rest).toContain("Bonne nuit, cette question.");
     expect(p.calls[1].rest).toContain(SECOND_TURN.question);
@@ -372,7 +391,7 @@ describe("façade : le moteur natif d'abord, repli silencieux ensuite", () => {
       detail: 'tour 2 one-word: "Bonne nuit, cette question.<|im_end|>" puis "weather<|im_end|>"' }]);
   });
 
-  it("Vulkan figé au premier lancement (délai) : processeur natif cette fois, Vulkan REJOUÉ et retenu au suivant", async () => {
+  it("Vulkan figé au premier lancement (délai) : processeur natif cette fois (pas de WebGPU), Vulkan REJOUÉ et retenu au suivant", async () => {
     vi.useFakeTimers();
     try {
       let hang = true;
@@ -382,6 +401,7 @@ describe("façade : le moteur natif d'abord, repli silencieux ensuite", () => {
       await setup(p);
       const first = mod.loadModel();
       await vi.advanceTimersByTimeAsync(121_000);
+      await answerProbe(null);
       await first;
       expect(mod.modelReport().chosen).toMatchObject({ engine: "native_cpu" });
       expect(JSON.parse(store.get("velohnav_ai_native_ko")).failed.vulkan).toMatch(/^transient: /);
@@ -402,7 +422,9 @@ describe("façade : le moteur natif d'abord, repli silencieux ensuite", () => {
     expect(mod.isModelReady()).toBe(false);
     expect(p.unload).toHaveBeenCalled();
     mod.unloadModel();
-    await mod.loadModel();
+    const again = mod.loadModel();
+    await answerProbe(null);
+    await again;
     expect(mod.modelReport().chosen).toMatchObject({ engine: "native_cpu" });
     expect((await mod.generateDetailed("", [{ role: "user", content: "Salut" }])).text).toBe("Salut !");
   });
@@ -426,7 +448,7 @@ describe("façade : le moteur natif d'abord, repli silencieux ensuite", () => {
     } finally { vi.useRealTimers(); }
   });
 
-  it("natif prêt mais figé sur les DEUX moteurs : 150 s au total, puis la voie JavaScript ; rien de condamné, GGUF gardé", async () => {
+  it("Vulkan figé : délai borné (120 s, arrêt 5 s), puis WebGPU — retenu ; le processeur natif n'est pas tenté, GGUF gardé", async () => {
     vi.useFakeTimers();
     try {
       const p = fakePlugin();
@@ -434,30 +456,23 @@ describe("façade : le moteur natif d'abord, repli silencieux ensuite", () => {
       p.unload.mockImplementation(() => new Promise(() => {}));   // :llm muet, même pour s'arrêter
       await setup(p);
       const loading = mod.loadModel();
-      // Vulkan : délai complet (initMs.native, 120 s), puis l'arrêt borné (5 s)
-      await vi.advanceTimersByTimeAsync(126_000);
-      expect(p.load.mock.calls.map((c) => c[0].backend)).toEqual(["vulkan", "cpu"]);
-      expect(FakeWorker.all).toHaveLength(0);
-      // Processeur natif : le reste du budget (jusqu'à 150 s), arrêt borné, voie JavaScript à 155 s
-      await vi.advanceTimersByTimeAsync(28_000);
+      await vi.advanceTimersByTimeAsync(124_000);
       expect(FakeWorker.all).toHaveLength(0);
       await vi.advanceTimersByTimeAsync(2_000);
       expect(FakeWorker.all).toHaveLength(1);
-      const r = mod.modelReport();
-      expect(r.tried.map((x) => [x.id, x.code])).toEqual([["q4_0/vulkan", "timeout"], ["q4_0/native_cpu", "timeout"]]);
-      expect(r.native).toMatchObject({ kind: "timeout" });
-      const ko = JSON.parse(store.get("velohnav_ai_native_ko")).failed;
-      expect(ko.vulkan).toMatch(/^transient: /);
-      expect(ko.cpu).toMatch(/^transient: /);
-      expect(p.deleteModels).not.toHaveBeenCalled();
       await ladderReady(FakeWorker.all[0]);
       await loading;
-      expect(mod.isModelReady()).toBe(true);
-      expect(mod.modelReport().chosen).toMatchObject({ engine: "webgpu" });
+      expect(p.load.mock.calls.map((c) => c[0].backend)).toEqual(["vulkan"]);
+      const r = mod.modelReport();
+      expect(r.chosen).toMatchObject({ engine: "webgpu", device: "webgpu" });
+      expect(r.tried.map((x) => [x.id, x.code])).toEqual([["q4_0/vulkan", "timeout"]]);
+      expect(r.native).toMatchObject({ kind: "timeout" });
+      expect(JSON.parse(store.get("velohnav_ai_native_ko")).failed).toEqual({ vulkan: expect.stringMatching(/^transient: /) });
+      expect(p.deleteModels).not.toHaveBeenCalled();
     } finally { vi.useRealTimers(); }
   });
 
-  it("processeur natif raccourci par le budget, deux lancements de suite : jamais condamné (seul un délai complet compte)", async () => {
+  it("Vulkan figé deux lancements de suite : condamné au second seulement ; WebGPU retenu les deux fois", async () => {
     vi.useFakeTimers();
     try {
       const p = fakePlugin();
@@ -465,15 +480,44 @@ describe("façade : le moteur natif d'abord, repli silencieux ensuite", () => {
       await setup(p);
       for (let i = 0; i < 2; i++) {
         const loading = mod.loadModel();
-        await vi.advanceTimersByTimeAsync(156_000);
+        await vi.advanceTimersByTimeAsync(126_000);
         await ladderReady(FakeWorker.all.at(-1));
         await loading;
+        expect(mod.modelReport().chosen).toMatchObject({ engine: "webgpu" });
         mod.unloadModel();
       }
       const ko = JSON.parse(store.get("velohnav_ai_native_ko")).failed;
-      expect(ko.vulkan).not.toMatch(/^transient: /);   // deux délais complets : condamné (comme avant)
-      expect(ko.cpu).toMatch(/^transient: /);          // 30 s seulement : rejoué
+      expect(ko.vulkan).not.toMatch(/^transient: /);
+      expect(ko.cpu).toBeUndefined();   // jamais tenté : un GPU servait
     } finally { vi.useRealTimers(); }
+  });
+
+  it("Vulkan calcule faux, WebGPU juste : le GPU WebGPU est retenu, pas le processeur natif", async () => {
+    const p = fakePlugin({ selfTest: { vulkan: ok({ text: "鹰<|im_end|>", stats: STATS }) } });
+    await setup(p);
+    const loading = mod.loadModel();
+    await vi.waitFor(() => expect(FakeWorker.all).toHaveLength(1));
+    await ladderReady(FakeWorker.all[0]);
+    await loading;
+    expect(p.load.mock.calls.map((c) => c[0].backend)).toEqual(["vulkan"]);
+    const r = mod.modelReport();
+    expect(r.chosen).toMatchObject({ engine: "webgpu", device: "webgpu" });
+    expect(gpuSetAside(r)).toBeNull();               // un GPU sert : rien à justifier
+    expect(r.native).toMatchObject({ kind: "failed", detail: expect.stringContaining("q4_0/vulkan → selftest") });
+    expect(p.deleteModels).not.toHaveBeenCalled();  // le processeur natif reste le repli
+  });
+
+  it("Vulkan en échec, WebGPU coupé par le réseau : le processeur natif prend le relais, sans erreur", async () => {
+    const p = fakePlugin({ load: { vulkan: crash() } });
+    await setup(p);
+    const loading = mod.loadModel();
+    const w = await answerProbe(GOOD_PROBE);
+    await vi.waitFor(() => expect(w.load).toBeTruthy());
+    w.emit({ type: "progress", ev: { status: "progress", file: w.load.variant.files[1], loaded: 1, total: 10 } });
+    w.emit({ type: "error", message: "Failed to fetch" });
+    await loading;
+    expect(mod.modelReport().chosen).toMatchObject({ engine: "native_cpu" });
+    expect(mod.modelReport().tried.map((x) => [x.id, x.code])).toEqual([["q4_0/vulkan", "crash"], ["q4/webgpu", "download"]]);
   });
 
   it("GGUF en arrière-plan qui ne reçoit plus rien : arrêté après 90 s, rien de condamné, le modèle reste prêt", async () => {
