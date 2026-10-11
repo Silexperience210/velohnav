@@ -273,7 +273,10 @@ function AIScreen({ stations, aiHistory, setAiHistory,
       // Tentative écartée en pleine génération (erreur du moteur GPU) : la suivante se
       // charge d'elle-même, rien à demander. Délai dépassé (worker arrêté) : le dire,
       // plutôt qu'un « prêt » mensonger.
+      // L'historique vient de la voie écartée : réinjecté, il ferait répéter à la suivante
+      // ce qu'elle a dit de faux (« Bonne nuit »). On repart d'une conversation vide.
       if (e?.recover) {
+        setAiHistory([]);
         setLoadSeq(n=>n+1);
       } else if (e?.code === "generate_timeout") {
         setModelState("error");

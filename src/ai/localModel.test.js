@@ -421,6 +421,51 @@ describe("façade : l'échelle des tentatives, sans rien demander", () => {
     });
   });
 
+  // Retour du téléphone : processeur q4, « Bonsoir » → « Bonne nuit », « Bonjour » → « Bonne nuit ».
+  const ask = async (w, q, text) => {
+    const reply = mod.generateDetailed("sys", [{ role: "user", content: q }]).then((r) => r, (e) => e);
+    await vi.advanceTimersByTimeAsync(0);
+    w.emit({ type: "result", id: w.sent.at(-1).id, text: `${text}<|im_end|>` });
+    return reply;
+  };
+  const readyOnCpu = async () => {
+    const loading = mod.loadModel();
+    await flush();
+    const w = last();
+    w.emit({ type: "probe", probe: null });
+    w.emit({ type: "ready", selfTest: "Bonjour !" });
+    await loading;
+    return w;
+  };
+
+  it("« Bonne nuit » à deux questions différentes : jamais montré une seconde fois, voie écartée, fichiers purgés, `recover`", async () => {
+    const w = await readyOnCpu();
+    expect(await ask(w, "Bonsoir", "Bonne nuit")).toMatchObject({ text: "Bonne nuit" });
+    const e = await ask(w, "Bonjour", "Bonne nuit !");
+    expect(e).toMatchObject({ code: "degenerate", recover: true });
+    expect(e.detail).toContain("Bonne nuit");
+    expect(w.terminated).toBe(true);
+    expect(mod.isModelReady()).toBe(false);
+    expect(JSON.parse(store.get("velohnav_ai_attempts_ko")).failed["q4/wasm"]).toMatch(/^degenerate: /);
+    expect(mod.modelReport().tried.at(-1)).toMatchObject({ id: "q4/wasm", code: "degenerate" });
+  });
+
+  it("une salutation complète qui revient deux fois n'est PAS une réponse figée ; trois fois à trois questions, si", async () => {
+    const w = await readyOnCpu();
+    const hello = "Bonjour ! Comment puis-je vous aider aujourd'hui ?";
+    expect(await ask(w, "Bonjour", hello)).toMatchObject({ text: hello });
+    expect(await ask(w, "Salut", hello)).toMatchObject({ text: hello });
+    expect(await ask(w, "Coucou", hello)).toMatchObject({ code: "degenerate", recover: true });
+  });
+
+  it("la même question reposée, ou un appel d'outil entre deux réponses : rien d'anormal", async () => {
+    const w = await readyOnCpu();
+    expect(await ask(w, "Bonsoir", "Bonne nuit")).toMatchObject({ text: "Bonne nuit" });
+    expect(await ask(w, "Bonsoir", "Bonne nuit")).toMatchObject({ text: "Bonne nuit" });
+    expect(await ask(w, "Il pleut ?", "<|tool_call_start|>[weather()]<|tool_call_end|>")).toHaveProperty("raw");
+    expect(mod.isModelReady()).toBe(true);
+  });
+
   it("fichier du modèle faux même après retéléchargement : erreur « integrity », rien de condamné", async () => {
     const loading = mod.loadModel().then(() => "resolved", (e) => e);
     await flush();

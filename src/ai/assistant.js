@@ -290,7 +290,7 @@ const CALL_REASONS = new Set([
 const WHY = {
   empty: "empty", "too-long": "too_long", language: "language", markup: "markup", number: "number", unit: "unit", script: "script",
   fragment: "fragment", repetition: "repetition", "no-data": "no_data", generate: "error", generate_timeout: "timeout",
-  webgpu_generate: "error",
+  webgpu_generate: "error", degenerate: "frozen",
 };
 
 /**

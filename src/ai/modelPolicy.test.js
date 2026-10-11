@@ -4,7 +4,7 @@ import {
   VARIANTS, LARGEST_TENSOR_BYTES, LIMITS, assessWebGPU, watchdog,
   initialProgress, progressReducer, withTimeout, selfTestVerdict, variantFor,
   ATTEMPTS, ENGINES, planAttempts, classifyFailure, deviceFingerprint, failureRecord, attemptById, gpuSetAside,
-  gpuDeviceRequest, gpuSessionOptions, TRANSPOSE_NODES, isAdreno, TRANSIENT, planNative,
+  gpuDeviceRequest, gpuSessionOptions, TRANSPOSE_NODES, isAdreno, TRANSIENT, planNative, frozenReply,
 } from "./modelPolicy.js";
 
 // Sonde d'un GPU capable de porter q4f16, modifiée cas par cas.
@@ -488,5 +488,35 @@ describe("nativeFallback : la raison du repli, pour la ligne d'état", () => {
     expect(nativeFallback({ chosen: null, native: { kind: "absent", detail: "" } })).toEqual({ kind: "absent", detail: "" });
     expect(nativeFallback({ chosen: { device: "wasm" }, native: { kind: "timeout", detail: "q4_0/vulkan → timeout" } }))
       .toEqual({ kind: "timeout", detail: "q4_0/vulkan → timeout" });
+  });
+});
+
+// Retour du téléphone (processeur q4) : « Bonsoir » → « Bonne nuit », « Bonjour » → « Bonne nuit ».
+describe("réponse figée d'un tour à l'autre : la voie calcule faux", () => {
+  const T = (...pairs) => pairs.map(([q, a]) => ({ q, a }));
+  it("réponse courte, la même à deux questions différentes : figée", () => {
+    expect(frozenReply(T(["Bonsoir", "Bonne nuit"], ["Bonjour", "Bonne nuit !"]))).toEqual({ reply: "Bonne nuit !", times: 2 });
+  });
+  it("une seule fois : rien", () => {
+    expect(frozenReply(T(["Bonsoir", "Bonne nuit"]))).toBeNull();
+  });
+  it("la même question reposée appelle la même réponse : rien", () => {
+    expect(frozenReply(T(["Bonsoir", "Bonne nuit"], ["bonsoir !", "Bonne nuit"]))).toBeNull();
+  });
+  it("phrase complète : deux fois peut être légitime (deux salutations), trois questions différentes non", () => {
+    const hello = "Bonjour ! Comment puis-je vous aider aujourd'hui ?";
+    expect(frozenReply(T(["Bonjour", hello], ["Salut", hello]))).toBeNull();
+    expect(frozenReply(T(["Bonjour", hello], ["Salut", hello], ["Qui es-tu ?", hello]))).toMatchObject({ times: 3 });
+  });
+  it("réponses proches mais différentes (mesurées sur le processeur, poids vérifiés) : rien", () => {
+    expect(frozenReply(T(["Bonsoir", "Bonsoir ! Comment puis-je vous aider aujourd'hui ?"],
+      ["Bonjour", "Bonjour ! Comment puis-je vous aider aujourd'hui ?"],
+      ["Merci", "Bien sûr ! Comment puis-je vous aider aujourd'hui ?"]))).toBeNull();
+  });
+  it("seule la série en cours compte : une réponse différente la rompt", () => {
+    expect(frozenReply(T(["a", "Bonne nuit"], ["b", "Il pleut un peu."], ["c", "Bonne nuit"]))).toBeNull();
+  });
+  it("casse, accents et ponctuation ignorés", () => {
+    expect(frozenReply(T(["x", "Très bien."], ["y", "tres bien"]))).toMatchObject({ times: 2 });
   });
 });

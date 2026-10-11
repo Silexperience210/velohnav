@@ -727,6 +727,49 @@ export const NATIVE_SELF_TEST = Object.freeze({
   secondMaxNewTokens: 16,
 });
 
+// ── Réponse figée d'un tour à l'autre ───────────────────────────
+//
+// Retour du téléphone : « Bonsoir » → « Bonne nuit », « Bonjour » → « Bonne nuit ». Un
+// calcul faussé (poids incomplets, GPU qui calcule faux) peut produire une phrase
+// française valide, qui passe l'essai à vide et tous les contrôles d'une réponse prise
+// seule (assistant.checkFreeText). Seule la suite des tours la trahit : la MÊME réponse à
+// des questions différentes.
+export const REPEAT = Object.freeze({
+  // Même réponse à N questions différentes d'affilée : la voie est jugée fausse.
+  turns: 3,
+  // Réponse courte (moins de `shortWords` mots) : deux fois suffisent. Une salutation
+  // complète (« Bonjour ! Comment puis-je vous aider ? », 7 mots) peut légitimement revenir
+  // à deux questions proches ; « Bonne nuit » ne répond à rien deux fois de suite.
+  shortTurns: 2,
+  shortWords: 4,
+});
+
+const normalize = (s) => String(s ?? "").toLowerCase().normalize("NFD").replace(/\p{M}/gu, "")
+  .replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+
+/**
+ * Le modèle répète-t-il une réponse figée ?
+ * @param {{ q: string, a: string }[]} turns échanges de la voie en service, du plus ancien
+ *   au plus récent, le dernier compris (texte libre montré seulement)
+ * @returns {null | { reply: string, times: number }} null : rien d'anormal
+ */
+export function frozenReply(turns) {
+  if (!turns?.length) return null;
+  const last = normalize(turns.at(-1).a);
+  if (!last) return null;
+  const questions = new Set();
+  let times = 0;
+  for (let i = turns.length - 1; i >= 0 && normalize(turns[i].a) === last; i--) {
+    times++;
+    questions.add(normalize(turns[i].q));
+  }
+  // La même question reposée appelle la même réponse : seules les questions distinctes comptent.
+  const distinct = questions.size;
+  const words = last.split(" ").length;
+  const need = words < REPEAT.shortWords ? REPEAT.shortTurns : REPEAT.turns;
+  return distinct >= need ? { reply: turns.at(-1).a, times } : null;
+}
+
 /**
  * Borne une promesse dans le temps. À l'expiration, rejette avec une erreur portant
  * `timedOut: true` ; `onTimeout` permet de libérer la ressource bloquée.

@@ -15,6 +15,7 @@ import {
   memoryVerdict, heaviestVariant, LEGACY_MODEL_DIRS, selfTestVerdict, SECOND_TURN,
   planAttempts, classifyFailure, deviceFingerprint, failureRecord,
   MODEL, NATIVE_MODEL, planNative, nativeAttemptId, nativeFingerprint, TRANSIENT,
+  REPEAT, frozenReply,
 } from "./modelPolicy.js";
 import { readMemoryInfo } from "./deviceMemory.js";
 import { JOURNAL_KEY, journalEntry, withReply, parseJournal, pushEntry, replaceLast } from "./launchJournal.js";
@@ -434,6 +435,7 @@ export function loadModel(onProgress, onPhase) {
   if (loadPromise) return loadPromise;
   const gen = generation;
   report = { tried: [], skipped: [], chosen: null, gpu: null, native: null };
+  turns = [];
   nativeSkipped = [];
   fetchNativeLater = false;
   // Un téléchargement terminé a déjà servi (ce chargement le trouve sur l'appareil) ; en cours,
@@ -744,7 +746,7 @@ export async function generateDetailed(system, history, opts = {}) {
     const { raw, stats } = await runNativeGeneration(messages, opts, seconds);
     const st = { ...speed(native, stats.genTokens, stats.genMs, Date.now() - t0), ...(stats.mem ? { mem: stats.mem } : {}) };
     recordReply(raw, st);
-    return { raw, text: cleanReply(raw), stats: st };
+    return checkFrozen(history, { raw, text: cleanReply(raw), stats: st });
   }
   const id = ++seq;
   const out = await runGeneration(id, messages, opts, seconds);
@@ -752,7 +754,45 @@ export async function generateDetailed(system, history, opts = {}) {
   const raw = String(out?.text ?? "");
   const st = speed(current, out?.tokens, null, Date.now() - t0);
   recordReply(raw, st);
-  return { raw, text: cleanReply(out?.text), stats: st };
+  return checkFrozen(history, { raw, text: cleanReply(out?.text), stats: st });
+}
+
+// Échanges en texte libre de la voie en service (frozenReply) ; remis à zéro à chaque chargement.
+let turns = [];
+const isToolCall = (s) => /<\|tool_call_start\|>|<tool_call>|^\[\s*[A-Za-z_]\w*\s*\(/.test(s);
+
+/**
+ * Réponse figée (la même à des questions différentes, frozenReply) : la voie en service
+ * calcule faux, même si chaque réponse prise seule est une phrase valide — « Bonne nuit » à
+ * « Bonsoir » puis à « Bonjour », relevé sur le téléphone. Elle n'est pas montrée ; la voie
+ * est écartée sur l'appareil comme après une erreur de génération (`recover` : l'interface
+ * recharge, la voie suivante part seule). Sur le processeur WASM, la dernière voie, ses
+ * fichiers sont aussi retirés du cache : « Réessayer » les retélécharge et les revérifie.
+ */
+function checkFrozen(history, out) {
+  if (!out.text || isToolCall(out.text)) return out;
+  const q = [...history].reverse().find((m) => m.role === "user")?.content ?? "";
+  turns = [...turns, { q, a: out.text }].slice(-REPEAT.turns);
+  const f = frozenReply(turns);
+  if (!f) return out;
+  const detail = `${JSON.stringify(f.reply)} ×${f.times}`;
+  turns = [];
+  if (native) {
+    const a = native;
+    saveNativeFailures(nativeFp, { ...loadNativeFailures(nativeFp), [a.backend]: `degenerate: ${detail}`.slice(0, 200) });
+    report.tried.push({ id: a.id, code: "degenerate", detail });
+  } else if (current) {
+    const a = current;
+    const fingerprint = deviceFingerprint(probeCache ?? null);
+    saveFailures(fingerprint, { ...loadFailures(fingerprint), [a.id]: `degenerate: ${detail}`.slice(0, 200) });
+    if (a.engine.device === "wasm") purgeCachedVariant(a.variant.dtype);
+    report.tried.push({ id: a.id, code: "degenerate", detail });
+  }
+  report.chosen = null;
+  console.warn(`[IA] réponse figée (${detail}) : voie ${native?.id || current?.id || "?"} écartée`);
+  const err = new ModelError("degenerate", { detail, recover: true, attempts: report.tried });
+  killWorker(err);
+  throw err;
 }
 
 /**
