@@ -602,19 +602,43 @@ export function progressReducer(state, ev, now) {
  * @param {unknown} text texte produit, jetons spéciaux retirés
  * @returns {{ ok: boolean, reason: string }}
  */
-export function selfTestVerdict(text) {
+export function selfTestVerdict(text, { minWords = 1 } = {}) {
   if (typeof text !== "string") return { ok: false, reason: "no-output" };
   const s = text.trim();
   if (!/\p{L}{2,}/u.test(s)) return { ok: false, reason: "no-word" };
   // L'essai est en français : une lettre d'une autre écriture trahit un calcul faussé.
   if (/(?=\p{L})\P{Script=Latin}/u.test(s)) return { ok: false, reason: "script" };
+  // Second tour : un mot isolé puis la fin (« weather », « Salte ») est la signature d'un
+  // état faussé entre les tours, relevée sur le téléphone — pas une réponse.
+  if ((s.match(/\p{L}{2,}/gu) || []).length < minWords) return { ok: false, reason: "one-word" };
   return { ok: true, reason: "ok" };
 }
+
+/**
+ * Essai du second tour : sur le téléphone, la PREMIÈRE réponse du GPU était juste
+ * (« Bonne nuit, cette question. ») et les suivantes réduites à un mot faux suivi de la
+ * fin (« weather<|im_end|> »). Un essai d'un seul tour ne le voit pas : on rejoue un
+ * second tour, qui reprend la réponse du premier, et on exige une phrase (3 mots).
+ * @param {object[]} messages ceux du premier tour
+ * @param {string} first réponse du premier tour
+ * @returns {object[]} messages du second tour
+ */
+export const secondTurn = (messages, first) => [
+  ...messages,
+  { role: "assistant", content: first },
+  { role: "user", content: SECOND_TURN.question },
+];
+export const SECOND_TURN = Object.freeze({
+  question: "Je suis Silex. Peux-tu m'aider à trouver un vélo ?",
+  minWords: 3,
+});
 
 /** Message de l'essai à vide (le worker et les tests s'en servent). */
 export const SELF_TEST = Object.freeze({
   messages: Object.freeze([{ role: "user", content: "Bonjour" }]),
   maxNewTokens: 6,
+  // Second tour : de quoi écrire trois mots, pas davantage (coût du chargement).
+  secondMaxNewTokens: 8,
 });
 
 /**
@@ -629,6 +653,7 @@ export const NATIVE_SELF_TEST = Object.freeze({
     { role: "user", content: "Bonjour" },
   ]),
   maxNewTokens: 16,
+  secondMaxNewTokens: 16,
 });
 
 /**

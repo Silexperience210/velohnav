@@ -64,6 +64,15 @@ public:
     /** Interrompt la génération en cours (appelable depuis un autre fil). */
     void cancel() { cancel_ = true; }
 
+    /**
+     * Précision sur le GPU (lue au chargement). true : cache de clés-valeurs en fp32 et
+     * attention sans « flash attention ». Le fp16 des GPU mobiles perd les petites valeurs
+     * (Adreno : sous-normaux lus comme zéro) ; une erreur DANS LE CACHE s'accumule de jeton
+     * en jeton — la signature relevée sur le téléphone : première réponse juste, suivantes
+     * réduites à un mot faux. Le processeur garde le fp16, qu'il calcule juste.
+     */
+    bool gpu_exact = true;
+
 private:
     bool tokenize(const std::string & text, std::vector<int32_t> & out, std::string & err) const;
     bool decode(const std::vector<int32_t> & toks, size_t from, std::string & err);

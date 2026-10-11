@@ -16,7 +16,7 @@
 // le pose sous ENGINE_SLOT, PUIS importe transformers.js, qui le reçoit (ortEngine.js).
 // ortEngine.js n'est PAS importé ici : il lit le moteur à son évaluation, qui doit venir
 // après le choix (il est importé par transformers.js, via le plugin).
-import { LIMITS, MODEL, SELF_TEST, hubFileUrl, cacheHeaders, withTimeout, ENGINES, ENGINE_SLOT,
+import { LIMITS, MODEL, SELF_TEST, secondTurn, hubFileUrl, cacheHeaders, withTimeout, ENGINES, ENGINE_SLOT,
          attemptById, gpuDeviceRequest, gpuSessionOptions } from "./modelPolicy.js";
 import { reusablePrefix, sameIds, prefixMessages, shareable, copyCache } from "./promptCache.js";
 
@@ -269,9 +269,9 @@ self.onmessage = async ({ data }) => {
       await load(msg);
       // loadMs : du message « load » à l'essai à vide réussi (téléchargement compris)
       const t1 = performance.now();
-      const selfTest = await selfTestRun();
+      const [selfTest, selfTest2] = await selfTestRun();
       const t2 = performance.now();
-      post({ type: "ready", selfTest, loadMs: Math.round(t2 - t0), selfTestMs: Math.round(t2 - t1), gpu: gpuInfo });
+      post({ type: "ready", selfTest, selfTest2, loadMs: Math.round(t2 - t0), selfTestMs: Math.round(t2 - t1), gpu: gpuInfo });
     } catch (e) {
       post({ type: "error", ...errorReport(e) });
     }
@@ -302,11 +302,17 @@ self.onmessage = async ({ data }) => {
  * chargement ; le texte produit est jugé par la façade (selfTestVerdict).
  */
 async function selfTestRun() {
-  const raw = await complete({
+  const said = (raw) => raw.split("<|im_end|>")[0].replace(/<\|[a-z_]+\|>/g, "").trim();
+  const first = said(await complete({
     messages: SELF_TEST.messages,
     options: { max_new_tokens: SELF_TEST.maxNewTokens, do_sample: false },
-  });
-  return raw.replace(/<\|[a-z_]+\|>/g, "").trim();
+  }));
+  // Second tour (secondTurn) : un état faussé entre les tours ne se voit qu'ici.
+  const second = said(await complete({
+    messages: secondTurn(SELF_TEST.messages, first),
+    options: { max_new_tokens: SELF_TEST.secondMaxNewTokens, do_sample: false },
+  }));
+  return [first, second];
 }
 
 /**

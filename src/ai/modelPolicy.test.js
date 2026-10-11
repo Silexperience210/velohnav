@@ -176,6 +176,13 @@ describe("essai à vide : « prêt » seulement si le modèle a généré", () =
     expect(selfTestVerdict("").reason).toBe("no-word");
     expect(selfTestVerdict("!!! ...").reason).toBe("no-word");
   });
+  it("second tour : un mot isolé (« weather », « Salte ») est refusé, une phrase acceptée", () => {
+    expect(selfTestVerdict("weather", { minWords: 3 }).reason).toBe("one-word");
+    expect(selfTestVerdict("Salte", { minWords: 3 }).reason).toBe("one-word");
+    expect(selfTestVerdict("Pourriez-vous me dire", { minWords: 3 }).ok).toBe(true);
+    // Premier tour : un seul mot reste accepté (« Bonjour ! »)
+    expect(selfTestVerdict("Bonjour !").ok).toBe(true);
+  });
   it("charabia d'une autre écriture (« 地黎 », relevé sur téléphone) : refusé", () => {
     expect(selfTestVerdict("地黎 talk").reason).toBe("script");
   });

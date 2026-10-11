@@ -40,9 +40,35 @@ const file = join(dir, "cases.bin");
 writeFileSync(file, cases.map((c) => { const { prefix, rest } = splitPrompt(c.messages); return `${prefix}\x1f${rest}`; }).join("\x1e"));
 const bin = new URL("./vh_llm_bench", import.meta.url).pathname;
 
+const runBin = (backend, path) => execFileSync(bin, [model, backend, path, process.env.MAX || "96", threads], { encoding: "utf8", maxBuffer: 1 << 26, stdio: ["ignore", "pipe", "ignore"] })
+  .trim().split("\n").map((l) => JSON.parse(l));
+
+// CONV=1 : la conversation relevée sur le téléphone (« Bonsoir », « Je suis Silex »,
+// « Salut », « Bonjour »), chaque tour reprenant les réponses BRUTES du modèle aux tours
+// précédents — comme l'application. Sorties brutes affichées : c'est la dégradation au fil
+// des tours (première réponse juste, puis un mot faux et la fin) qui est recherchée.
+// VH_GPU_EXACT=0 : cache clés-valeurs fp16 et flash attention auto (réglage d'avant).
+if (process.env.CONV) {
+  for (const backend of backends.split(",")) {
+    const history = [sys];
+    console.log(`\n══ ${backend} · conversation · gpu_exact=${process.env.VH_GPU_EXACT ?? "1"} ══`);
+    for (const q of ["Bonsoir", "Je suis Silex", "Salut", "Bonjour", "Quel temps fait-il pour rouler ?"]) {
+      history.push({ role: "user", content: q });
+      const { prefix, rest } = splitPrompt(history);
+      writeFileSync(file, `${prefix}\x1f${rest}`);
+      const lines = runBin(backend, file);
+      const info = lines.find((l) => l.info)?.info;
+      const r = lines.find((l) => l.ok !== undefined);
+      if (!info || !r) { console.log(`  ÉCHEC : ${lines.find((l) => l.error)?.error}`); break; }
+      console.log(`  ${q} → brut ${JSON.stringify(r.text.slice(0, 160))} · ${r.genTokens} j, ${(r.genTokens / (r.genMs / 1000)).toFixed(1)} j/s · prompt ${r.promptTokens} j · kv ${info.kv}`);
+      history.push({ role: "assistant", content: cleanReply(r.text) });
+    }
+  }
+  process.exit(0);
+}
+
 for (const backend of backends.split(",")) {
-  const lines = execFileSync(bin, [model, backend, file, process.env.MAX || "96", threads], { encoding: "utf8", maxBuffer: 1 << 26, stdio: ["ignore", "pipe", "ignore"] })
-    .trim().split("\n").map((l) => JSON.parse(l));
+  const lines = runBin(backend, file);
   const info = lines.find((l) => l.info)?.info;
   const err = lines.find((l) => l.error !== undefined && l.ok === undefined);
   console.log(`\n══ ${backend} ══ ${info ? `${info.device} ${info.description} · chargé en ${info.loadMs} ms` : `ÉCHEC : ${err?.error}`}`);

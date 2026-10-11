@@ -12,7 +12,7 @@
 import {
   VARIANTS, chooseVariant, LIMITS, watchdog,
   initialProgress, progressReducer, withTimeout,
-  memoryVerdict, heaviestVariant, LEGACY_MODEL_DIRS, selfTestVerdict,
+  memoryVerdict, heaviestVariant, LEGACY_MODEL_DIRS, selfTestVerdict, SECOND_TURN,
   planAttempts, classifyFailure, deviceFingerprint, failureRecord,
   MODEL, NATIVE_MODEL, planNative, nativeAttemptId, nativeFingerprint,
 } from "./modelPolicy.js";
@@ -249,6 +249,12 @@ function runAttempt(choose, onProgress, onPhase) {
         const v = selfTestVerdict(data.selfTest);
         if (!v.ok) {
           fail("init", { detail: `self-test ${v.reason}: ${JSON.stringify(data.selfTest ?? null)}` });
+          return;
+        }
+        // Second tour (secondTurn) : la sortie exacte est gardée dans l'erreur.
+        const v2 = data.selfTest2 === undefined ? v : selfTestVerdict(data.selfTest2, { minWords: SECOND_TURN.minWords });
+        if (!v2.ok) {
+          fail("init", { detail: `self-test tour 2 ${v2.reason}: ${JSON.stringify(data.selfTest)} puis ${JSON.stringify(data.selfTest2)}` });
           return;
         }
         w.onmessage = onRuntimeMessage;

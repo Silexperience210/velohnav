@@ -270,6 +270,22 @@ describe("façade : l'échelle des tentatives, sans rien demander", () => {
       .toEqual(["self-test no-output", "self-test no-word", "self-test script"]);
   });
 
+  it("essai à vide au second tour : un mot isolé (état faussé entre les tours) écarte la tentative GPU", async () => {
+    mod.loadModel().catch(() => {});
+    await flush();
+    last().emit({ type: "probe", probe: GOOD_PROBE });
+    const w = last();
+    w.emit({ type: "ready", selfTest: "Bonsoir ! Comment", selfTest2: "WeBostir" });
+    await flush();
+    expect(w.terminated).toBe(true);
+    expect(mod.modelReport().tried[0].detail).toBe('self-test tour 2 one-word: "Bonsoir ! Comment" puis "WeBostir"');
+    // La tentative suivante démarre d'elle-même ; un second tour en phrase est accepté
+    last().emit({ type: "ready", selfTest: "Bonjour ! Comment", selfTest2: "Bien sûr, je peux" });
+    await flush();
+    expect(mod.isModelReady()).toBe(true);
+    mod.unloadModel();
+  });
+
   it("anciennes clés : « fp16 en échec » repris (pas de second téléchargement q4f16), « GPU condamné » non — q4 sur le GPU retenté", async () => {
     store.set("velohnav_ai_f16_ko", "Sub requires f16");
     store.set("velohnav_ai_webgpu_ko", "1");

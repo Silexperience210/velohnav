@@ -5,6 +5,7 @@
 // <cas> : enregistrements séparés par \x1e, consigne et suite séparées par \x1f.
 // Sortie : une ligne JSON par cas.
 #include <cstdio>
+#include <cstdlib>
 #include <fstream>
 #include <sstream>
 #include <string>
@@ -39,6 +40,8 @@ int main(int argc, char ** argv) {
     vh::init();
     printf("{\"devices\":%s}\n", vh::devices_json().c_str());
     vh::Engine eng;
+    // VH_GPU_EXACT=0 : réglage d'avant (cache clés-valeurs fp16, flash attention auto)
+    if (const char * e = getenv("VH_GPU_EXACT")) eng.gpu_exact = atoi(e) != 0;
     std::string info, err;
     if (!eng.load(argv[1], argv[2], 4096, argc > 5 ? atoi(argv[5]) : 4, info, err)) {
         printf("{\"error\":\"%s\"}\n", esc(err).c_str());

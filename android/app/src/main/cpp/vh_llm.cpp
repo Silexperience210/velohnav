@@ -189,6 +189,12 @@ bool Engine::load(const std::string & path, const std::string & backend, int n_c
     cp.n_threads = n_threads;
     cp.n_threads_batch = n_threads;
     cp.no_perf = false;
+    const bool exact = !cpu && gpu_exact;
+    if (exact) {
+        cp.type_k = GGML_TYPE_F32;
+        cp.type_v = GGML_TYPE_F32;
+        cp.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_DISABLED;
+    }
     ctx_ = llama_init_from_model(model_, cp);
     if (!ctx_) {
         err = "context init failed on " + backend + ": " + log_tail();
@@ -206,6 +212,8 @@ bool Engine::load(const std::string & path, const std::string & backend, int n_c
          + ",\"model\":\"" + json_escape(desc) + "\""
          + ",\"nCtx\":" + std::to_string(llama_n_ctx(ctx_))
          + ",\"threads\":" + std::to_string(n_threads)
+         + ",\"kv\":\"" + (exact ? "f32" : "f16") + "\""
+         + ",\"flashAttn\":" + (exact ? "false" : "\"auto\"")
          + ",\"loadMs\":" + std::to_string((long) ms_since(t0))
          + ",\"system\":\"" + json_escape(llama_print_system_info()) + "\""
          + ",\"log\":\"" + json_escape(log_tail(40)) + "\"}";

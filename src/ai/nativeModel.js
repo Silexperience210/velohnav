@@ -8,7 +8,7 @@
 // Une réponse du moteur est un JSON (vh_llm_jni.cpp) : { ok, error, log } ou { ok, info } /
 // { ok, text, stats }. Un plantage du processus :llm (pilote GPU) rejette avec le code
 // « crash ». Toutes ces erreurs remontent telles quelles, journal du moteur compris.
-import { NATIVE_MODEL, NATIVE_SELF_TEST, selfTestVerdict, withTimeout } from "./modelPolicy.js";
+import { NATIVE_MODEL, NATIVE_SELF_TEST, SECOND_TURN, secondTurn, selfTestVerdict, withTimeout } from "./modelPolicy.js";
 import { splitPrompt } from "./chatTemplate.js";
 
 let plugin;   // undefined : pas encore cherché ; null : absent
@@ -100,12 +100,20 @@ export async function loadNative(backend, timeoutMs) {
   const t0 = Date.now();
   const run = async () => {
     const r = parse(await p.load({ file: NATIVE_MODEL.file, backend, nCtx: 4096 }).catch(rethrow("load")), "load");
-    const { prefix, rest } = splitPrompt(NATIVE_SELF_TEST.messages);
-    const g = parse(await p.generate({ prefix, rest, maxTokens: NATIVE_SELF_TEST.maxNewTokens }).catch(rethrow("selftest")), "selftest");
-    const said = String(g.text ?? "").split("<|im_end|>")[0].replace(/<\|[a-z_]+\|>/g, "").trim();
-    const v = selfTestVerdict(said);
-    if (!v.ok) throw new NativeError("selftest", `${v.reason}: ${JSON.stringify(g.text)}`);
-    return { info: r.info || {}, selfTest: said, loadMs: Date.now() - t0 };
+    const turn = async (messages, maxTokens) => {
+      const { prefix, rest } = splitPrompt(messages);
+      const g = parse(await p.generate({ prefix, rest, maxTokens }).catch(rethrow("selftest")), "selftest");
+      return { raw: String(g.text ?? ""), said: String(g.text ?? "").split("<|im_end|>")[0].replace(/<\|[a-z_]+\|>/g, "").trim() };
+    };
+    const a = await turn(NATIVE_SELF_TEST.messages, NATIVE_SELF_TEST.maxNewTokens);
+    const v = selfTestVerdict(a.said);
+    if (!v.ok) throw new NativeError("selftest", `${v.reason}: ${JSON.stringify(a.raw)}`);
+    // Second tour : sur le téléphone, le GPU répondait juste au premier tour, puis un mot
+    // faux et la fin (« weather<|im_end|> »). Sorties brutes des deux tours dans l'erreur.
+    const b = await turn(secondTurn(NATIVE_SELF_TEST.messages, a.said), NATIVE_SELF_TEST.secondMaxNewTokens);
+    const v2 = selfTestVerdict(b.said, { minWords: SECOND_TURN.minWords });
+    if (!v2.ok) throw new NativeError("selftest", `tour 2 ${v2.reason}: ${JSON.stringify(a.raw)} puis ${JSON.stringify(b.raw)}`);
+    return { info: r.info || {}, selfTest: `${a.said} | ${b.said}`, loadMs: Date.now() - t0 };
   };
   try {
     return await withTimeout(run(), timeoutMs, "native load", () => { unloadNative(); });

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { planNative, gpuSetAside, NATIVE_MODEL, nativeFingerprint } from "./modelPolicy.js";
+import { planNative, gpuSetAside, NATIVE_MODEL, nativeFingerprint, SECOND_TURN } from "./modelPolicy.js";
 
 // Le moteur natif (llama.cpp, Vulkan) est la PREMIÈRE voie quand l'APK l'embarque ; s'il
 // est absent ou en échec, l'échelle WebGPU / processeur part d'elle-même, sans erreur ni clic.
@@ -43,15 +43,18 @@ function fakePlugin({ status = STATUS, load = {}, selfTest = {}, reply = "Bonjou
       if (r instanceof Error) throw r;
       return r || ok({ info: INFO[b] });
     }),
-    // Premier appel après un chargement : l'essai à vide ; ensuite les questions.
+    // Deux premiers appels après un chargement : l'essai à vide (deux tours) ; ensuite les
+    // questions. `selfTest[backend]` : réponse du premier tour, ou [premier, second].
     generate: vi.fn(async (req) => {
       p.calls.push({ backend, ...req });
-      const first = p.calls.filter((c) => c.backend === backend).length === 1;
-      const r = first ? selfTest[backend] : null;
+      const n = p.calls.filter((c) => c.backend === backend).length;
+      const st = [].concat(selfTest[backend] ?? []);
+      const r = n <= 2 ? st[n - 1] : null;
       if (r instanceof Error) throw r;
       if (r) return r;
-      if (!first && typeof reply === "function") return reply(backend, req);
-      return ok({ text: first ? "Bonjour ! Comment ça va ?<|im_end|>" : reply, stats: STATS });
+      if (n > 2 && typeof reply === "function") return reply(backend, req);
+      const text = n === 1 ? "Bonjour ! Comment ça va ?<|im_end|>" : n === 2 ? "Bien sûr, je peux vous aider.<|im_end|>" : reply;
+      return ok({ text, stats: STATS });
     }),
     warm: vi.fn(async () => ok({})),
     cancel: vi.fn(async () => {}),
@@ -178,6 +181,19 @@ describe("façade : le moteur natif d'abord, repli silencieux ensuite", () => {
     expect(store.has("velohnav_ai_native_ko")).toBe(false);
     expect(p.deleteModels).not.toHaveBeenCalled();   // la reprise repartira du fichier partiel
     mod.unloadModel();
+  });
+
+  it("Vulkan juste au premier tour, puis un mot faux (« weather », relevé sur téléphone) : écarté, processeur natif", async () => {
+    const p = fakePlugin({ selfTest: { vulkan: [ok({ text: "Bonne nuit, cette question.<|im_end|>", stats: STATS }), ok({ text: "weather<|im_end|>", stats: STATS })] } });
+    await setup(p);
+    await mod.loadModel();
+    // Le second tour reprend la réponse du premier, comme une vraie conversation
+    expect(p.calls[1].rest).toContain("Bonne nuit, cette question.");
+    expect(p.calls[1].rest).toContain(SECOND_TURN.question);
+    const r = mod.modelReport();
+    expect(r.chosen).toMatchObject({ engine: "native_cpu" });
+    expect(r.tried).toEqual([{ id: "q4_0/vulkan", code: "selftest",
+      detail: 'tour 2 one-word: "Bonne nuit, cette question.<|im_end|>" puis "weather<|im_end|>"' }]);
   });
 
   it("le processus :llm meurt en pleine réponse : Vulkan écarté, `recover`, le rechargement prend le processeur natif", async () => {
