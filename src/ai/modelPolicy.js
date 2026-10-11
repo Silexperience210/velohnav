@@ -727,6 +727,32 @@ export const NATIVE_SELF_TEST = Object.freeze({
   secondMaxNewTokens: 16,
 });
 
+/** Vitesse de génération exigée du moteur natif sur le processeur (jetons/s). */
+export const SPEED_TARGET_TPS = 20;
+
+/**
+ * Banc fixe : l'essai à vide du moteur natif, mêmes prompts à chaque chargement, mesuré.
+ * `info` : réponse du chargement (loadMs, threads, cpus) ; `stats` : celles des deux tours
+ * (genTokens, genMs, firstMs). Vitesse = jetons des deux tours / leur temps de génération
+ * (consigne et premier calcul exclus : c'est le 1er jeton, compté à part).
+ * @returns {{ loadMs: number|null, firstMs: number|null, tokens: number, tps: number|null,
+ *   target: number, met: boolean, threads: number|null, cpus: string }}
+ */
+export function selfTestBench(info = {}, stats = []) {
+  const ok = stats.filter((s) => Number.isFinite(s?.genTokens) && Number.isFinite(s?.genMs));
+  const tokens = ok.reduce((n, s) => n + s.genTokens, 0);
+  const ms = ok.reduce((n, s) => n + s.genMs, 0);
+  const tps = tokens > 0 && ms > 0 ? Math.round((tokens / (ms / 1000)) * 10) / 10 : null;
+  const first = stats[0]?.firstMs ?? stats[0]?.promptMs;
+  return {
+    loadMs: Number.isFinite(info.loadMs) ? Math.round(info.loadMs) : null,
+    firstMs: Number.isFinite(first) ? Math.round(first) : null,
+    tokens, tps, target: SPEED_TARGET_TPS, met: tps !== null && tps >= SPEED_TARGET_TPS,
+    threads: Number.isFinite(info.threads) ? info.threads : null,
+    cpus: String(info.cpus || ""),
+  };
+}
+
 // ── Réponse figée d'un tour à l'autre ───────────────────────────
 //
 // Retour du téléphone : « Bonsoir » → « Bonne nuit », « Bonjour » → « Bonne nuit ». Un

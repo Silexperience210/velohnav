@@ -12,6 +12,7 @@
 struct llama_model;
 struct llama_context;
 struct llama_sampler;
+struct ggml_threadpool;
 
 namespace vh {
 
@@ -36,13 +37,30 @@ void trace_to(const std::string & path);
 /** Étape en cours (« load vulkan: model », « generate: first token »…), écrite à la trace. */
 void trace(const std::string & stage);
 
+/**
+ * Cœurs retenus pour le calcul : les gros (fréquence maximale au-dessus des plus petits)
+ * parmi ceux que le processus a le droit d'utiliser, `requested` au plus. `allowed` : liste
+ * permise (Cpus_allowed_list), `cpuset` : groupe du système (« /top-app », « /background »…).
+ */
+struct CpuPlan {
+    int threads = 1;
+    std::vector<int> cpus;   // vide : rien lu, placement laissé au système
+    std::string allowed, cpuset;
+};
+CpuPlan plan_cpus(int requested);
+
+/** Cœurs que le processus a le droit d'utiliser, à cet instant (« 0-7 », « 0-3 »). */
+std::string allowed_cpus();
+
 struct GenStats {
     int prompt_tokens = 0;    // jetons du prompt complet
     int reused_tokens = 0;    // dont repris de l'état gardé (consigne)
     int gen_tokens = 0;       // jetons produits
     double prompt_ms = 0;     // calcul du prompt (hors partie reprise)
+    double first_ms = 0;      // du début de l'appel au premier jeton (consigne reprise comprise)
     double gen_ms = 0;        // production des jetons
     bool eog = false;         // arrêt sur fin de tour (et non sur la limite)
+    std::string cpus;         // cœurs permis au processus pendant cette réponse
 };
 
 class Engine {
@@ -93,6 +111,7 @@ private:
     llama_model * model_ = nullptr;
     llama_context * ctx_ = nullptr;
     llama_sampler * smpl_ = nullptr;
+    ggml_threadpool * pool_ = nullptr;   // fils épinglés sur les cœurs retenus (processeur)
     int n_batch_ = 512;
 
     // État gardé à la fin de la consigne : jetons + copie de l'état de la séquence 0.

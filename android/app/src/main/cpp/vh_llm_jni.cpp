@@ -84,9 +84,9 @@ Java_com_silexperience_velohnav_llm_LlmNative_generate(JNIEnv * env, jobject, jb
     if (!g_engine.generate(bytes(env, prefix), bytes(env, rest), max_tokens, cb, out, st, err)) return to_bytes(env, error_json(err));
     char stats[256];
     snprintf(stats, sizeof stats,
-             "{\"promptTokens\":%d,\"reusedTokens\":%d,\"genTokens\":%d,\"promptMs\":%.1f,\"genMs\":%.1f,\"eog\":%s}",
-             st.prompt_tokens, st.reused_tokens, st.gen_tokens, st.prompt_ms, st.gen_ms, st.eog ? "true" : "false");
-    return to_bytes(env, "{\"ok\":true,\"text\":\"" + esc(out) + "\",\"stats\":" + stats + "}");
+             "{\"promptTokens\":%d,\"reusedTokens\":%d,\"genTokens\":%d,\"promptMs\":%.1f,\"firstMs\":%.1f,\"genMs\":%.1f,\"eog\":%s,\"cpus\":\"",
+             st.prompt_tokens, st.reused_tokens, st.gen_tokens, st.prompt_ms, st.first_ms, st.gen_ms, st.eog ? "true" : "false");
+    return to_bytes(env, "{\"ok\":true,\"text\":\"" + esc(out) + "\",\"stats\":" + stats + esc(st.cpus) + "\"}}");
 }
 
 JNIEXPORT void JNICALL

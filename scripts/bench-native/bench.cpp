@@ -2,6 +2,7 @@
 // dans l'APK, mêmes prompts que l'application (préparés par run.mjs).
 //
 //   vh_llm_bench <modèle.gguf> <cpu|vulkan> <cas> <max_tokens> [threads=4]
+// VH_NCTX : taille du contexte (4096 par défaut, comme l'application).
 // <cas> : enregistrements séparés par \x1e, consigne et suite séparées par \x1f.
 // Sortie : une ligne JSON par cas.
 #include <cstdio>
@@ -43,7 +44,8 @@ int main(int argc, char ** argv) {
     // VH_GPU_EXACT=0 : réglage d'avant (cache clés-valeurs fp16, flash attention auto)
     if (const char * e = getenv("VH_GPU_EXACT")) eng.gpu_exact = atoi(e) != 0;
     std::string info, err;
-    if (!eng.load(argv[1], argv[2], 4096, argc > 5 ? atoi(argv[5]) : 4, info, err)) {
+    const int n_ctx = getenv("VH_NCTX") ? atoi(getenv("VH_NCTX")) : 4096;
+    if (!eng.load(argv[1], argv[2], n_ctx, argc > 5 ? atoi(argv[5]) : 4, info, err)) {
         printf("{\"error\":\"%s\"}\n", esc(err).c_str());
         return 1;
     }
@@ -52,9 +54,9 @@ int main(int argc, char ** argv) {
     for (auto & c : cases) {
         std::string out; vh::GenStats st;
         bool ok = eng.generate(c.first, c.second, atoi(argv[4]), nullptr, out, st, err);
-        printf("{\"ok\":%s,\"text\":\"%s\",\"error\":\"%s\",\"promptTokens\":%d,\"reused\":%d,\"genTokens\":%d,\"promptMs\":%.1f,\"genMs\":%.1f,\"eog\":%s}\n",
+        printf("{\"ok\":%s,\"text\":\"%s\",\"error\":\"%s\",\"promptTokens\":%d,\"reused\":%d,\"genTokens\":%d,\"promptMs\":%.1f,\"firstMs\":%.1f,\"genMs\":%.1f,\"eog\":%s,\"cpus\":\"%s\"}\n",
                ok ? "true" : "false", esc(out).c_str(), ok ? "" : esc(err).c_str(), st.prompt_tokens, st.reused_tokens,
-               st.gen_tokens, st.prompt_ms, st.gen_ms, st.eog ? "true" : "false");
+               st.gen_tokens, st.prompt_ms, st.first_ms, st.gen_ms, st.eog ? "true" : "false", esc(st.cpus).c_str());
         fflush(stdout);
     }
     // Mémoire du processus (Linux) : résidente à la fin et pic. Sur PC avec un GPU dédié, les

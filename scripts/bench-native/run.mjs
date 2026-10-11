@@ -7,12 +7,17 @@
 //   node scripts/bench-native/run.mjs <modèle.gguf> [cpu,vulkan] [fr|en] [threads=4]
 //
 // Mesure faite sur PC : elle valide la chaîne (gabarit, état de la consigne, langue) et
-// compare les moteurs ENTRE EUX ; les jetons/s d'un téléphone sont à mesurer sur lui.
+// compare les moteurs ENTRE EUX ; les jetons/s d'un téléphone sont à mesurer sur lui :
+// ADB=1 lance le même banc SUR LE TÉLÉPHONE branché (binaire de android.sh, envoyé avec le
+// modèle dans /data/local/tmp/vh par adb).
+//
+// SELFTEST=1 : l'essai à vide de l'application, à l'identique (nativeModel.loadNative :
+// deux tours, mêmes verdicts) — c'est le banc fixe dont la ligne d'état affiche la vitesse.
 import { writeFileSync, mkdtempSync } from "node:fs";
-import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { register } from "node:module";
+import { benchRun } from "./exec.mjs";
 register("data:text/javascript," + encodeURIComponent(`
   export async function load(url, ctx, next) {
     if (url.endsWith(".json")) return next(url, { ...ctx, importAttributes: { type: "json" } });
@@ -21,7 +26,7 @@ register("data:text/javascript," + encodeURIComponent(`
 const { splitPrompt } = await import("../../src/ai/chatTemplate.js");
 const { systemPrompt, resolveModelOutput, replyLanguage } = await import("../../src/ai/assistant.js");
 const { cleanReply } = await import("../../src/ai/localModel.js");
-const { NATIVE_SELF_TEST, selfTestVerdict } = await import("../../src/ai/modelPolicy.js");
+const { NATIVE_SELF_TEST, SECOND_TURN, secondTurn, selfTestVerdict, selfTestBench } = await import("../../src/ai/modelPolicy.js");
 const { QUESTIONS } = await import("../bench-chat/cases.js");
 const dicts = { fr: (await import("../../src/locales/fr.js")).default, en: (await import("../../src/locales/en.js")).default };
 
@@ -39,15 +44,37 @@ const dir = mkdtempSync(join(tmpdir(), "vh-native-"));
 const file = join(dir, "cases.bin");
 writeFileSync(file, cases.map((c) => { const { prefix, rest } = splitPrompt(c.messages); return `${prefix}\x1f${rest}`; }).join("\x1e"));
 const bin = new URL("./vh_llm_bench", import.meta.url).pathname;
-
-const runBin = (backend, path) => execFileSync(bin, [model, backend, path, process.env.MAX || "96", threads], { encoding: "utf8", maxBuffer: 1 << 26, stdio: ["ignore", "pipe", "ignore"] })
-  .trim().split("\n").map((l) => JSON.parse(l));
+const runBin = (backend, path, max = process.env.MAX || "96") => benchRun({ bin, model, backend, cases: path, max, threads });
 
 // CONV=1 : la conversation relevée sur le téléphone (« Bonsoir », « Je suis Silex »,
 // « Salut », « Bonjour »), chaque tour reprenant les réponses BRUTES du modèle aux tours
 // précédents — comme l'application. Sorties brutes affichées : c'est la dégradation au fil
 // des tours (première réponse juste, puis un mot faux et la fin) qui est recherchée.
 // VH_GPU_EXACT=0 : cache clés-valeurs fp16 et flash attention auto (réglage d'avant).
+if (process.env.SELFTEST) {
+  const said = (raw) => raw.split("<|im_end|>")[0].replace(/<\|[a-z_]+\|>/g, "").trim();
+  for (const backend of backends.split(",")) {
+    const turn = (messages, max) => {
+      const { prefix, rest } = splitPrompt(messages);
+      writeFileSync(file, `${prefix}\x1f${rest}`);
+      const lines = runBin(backend, file, String(max));
+      const r = lines.find((l) => l.ok !== undefined);
+      return { info: lines.find((l) => l.info)?.info, r, err: lines.find((l) => l.error && l.ok === undefined)?.error };
+    };
+    // Deux appels séparés, comme l'application : le second tour dépend de la sortie du premier.
+    const a = turn(NATIVE_SELF_TEST.messages, NATIVE_SELF_TEST.maxNewTokens);
+    if (!a.r) { console.log(`══ ${backend} ══ ÉCHEC : ${a.err}`); continue; }
+    const b = turn(secondTurn(NATIVE_SELF_TEST.messages, said(a.r.text)), NATIVE_SELF_TEST.secondMaxNewTokens);
+    const v1 = selfTestVerdict(said(a.r.text)), v2 = selfTestVerdict(said(b.r.text), { minWords: SECOND_TURN.minWords });
+    const bench = selfTestBench(a.info, [a.r, b.r]);
+    console.log(`══ ${backend} ══ ${a.info.device} · ${a.info.threads} fils, cœurs ${a.info.cpus || "?"} (permis ${a.info.allowedCpus || "?"}, ${a.info.cpuset || "?"})`);
+    console.log(`  tour 1 : ${JSON.stringify(a.r.text)} → ${v1.ok ? "ok" : v1.reason}`);
+    console.log(`  tour 2 : ${JSON.stringify(b.r.text)} → ${v2.ok ? "ok" : v2.reason}`);
+    console.log(`  banc fixe : chargement ${bench.loadMs} ms · 1er jeton ${bench.firstMs} ms · ${bench.tokens} jetons à ${bench.tps} j/s · cible ≥ ${bench.target} j/s : ${bench.met ? "ATTEINTE" : "non atteinte"}`);
+  }
+  process.exit(0);
+}
+
 if (process.env.CONV) {
   for (const backend of backends.split(",")) {
     const history = [sys];

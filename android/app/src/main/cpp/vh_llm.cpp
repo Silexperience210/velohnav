@@ -9,10 +9,14 @@
 #include <deque>
 #include <mutex>
 
+#include <fstream>
+
 #include <fcntl.h>
+#include <sched.h>
 #include <unistd.h>
 
 #include "ggml-backend.h"
+#include "ggml-cpu.h"
 #include "llama.h"
 
 #ifdef __ANDROID__
@@ -150,7 +154,76 @@ size_t utf8_complete(const std::string & s) {
     return (n - (i - 1) >= need) ? n : i - 1;
 }
 
+// ── Cœurs du processeur ─────────────────────────────────────────────
+// « 0-3,6 » → {0,1,2,3,6}
+std::vector<int> parse_cpu_list(const std::string & s) {
+    std::vector<int> o;
+    size_t p = 0;
+    while (p < s.size()) {
+        size_t e = s.find(',', p); if (e == std::string::npos) e = s.size();
+        std::string r = s.substr(p, e - p);
+        size_t d = r.find('-');
+        int a = atoi(r.c_str()), b = d == std::string::npos ? a : atoi(r.c_str() + d + 1);
+        if (!r.empty()) for (int i = a; i <= b && i < GGML_MAX_N_THREADS; i++) o.push_back(i);
+        p = e + 1;
+    }
+    return o;
+}
+
+std::string cpu_list(const std::vector<int> & v) {
+    std::string o;
+    for (size_t i = 0; i < v.size(); i++) {
+        size_t j = i;
+        while (j + 1 < v.size() && v[j + 1] == v[j] + 1) j++;
+        if (!o.empty()) o += ",";
+        o += std::to_string(v[i]) + (j > i ? "-" + std::to_string(v[j]) : "");
+        i = j;
+    }
+    return o;
+}
+
+std::string read_line(const std::string & path, const char * key = nullptr) {
+    std::ifstream f(path);
+    for (std::string l; std::getline(f, l);) {
+        if (!key) return l;
+        if (l.rfind(key, 0) == 0) { l.erase(0, strlen(key)); l.erase(0, l.find_first_not_of(" \t")); return l; }
+    }
+    return "";
+}
+
 }  // namespace
+
+std::string allowed_cpus() { return read_line("/proc/self/status", "Cpus_allowed_list:"); }
+
+CpuPlan plan_cpus(int requested) {
+    CpuPlan p;
+    p.cpuset = read_line("/proc/self/cpuset");
+    p.allowed = allowed_cpus();
+    std::vector<int> allowed = parse_cpu_list(p.allowed);
+    if (allowed.empty()) {   // pas de /proc lisible : le choix du système
+        p.threads = std::max(1, requested);
+        return p;
+    }
+    // Fréquence maximale de chaque cœur présent ; les « gros » sont au-dessus des plus petits.
+    std::vector<long> freq(GGML_MAX_N_THREADS, 0);
+    long fmin = 0;
+    for (int i = 0; i < GGML_MAX_N_THREADS; i++) {
+        std::string f = read_line("/sys/devices/system/cpu/cpu" + std::to_string(i) + "/cpufreq/cpuinfo_max_freq");
+        if (f.empty()) continue;
+        freq[i] = atol(f.c_str());
+        if (freq[i] > 0 && (fmin == 0 || freq[i] < fmin)) fmin = freq[i];
+    }
+    std::vector<int> big;
+    for (int c : allowed) if (freq[c] > fmin) big.push_back(c);
+    // Aucun gros cœur permis (ou cœurs identiques) : ceux qui le sont. Les plus rapides d'abord.
+    std::vector<int> pick = big.empty() ? allowed : big;
+    std::stable_sort(pick.begin(), pick.end(), [&](int a, int b) { return freq[a] > freq[b]; });
+    p.threads = std::max(1, std::min<int>(requested, (int) pick.size()));
+    pick.resize(p.threads);
+    std::sort(pick.begin(), pick.end());
+    p.cpus = pick;
+    return p;
+}
 
 void init() {
     static std::once_flag once;
@@ -219,8 +292,9 @@ Engine::~Engine() { unload(); }
 void Engine::unload() {
     if (smpl_) llama_sampler_free(smpl_);
     if (ctx_) llama_free(ctx_);
+    if (pool_) ggml_threadpool_free(pool_);
     if (model_) llama_model_free(model_);
-    smpl_ = nullptr; ctx_ = nullptr; model_ = nullptr;
+    smpl_ = nullptr; ctx_ = nullptr; pool_ = nullptr; model_ = nullptr;
     ckpt_tokens_.clear(); ckpt_state_.clear();
     ckpt_state_.shrink_to_fit();
 }
@@ -266,6 +340,12 @@ bool Engine::load(const std::string & path, const std::string & backend, int n_c
         return false;
     }
 
+    // Fils de calcul : jamais plus que de cœurs que le processus a le droit d'utiliser, et
+    // gardés sur les gros. ggml fait attendre ses fils en boucle active entre deux opérations,
+    // et chaque étape attend le plus lent : un fil sur un petit cœur, ou privé de cœur, freine
+    // tous les autres (mesuré sur PC : 4 fils sur 2 cœurs permis, 88 → 64 j/s).
+    const CpuPlan cpus = plan_cpus(n_threads);
+    n_threads = cpus.threads;
     llama_context_params cp = llama_context_default_params();
     cp.n_ctx = (uint32_t) n_ctx;
     cp.n_batch = (uint32_t) n_batch_;
@@ -286,6 +366,12 @@ bool Engine::load(const std::string & path, const std::string & backend, int n_c
         unload();
         return false;
     }
+    if (!cpus.cpus.empty()) {
+        ggml_threadpool_params tpp = ggml_threadpool_params_default(n_threads);
+        for (int c : cpus.cpus) tpp.cpumask[c] = true;
+        pool_ = ggml_threadpool_new(&tpp);
+        if (pool_) llama_attach_threadpool(ctx_, pool_, pool_);
+    }
     smpl_ = llama_sampler_chain_init(llama_sampler_chain_default_params());
     llama_sampler_chain_add(smpl_, llama_sampler_init_greedy());
     trace(stage + ": ready");
@@ -298,6 +384,10 @@ bool Engine::load(const std::string & path, const std::string & backend, int n_c
          + ",\"model\":\"" + json_escape(desc) + "\""
          + ",\"nCtx\":" + std::to_string(llama_n_ctx(ctx_))
          + ",\"threads\":" + std::to_string(n_threads)
+         + ",\"cpus\":\"" + json_escape(pool_ ? cpu_list(cpus.cpus) : "") + "\""
+         + ",\"allowedCpus\":\"" + json_escape(cpus.allowed) + "\""
+         + ",\"cpuset\":\"" + json_escape(cpus.cpuset) + "\""
+         + ",\"nBatch\":" + std::to_string(n_batch_)
          + ",\"kv\":\"" + (exact ? "f32" : "f16") + "\""
          + ",\"flashAttn\":" + (exact ? "false" : "\"auto\"")
          + ",\"loadMs\":" + std::to_string((long) ms_since(t0))
@@ -373,6 +463,7 @@ bool Engine::generate(const std::string & prefix, const std::string & rest, int 
     cancel_ = false;
     out.clear();
     st = GenStats{};
+    st.cpus = allowed_cpus();
     std::vector<int32_t> pre, tail;
     if (!tokenize(prefix, pre, err) || !tokenize(rest, tail, err)) return false;
     st.prompt_tokens = (int) (pre.size() + tail.size());
@@ -398,6 +489,7 @@ bool Engine::generate(const std::string & prefix, const std::string & rest, int 
     for (int i = 0; i < max_tokens && pos < n_ctx - 1; i++, pos++) {
         if (cancel_) { err = "cancelled"; return false; }
         llama_token tok = llama_sampler_sample(smpl_, ctx_, -1);
+        if (i == 0) st.first_ms = ms_since(t0);
         if (llama_vocab_is_eog(vocab, tok)) {
             st.eog = true;
             pending += "<|im_end|>";
