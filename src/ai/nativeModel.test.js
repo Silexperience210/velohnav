@@ -220,6 +220,48 @@ describe("façade : le moteur natif d'abord, repli silencieux ensuite", () => {
     expect(FakeWorker.all).toHaveLength(1);
   });
 
+  it("GGUF en arrière-plan : progression suivie, puis « done » — l'écran peut basculer sans attendre le lancement suivant", async () => {
+    let progress, finish;
+    const p = fakePlugin({ status: ABSENT, download: () => new Promise((r) => { finish = r; }) });
+    p.addListener.mockImplementation(async (_, fn) => { progress = fn; return { remove() {} }; });
+    await setup(p);
+    const seen = [];
+    const off = mod.onNativeDownload((s) => seen.push(s));
+    const loading = mod.loadModel();
+    await vi.waitFor(() => expect(FakeWorker.all).toHaveLength(1));
+    await ladderReady(FakeWorker.all[0]);
+    await loading;
+    await vi.waitFor(() => expect(p.download).toHaveBeenCalledTimes(1));
+    progress({ loaded: NATIVE_MODEL.bytes * 0.42, total: NATIVE_MODEL.bytes });
+    expect(mod.modelReport().nativeDownload).toEqual({ state: "running", pct: 42, detail: "" });
+    finish({ cached: false });
+    await vi.waitFor(() => expect(mod.modelReport().nativeDownload).toMatchObject({ state: "done", pct: 100 }));
+    expect(seen.map((s) => s?.state)).toEqual(["running", "running", "running", "done"]);
+    off();
+    // Rechargement demandé par l'écran : le GGUF est là, le GPU natif est retenu, le suivi s'efface
+    mod.unloadModel();
+    p.status.mockImplementation(async () => STATUS);
+    await mod.loadModel();
+    expect(mod.modelReport().chosen).toMatchObject({ engine: "vulkan" });
+    expect(mod.modelReport().nativeDownload).toBeNull();
+  });
+
+  it("natif absent ET voie JavaScript en échec complet : le GGUF est tout de même téléchargé (seule chance d'avoir le GPU)", async () => {
+    const p = fakePlugin({ status: ABSENT, download: () => new Promise(() => {}) });
+    await setup(p);
+    const loading = mod.loadModel().catch((e) => e);
+    await vi.waitFor(() => expect(FakeWorker.all).toHaveLength(1));
+    const w = FakeWorker.all[0];
+    await vi.waitFor(() => expect(w.sent.length).toBeGreaterThan(0));
+    w.emit({ type: "probe", probe: null });   // pas de WebGPU : processeur WASM seul
+    await vi.waitFor(() => expect(w.load).toBeTruthy());
+    w.emit({ type: "error", stage: "engine", message: "no available backend found" });
+    expect((await loading).code).toBe("all_failed");
+    await vi.waitFor(() => expect(p.download).toHaveBeenCalledTimes(1));
+    expect(mod.modelReport().nativeDownload).toMatchObject({ state: "running" });
+    mod.unloadModel();
+  });
+
   it("natif absent, téléchargement en arrière-plan coupé : rien de condamné, le GGUF partiel n'est pas effacé", async () => {
     const p = fakePlugin({ status: { ...ABSENT, partialBytes: 50 * 2 ** 20 }, download: async () => { throw Object.assign(new Error("HTTP 503"), { code: "network" }); } });
     await setup(p);

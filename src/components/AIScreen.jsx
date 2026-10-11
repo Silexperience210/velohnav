@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { t, tn, useI18n } from "../i18n.js";
 import { launchNativeArNav } from "../utils.js";
 import { fetchWeather, getWeatherAdvice } from "../hooks/useWeather.js";
-import { loadModel, unloadModel, generateDetailed, warmUp, chatModelMB, modelReport, forgetFailures } from "../ai/localModel.js";
+import { loadModel, unloadModel, generateDetailed, warmUp, chatModelMB, modelReport, forgetFailures, onNativeDownload } from "../ai/localModel.js";
 import { gpuSetAside, nativeFallback } from "../ai/modelPolicy.js";
 import { systemPrompt, resolveModelOutput, explainFallback } from "../ai/assistant.js";
 import { Icon } from "../ui/icons.jsx";
@@ -85,6 +85,7 @@ function AIScreen({ stations, aiHistory, setAiHistory,
   const [modelErrCode, setModelErrCode] = useState(null);
   const [lastSpeed, setLastSpeed] = useState(null);      // vitesse de la dernière réponse du modèle
   const [loadSeq, setLoadSeq] = useState(0);             // incrémenté par « Réessayer »
+  const [nativeDl, setNativeDl] = useState(null);        // GGUF en arrière-plan : { state, pct, detail }
   // La conversation libre est DÉSACTIVÉE par défaut : le modèle pèse ~300 Mo,
   // il n'est téléchargé que sur demande explicite. Sans lui, l'écran reste utile :
   // tout ce qui est factuel est calculé sur l'appareil, exactement.
@@ -191,6 +192,13 @@ function AIScreen({ stations, aiHistory, setAiHistory,
     return ()=>{ dead = true; unloadModel(); };
   },[chatOn, loadSeq]);
   useEffect(()=>{ if (!chatOn) setModelState("off"); },[chatOn]);
+  useEffect(()=>{ const off = onNativeDownload(setNativeDl); return ()=>{ off(); }; },[]);
+  // GGUF reçu pendant la session : le GPU natif prend le relais dès que l'écran est libre,
+  // sans attendre le lancement suivant (ni après un échec de la voie JavaScript).
+  useEffect(()=>{
+    if (chatOn && nativeDl?.state==="done" && !busy && (modelState==="ready" || modelState==="error")
+        && modelInfo?.chosen?.device!=="native") setLoadSeq(n=>n+1);
+  },[chatOn, nativeDl, busy, modelState, modelInfo]);
   // Consigne calculée d'avance (processeur) : la première question ne paie plus ce calcul.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(()=>{ if (modelState === "ready") warmUp(systemPrompt(t)); },[modelState, lang]);
@@ -501,6 +509,12 @@ function AIScreen({ stations, aiHistory, setAiHistory,
             <div style={{ fontSize:10.5, color:"var(--vn-text3)", lineHeight:1.45, overflowWrap:"anywhere" }}>
               {nativeAsideLabel(nativeAside, modelInfo?.chosen ? chosenLabel(modelInfo.chosen)
                 : modelPhase?.device !== "native" && modelPhase?.attempt ? attemptLabel(modelPhase.attempt) : "")}
+            </div>
+          )}
+          {/* GGUF en arrière-plan : où il en est, et ce qu'il changera */}
+          {chatOn && nativeDl && modelInfo?.chosen?.device!=="native" && (
+            <div className="vn-num" style={{ fontSize:10.5, color:"var(--vn-text3)", lineHeight:1.45, overflowWrap:"anywhere" }}>
+              {t(`ui.ai.model.native_dl.${nativeDl.state}`, { pct: nativeDl.pct, detail: nativeDl.detail })}
             </div>
           )}
           {/* Prêt hors du GPU : pourquoi, lisible à l'écran (sans cela, impossible de le savoir sur l'appareil) */}

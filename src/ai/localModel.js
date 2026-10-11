@@ -105,7 +105,23 @@ export function modelReport() {
     gpu: report.gpu ? { ...report.gpu } : null,
     // Moteur natif écarté à ce chargement : { kind: absent|unsupported|failed|failed_before|timeout, detail }
     native: report.native ? { ...report.native } : null,
+    // GGUF en arrière-plan : { state: running|done|stopped, pct, detail }
+    nativeDownload: nativeDl ? { ...nativeDl } : null,
   };
+}
+
+// Téléchargement du GGUF en arrière-plan, suivi par l'écran : sans lui, 219 Mo arrivaient
+// sans aucun signe, et rien ne disait quand le GPU natif deviendrait possible.
+let nativeDl = null;
+const nativeDlListeners = new Set();
+/** Suivre le GGUF en arrière-plan ; rend la fonction de désabonnement. */
+export function onNativeDownload(fn) {
+  nativeDlListeners.add(fn);
+  return () => nativeDlListeners.delete(fn);
+}
+function setNativeDl(s) {
+  nativeDl = s;
+  for (const fn of nativeDlListeners) { try { fn(s ? { ...s } : null); } catch { /* l'écran ne casse pas le téléchargement */ } }
 }
 
 /**
@@ -378,14 +394,25 @@ export function loadModel(onProgress, onPhase) {
   report = { tried: [], skipped: [], chosen: null, gpu: null, native: null };
   nativeSkipped = [];
   fetchNativeLater = false;
+  // Un téléchargement terminé a déjà servi (ce chargement le trouve sur l'appareil) ; en cours,
+  // il continue et reste suivi.
+  if (!nativeFetch && nativeDl) setNativeDl(null);
   loadPromise = checkMemory(heaviestVariant()).then(async () => {
     // Désactivé pendant le contrôle mémoire : ne rien démarrer
     if (gen !== generation) throw new ModelError("cancelled");
     // Le moteur natif d'abord, s'il est prêt ; sinon l'échelle part sans rien demander.
     if (await runNative(onPhase, gen)) return;
     if (gen !== generation) throw new ModelError("cancelled");
-    await runLadder(onProgress, onPhase, gen);
-    fetchNativeInBackground(gen);
+    try {
+      await runLadder(onProgress, onPhase, gen);
+    } catch (e) {
+      // La voie JavaScript a échoué en entier : le GGUF reste la seule chance d'avoir le GPU.
+      // Avant, il n'était téléchargé qu'après une réussite de cette voie — un téléphone où
+      // WebGPU et le processeur WASM échouaient ne l'obtenait jamais.
+      if (e?.code !== "cancelled") fetchNativeInBackground();
+      throw e;
+    }
+    fetchNativeInBackground();
   }).finally(() => {
     loadPromise = null; // succès : `ready` prend le relais ; échec : retry possible
   });
@@ -491,14 +518,23 @@ function nativeAside(kind, detail = "") {
 // prête (pas de concurrence avec son propre téléchargement), pour le lancement suivant.
 let fetchNativeLater = false;
 let nativeFetch = null;   // téléchargement en arrière-plan en cours
-function fetchNativeInBackground(gen) {
+function fetchNativeInBackground() {
   if (!fetchNativeLater || nativeFetch) return;
   fetchNativeLater = false;
-  console.info("[IA] modèle natif téléchargé en arrière-plan, pour le prochain lancement");
-  nativeFetch = downloadNative(null)
-    .then(() => { if (gen === generation) console.info("[IA] modèle natif reçu : il servira au prochain chargement"); })
+  console.info("[IA] modèle natif téléchargé en arrière-plan");
+  setNativeDl({ state: "running", pct: 0, detail: "" });
+  nativeFetch = downloadNative((pct) => { if (nativeDl?.state === "running" && pct !== nativeDl.pct) setNativeDl({ ...nativeDl, pct }); })
+    .then(() => {
+      console.info("[IA] modèle natif reçu, vérifié (SHA-256) : le GPU natif peut prendre le relais");
+      // `done` : l'écran recharge dès qu'il est libre (sans attendre le lancement suivant) ;
+      // le chargement suivant trouve le GGUF et passe par le GPU natif.
+      setNativeDl({ state: "done", pct: 100, detail: "" });
+    })
     // Réseau coupé, délai, annulation : rien de condamné, le fichier partiel est repris la fois suivante.
-    .catch((e) => console.warn(`[IA] téléchargement du modèle natif interrompu (${e?.code}) :`, e?.detail || e))
+    .catch((e) => {
+      console.warn(`[IA] téléchargement du modèle natif interrompu (${e?.code}) :`, e?.detail || e);
+      setNativeDl({ state: "stopped", pct: nativeDl?.pct ?? 0, detail: `${e?.code || "network"}${e?.detail ? `: ${String(e.detail).slice(0, 160)}` : ""}` });
+    })
     .finally(() => { nativeFetch = null; });
 }
 
