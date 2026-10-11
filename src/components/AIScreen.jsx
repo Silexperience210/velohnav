@@ -491,12 +491,12 @@ function AIScreen({ stations, aiHistory, setAiHistory,
         </button>
         <div style={{ flex:1, minWidth:0 }}>
           <div style={{ fontSize:12, fontWeight:600 }}>{t("ui.ai.chat.title")}</div>
-          <div style={{ fontSize:10.5, color:"var(--vn-text3)", lineHeight:1.45 }}>
+          <div style={{ fontSize:10.5, color:"var(--vn-text3)", lineHeight:1.45, overflowWrap:"anywhere" }}>
             {!chatOn ? t("ui.ai.chat.note", { mb: chatModelMB() })
               : modelState==="loading" && modelPhase?.phase==="init"
                 ? t("ui.ai.model.init", { where: attemptLabel(modelPhase.attempt) })
               : modelState==="loading" ? t("ui.ai.model.loading", { pct:modelProgress })
-              : modelState==="error"   ? `${t("ui.ai.model.error")}${modelError ? " — " + modelError.slice(0, 220) : ""}`
+              : modelState==="error"   ? `${t("ui.ai.model.error")}${modelError ? " — " + modelError.slice(0, 700) : ""}`
               : modelInfo?.chosen
                 ? t("ui.ai.model.ready_on", { where: chosenLabel(modelInfo.chosen) })
                 : t("ui.ai.model.ready")}
