@@ -215,7 +215,12 @@ describe("texte libre : jamais une valeur que le modèle n'a pas obtenue d'un ou
     ['talk"talk"', false],
     ["buck", false],
     ["Bonjour 地黎 !", false],
-    ["Oui.", false],
+    // Salutations et mots courts valides seuls
+    ["Bonjour", true],
+    ["Salut", true],
+    ["Merci", true],
+    ["Oui.", true],
+    ["Non.", true],
     ["Voici une blague : « Pourquoi le vélo tombe-t-il ? Parce qu'il est crevé ! » 😄", true],
   ])("%j → montré : %s", (text, shown) => {
     expect(checkFreeText(text).ok).toBe(shown);

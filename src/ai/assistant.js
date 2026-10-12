@@ -211,8 +211,11 @@ export function checkFreeText(text, lang = null) {
   // you today? »). Un texte indécidable (« Coucou ! Bon voyage ! ») passe.
   const said = lang ? replyLanguage(s) : "?";
   if (said !== "?" && said !== lang) return { ok: false, reason: "language" };
-  // Fragment : moins de deux mots, ou des guillemets collés entre deux lettres.
-  if ((s.match(/\p{L}{2,}/gu) || []).length < 2 || /\p{L}["“”]\p{L}/u.test(s)) return { ok: false, reason: "fragment" };
+  // Fragment : moins de deux mots, sauf les salutations/courtoisies courtes
+  // ("Bonjour", "Salut", "Merci", "Hello"…) qui sont des réponses valides.
+  const words2 = (s.match(/\p{L}{2,}/gu) || []);
+  const shortOk = words2.length === 1 && SHORT_OK.has(norm(words2[0]));
+  if ((!shortOk && words2.length < 2) || /\p{L}["“”]\p{L}/u.test(s)) return { ok: false, reason: "fragment" };
   // Boucle : la même suite de quatre mots trois fois ou plus.
   const w = norm(s).split(/\s+/);
   const seen = new Map();
@@ -224,6 +227,10 @@ export function checkFreeText(text, lang = null) {
   }
   return { ok: true, reason: "ok" };
 }
+
+// Mots courts acceptés comme réponse complète (salutations, courtoisies).
+const SHORT_OK = new Set(("bonjour bonsoir salut coucou hello hi hey merci pardon excuse " +
+  "goodbye bye au revoir à bientôt ok d'accord parfait super oui non peut-être peut-etre").split(" "));
 
 // Mots-outils fréquents, propres à une langue (les mots communs aux deux — « on »,
 // « a », « me »… — sont écartés : ils ne départagent rien).

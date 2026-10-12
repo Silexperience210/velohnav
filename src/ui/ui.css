@@ -620,20 +620,23 @@ button { background: none; border: 0; cursor: pointer; }
 .vn-fc__h { font-size: 10px; font-weight: 600; color: var(--vn-text3); }
 .vn-fc__t { font-size: 14px; font-weight: 650; margin-top: 3px; }
 .vn-fc__r { font-size: 10px; color: var(--vn-elec); margin-top: 2px; }
-.vn-chatopt { flex-shrink: 0; margin: 8px 12px 0; padding: 8px 11px;
+.vn-chatopt { flex-shrink: 0; margin: 6px 10px 0; padding: 6px 9px;
   border: 1px dashed var(--vn-border-strong); border-radius: 10px; }
-.vn-chatopt__row { display: flex; align-items: center; gap: 10px; }
+.vn-chatopt__row { display: flex; align-items: center; gap: 8px; }
 /* Ligne d'état : une seule ligne (la note « désactivé » : deux au plus) */
-.vn-chatopt__status { font-size: 10.5px; color: var(--vn-text3); line-height: 1.45;
+.vn-chatopt__status { font-size: 10px; color: var(--vn-text3); line-height: 1.35;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .vn-chatopt__status--note { white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
-.vn-chatopt__more { margin-top: 6px; }
-.vn-chatopt__more summary { cursor: pointer; font-size: 11px; color: var(--vn-text3); }
-/* Diagnostic déplié : hauteur bornée (le fil et la saisie restent visibles) */
-.vn-chatopt__tech { max-height: 22vh; margin-top: 4px; display: flex; flex-direction: column; gap: 3px;
-  font-size: 10.5px; color: var(--vn-text3); line-height: 1.45; overflow-wrap: anywhere; }
+.vn-chatopt__more { margin-top: 4px; }
+.vn-chatopt__more summary { cursor: pointer; font-size: 10px; color: var(--vn-text3); }
+/* Diagnostic déplié : très compact (le fil et la saisie restent visibles) */
+.vn-chatopt__tech { max-height: 12vh; margin-top: 3px; padding-right: 4px;
+  display: flex; flex-direction: column; gap: 2px;
+  font-size: 10px; color: var(--vn-text3); line-height: 1.35; overflow-wrap: anywhere;
+  overflow-y: auto; }
 /* Clavier ouvert (App, data-kb) : place au fil et à la saisie */
 .vn-app[data-kb] .vn-tabbar, .vn-app[data-kb] .vn-suggest, .vn-app[data-kb] .vn-chatopt__more { display: none; }
+.vn-app[data-kb] .vn-chatopt { margin-bottom: 0; padding: 5px 8px; }
 .vn-chatopt__switch { flex: 0 0 auto; width: 36px; height: 20px; padding: 0; cursor: pointer;
   border-radius: 999px; border: 1px solid var(--vn-border); background: var(--vn-s3); position: relative; }
 .vn-chatopt__switch[aria-checked="true"] { background: var(--vn-accent); border-color: var(--vn-accent); }
