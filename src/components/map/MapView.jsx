@@ -232,7 +232,13 @@ export default function MapView({ stations, selId, onSelect, gpsPos, heading, ro
       mapRef.current = map;
       map.addControl(new AttributionControl({ compact: false }), "bottom-right");
       map.addControl(new ScaleControl({ unit: "metric", maxWidth: 90 }), "bottom-left");
-      map.on("error", e => console.warn("[Map]", e?.error?.message || e));
+      map.on("error", e => {
+        const msg = e?.error?.message || String(e);
+        console.warn("[Map]", msg);
+        // Worker MapLibre refusé (ex. servi sans les en-têtes d'isolation) : rien ne
+        // s'affichera jamais. Le dire plutôt qu'un fond vide.
+        if (!map.loaded() && /worker failed to load/i.test(msg)) setFailed("worker");
+      });
       map.on("rotate", () => setBearing(map.getBearing()));
 
       map.on("load", () => {
@@ -381,7 +387,7 @@ export default function MapView({ stations, selId, onSelect, gpsPos, heading, ro
   if (failed) return (
     <div style={{ position:"absolute", inset:0, display:"flex", alignItems:"center", justifyContent:"center",
       color:"var(--vn-text2)", fontSize:13, textAlign:"center", padding:20 }}>
-      {t("ui.map.webgl")}
+      {t(failed === "worker" ? "ui.map.worker" : "ui.map.webgl")}
     </div>
   );
 

@@ -48,6 +48,7 @@ const benchLabel = (b) => t("ui.ai.model.bench_line", {
   load: Number.isFinite(b.loadMs) ? (b.loadMs / 1000).toFixed(1) : "?", first: b.firstMs ?? "?", threads: b.threads ?? "?",
 });
 const attemptLabel = (id) => { const [dtype, engine, mode] = String(id).split("/"); return whereLabel(engine, dtype, mode); };
+const attemptEngine = (id) => t(`ui.ai.model.engine.${String(id).split("/")[1]}`);
 
 // Pourquoi le GPU ne sert pas, en clair (gpuSetAside, modelPolicy.js). Version du
 // navigateur jointe à « WebGPU absent » : c'est elle qui décide (WebView du système).
@@ -107,6 +108,16 @@ function AIScreen({ stations, aiHistory, setAiHistory,
   // comme fonction de nettoyage, l'appelle au démontage, et lève
   // « TypeError: t is not a function » (constaté en production, composant identifié).
   useEffect(()=>{ endRef.current?.scrollIntoView({behavior:"smooth", block:"end"}); },[aiDisplay, busy]);
+
+  // Clavier ouvert : la zone visible rétrécit (App suit visualViewport). Une fois
+  // l'animation du clavier passée, le champ et la fin du fil sont ramenés à l'écran,
+  // sinon le texte tapé restait caché derrière le clavier.
+  const revealInput = useCallback(()=>{
+    for (const ms of [150, 450]) setTimeout(()=>{
+      endRef.current?.scrollIntoView({ block:"end" });
+      inputRef.current?.scrollIntoView({ block:"nearest" });
+    }, ms);
+  },[]);
 
   // ── Fetch météo (si non fournie par App) + prévisions 3h ─────────
   useEffect(()=>{
@@ -349,6 +360,40 @@ function AIScreen({ stations, aiHistory, setAiHistory,
   const maxDocks = nearest ? Math.max(1, (nearest.bikes || 0) + (nearest.docks || 0)) : 1;
   const nextRain = forecast?.find(f=> f.rainProb > 50 || f.rain > 0.5);   // même seuil que l'accueil
 
+  // ── Modèle : ligne d'état compacte + détail technique (replié) ─────
+  const chosen = modelInfo?.chosen;
+  const tps = lastSpeed?.tps ?? (Number.isFinite(chosen?.bench?.tps) ? chosen.bench.tps : null);
+  const statusLine = !chatOn ? t("ui.ai.chat.note", { mb: chatModelMB() })
+    : modelState==="loading" && modelPhase?.phase==="init"
+      ? t("ui.ai.model.init_short", { where: attemptEngine(modelPhase.attempt) })
+    : modelState==="loading" ? t("ui.ai.model.loading", { pct:modelProgress })
+    : modelState==="error"   ? `${t("ui.ai.model.error")}${modelError ? " — " + modelError : ""}`
+    : [t("ui.ai.model.ready"), chosen && t(`ui.ai.model.engine.${chosen.engine}`),
+       tps != null && t("ui.ai.model.tps_short", { tps })].filter(Boolean).join(" · ");
+  const techLines = [];
+  if (chatOn) {
+    if (modelState==="loading" && modelPhase?.phase==="init")
+      techLines.push({ key:"init", text: t("ui.ai.model.init", { where: attemptLabel(modelPhase.attempt) }) + (modelPhase.step ? ` — ${modelPhase.step}` : "") });
+    if (modelState==="error" && modelError) techLines.push({ key:"err", text: modelError, bad: true });
+    if (modelState==="ready" && chosen) techLines.push({ key:"where", text: t("ui.ai.model.ready_on", { where: chosenLabel(chosen) }) });
+    if (modelState==="ready" && Number.isFinite(chosen?.bench?.tps))
+      techLines.push({ key:"bench", num: true, bad: !chosen.bench.met, text: benchLabel(chosen.bench) });
+    if (modelState==="ready" && lastSpeed) techLines.push({ key:"speed", num: true, text: speedLabel(lastSpeed) });
+    // Moteur natif écarté : la raison et la voie qui prend le relais, pendant et après le chargement
+    if ((modelState==="ready" || modelState==="loading") && nativeAside)
+      techLines.push({ key:"native", text: nativeAsideLabel(nativeAside, chosen ? chosenLabel(chosen)
+        : modelPhase?.device !== "native" && modelPhase?.attempt ? attemptLabel(modelPhase.attempt) : "") });
+    // GGUF en arrière-plan : où il en est, et ce qu'il changera
+    if (nativeDl && chosen?.device!=="native")
+      techLines.push({ key:"dl", num: true, text: t(`ui.ai.model.native_dl.${nativeDl.state}`, { pct: nativeDl.pct, detail: nativeDl.detail }) });
+    // Prêt hors du GPU : pourquoi (sans cela, impossible de le savoir sur l'appareil)
+    if (modelState==="ready" && gpuAside?.reasons.length > 0)
+      techLines.push({ key:"gpu", text: t("ui.ai.model.gpu_aside", { why: gpuAsideLabel(gpuAside) }) });
+    // Bascule interne (GPU → tentative suivante) : une information, pas une erreur
+    if (modelState==="loading" && modelInfo?.tried?.length > 0 && modelPhase?.attempt)
+      techLines.push({ key:"next", text: t("ui.ai.model.next", { from: attemptLabel(modelInfo.tried.at(-1).id), to: attemptLabel(modelPhase.attempt) }) });
+  }
+
   // ── Rendu ─────────────────────────────────────────────────────────
   return (
     <div style={{ flex:1, display:"flex", flexDirection:"column", minHeight:0 }}>
@@ -495,70 +540,47 @@ function AIScreen({ stations, aiHistory, setAiHistory,
         <div ref={endRef}/>
       </div>
 
-      {/* Conversation libre : optionnelle, désactivée par défaut, coût annoncé */}
+      {/* Conversation libre : optionnelle, désactivée par défaut, coût annoncé.
+          Une ligne d'état seulement (modèle, statut, vitesse) ; tout le diagnostic
+          (voie, GPU écarté, banc, causes d'échec) reste lisible, replié sous
+          « Infos techniques ». Déplié, il défile dans une hauteur bornée : avant, ces
+          lignes occupaient l'écran et poussaient la saisie sous le clavier. */}
       <div className="vn-chatopt">
-        <button type="button" className="vn-chatopt__switch" role="switch" aria-checked={chatOn}
-          aria-label={t("ui.ai.chat.title")} onClick={()=>setChatOn(v=>!v)}>
-          <span className="vn-chatopt__knob"/>
-        </button>
-        <div style={{ flex:1, minWidth:0 }}>
-          <div style={{ fontSize:12, fontWeight:600 }}>{t("ui.ai.chat.title")}</div>
-          <div style={{ fontSize:10.5, color:"var(--vn-text3)", lineHeight:1.45, overflowWrap:"anywhere" }}>
-            {!chatOn ? t("ui.ai.chat.note", { mb: chatModelMB() })
-              : modelState==="loading" && modelPhase?.phase==="init"
-                ? t("ui.ai.model.init", { where: attemptLabel(modelPhase.attempt) }) + (modelPhase.step ? ` — ${modelPhase.step}` : "")
-              : modelState==="loading" ? t("ui.ai.model.loading", { pct:modelProgress })
-              : modelState==="error"   ? `${t("ui.ai.model.error")}${modelError ? " — " + modelError.slice(0, 700) : ""}`
-              : modelInfo?.chosen
-                ? t("ui.ai.model.ready_on", { where: chosenLabel(modelInfo.chosen) })
-                : t("ui.ai.model.ready")}
+        <div className="vn-chatopt__row">
+          <button type="button" className="vn-chatopt__switch" role="switch" aria-checked={chatOn}
+            aria-label={t("ui.ai.chat.title")} onClick={()=>setChatOn(v=>!v)}>
+            <span className="vn-chatopt__knob"/>
+          </button>
+          <div style={{ flex:1, minWidth:0 }}>
+            <div style={{ fontSize:12, fontWeight:600 }}>{t("ui.ai.chat.title")}</div>
+            <div className={`vn-chatopt__status${chatOn ? "" : " vn-chatopt__status--note"}`}
+              style={{ color: chatOn && modelState==="error" ? "var(--vn-bad)" : undefined }}>{statusLine}</div>
           </div>
-          {chatOn && modelState==="ready" && Number.isFinite(modelInfo?.chosen?.bench?.tps) && (
-            <div className="vn-num" style={{ fontSize:10.5, color: modelInfo.chosen.bench.met ? "var(--vn-text3)" : "var(--vn-bad)", lineHeight:1.45 }}>{benchLabel(modelInfo.chosen.bench)}</div>
+          {chatOn && modelState==="error" && (
+            <Button size="sm" variant="secondary" icon="refresh"
+              onClick={()=>{ if (modelErrCode === "all_failed") forgetFailures(); setLoadSeq(n=>n+1); }}>{t("ui.ai.model.retry")}</Button>
           )}
-          {chatOn && modelState==="ready" && lastSpeed && (
-            <div className="vn-num" style={{ fontSize:10.5, color:"var(--vn-text3)", lineHeight:1.45 }}>{speedLabel(lastSpeed)}</div>
+          {chatOn && modelState==="ready" && gpuAside?.retry && (
+            <Button size="sm" variant="secondary" icon="refresh"
+              onClick={()=>{ forgetFailures(); setLoadSeq(n=>n+1); }}>
+              {gpuAside.downloadMB > 0 ? t("ui.ai.model.gpu_retry_dl", { mb: gpuAside.downloadMB }) : t("ui.ai.model.gpu_retry")}
+            </Button>
           )}
-          {/* Moteur natif écarté : la raison et la voie qui prend le relais, pendant et après le chargement */}
-          {chatOn && (modelState==="ready" || modelState==="loading") && nativeAside && (
-            <div style={{ fontSize:10.5, color:"var(--vn-text3)", lineHeight:1.45, overflowWrap:"anywhere" }}>
-              {nativeAsideLabel(nativeAside, modelInfo?.chosen ? chosenLabel(modelInfo.chosen)
-                : modelPhase?.device !== "native" && modelPhase?.attempt ? attemptLabel(modelPhase.attempt) : "")}
-            </div>
-          )}
-          {/* GGUF en arrière-plan : où il en est, et ce qu'il changera */}
-          {chatOn && nativeDl && modelInfo?.chosen?.device!=="native" && (
-            <div className="vn-num" style={{ fontSize:10.5, color:"var(--vn-text3)", lineHeight:1.45, overflowWrap:"anywhere" }}>
-              {t(`ui.ai.model.native_dl.${nativeDl.state}`, { pct: nativeDl.pct, detail: nativeDl.detail })}
-            </div>
-          )}
-          {/* Prêt hors du GPU : pourquoi, lisible à l'écran (sans cela, impossible de le savoir sur l'appareil) */}
-          {chatOn && modelState==="ready" && gpuAside?.reasons.length > 0 && (
-            <div style={{ fontSize:10.5, color:"var(--vn-text3)", lineHeight:1.45, overflowWrap:"anywhere" }}>
-              {t("ui.ai.model.gpu_aside", { why: gpuAsideLabel(gpuAside) })}
-            </div>
-          )}
-          {/* Bascule interne (GPU → tentative suivante) : dite comme une information, pas comme une erreur */}
-          {chatOn && modelState==="loading" && modelInfo?.tried?.length > 0 && modelPhase?.attempt && (
-            <div style={{ fontSize:10.5, color:"var(--vn-text3)", lineHeight:1.45 }}>
-              {t("ui.ai.model.next", { from: attemptLabel(modelInfo.tried.at(-1).id), to: attemptLabel(modelPhase.attempt) })}
+          {chatOn && modelState==="loading" && (
+            <div style={{ width:64 }}>
+              <ProgressBar value={modelProgress} indeterminate={modelProgress===0 || modelPhase?.phase==="init"} label={t("ui.ai.model.loading", { pct:modelProgress })}/>
             </div>
           )}
         </div>
-        {chatOn && modelState==="error" && (
-          <Button size="sm" variant="secondary" icon="refresh"
-            onClick={()=>{ if (modelErrCode === "all_failed") forgetFailures(); setLoadSeq(n=>n+1); }}>{t("ui.ai.model.retry")}</Button>
-        )}
-        {chatOn && modelState==="ready" && gpuAside?.retry && (
-          <Button size="sm" variant="secondary" icon="refresh"
-            onClick={()=>{ forgetFailures(); setLoadSeq(n=>n+1); }}>
-            {gpuAside.downloadMB > 0 ? t("ui.ai.model.gpu_retry_dl", { mb: gpuAside.downloadMB }) : t("ui.ai.model.gpu_retry")}
-          </Button>
-        )}
-        {chatOn && modelState==="loading" && (
-          <div style={{ width:64 }}>
-            <ProgressBar value={modelProgress} indeterminate={modelProgress===0 || modelPhase?.phase==="init"} label={t("ui.ai.model.loading", { pct:modelProgress })}/>
-          </div>
+        {chatOn && techLines.length > 0 && (
+          <details className="vn-chatopt__more">
+            <summary>{t("ui.ai.model.tech")}</summary>
+            <div className="vn-chatopt__tech vn-scroll">
+              {techLines.map(l=>(
+                <div key={l.key} className={l.num ? "vn-num" : undefined} style={l.bad ? { color:"var(--vn-bad)" } : undefined}>{l.text}</div>
+              ))}
+            </div>
+          </details>
         )}
       </div>
 
@@ -576,7 +598,7 @@ function AIScreen({ stations, aiHistory, setAiHistory,
       <form className="vn-composer" onSubmit={e=>{ e.preventDefault(); sendText(input); }}>
         <input ref={inputRef} className="vn-input" value={input} onChange={e=>setInput(e.target.value)}
           placeholder={chatOn ? t("ui.ai.placeholder") : t("ui.ai.placeholder_local")}
-          aria-label={t("ui.ai.placeholder")} enterKeyHint="send" autoComplete="off"/>
+          aria-label={t("ui.ai.placeholder")} enterKeyHint="send" autoComplete="off" onFocus={revealInput}/>
         <IconButton type="submit" icon="send" label={t("ui.ai.send")} variant="accent"
           disabled={!canSend} loading={busy}/>
       </form>

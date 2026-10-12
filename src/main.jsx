@@ -51,6 +51,23 @@ window.addEventListener('unhandledrejection', e => {
   ErrorBoundary.__bootError = e.reason instanceof Error ? e.reason : new Error(String(e.reason));
 });
 
+// Service worker : site web seulement. Dans l'APK (Capacitor), il servait des fichiers
+// mis en cache sans les en-têtes d'isolation : le worker MapLibre était refusé et la
+// carte restait vide. Un service worker laissé par une APK précédente est retiré
+// (caches compris), puis la page est rechargée une fois, hors de son contrôle.
+if ('serviceWorker' in navigator) {
+  if (window.Capacitor?.isNativePlatform?.() === true) {
+    navigator.serviceWorker.getRegistrations().then(async regs => {
+      if (!regs.length) return
+      await Promise.all(regs.map(r => r.unregister()))
+      try { for (const k of await caches.keys()) await caches.delete(k) } catch {}
+      if (navigator.serviceWorker.controller) window.location.reload()
+    }).catch(() => {})
+  } else if (typeof __PWA__ !== 'undefined' && __PWA__) {
+    window.addEventListener('load', () => { navigator.serviceWorker.register('./sw.js', { scope: './' }).catch(() => {}) })
+  }
+}
+
 ReactDOM.createRoot(document.getElementById('root')).render(
   <React.StrictMode>
     <ErrorBoundary>

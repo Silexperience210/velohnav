@@ -39,8 +39,8 @@ describe("outils exposés au modèle", () => {
     }
   });
   it("la consigne interdit au modèle d'avancer une valeur", () => {
-    expect(systemPrompt(tr(fr))).toMatch(/N'écris jamais de nombre/);
-    expect(systemPrompt(tr(en))).toMatch(/Never write a number/);
+    expect(systemPrompt(tr(fr))).toMatch(/N'invente jamais de chiffre/);
+    expect(systemPrompt(tr(en))).toMatch(/Never make up a number/);
   });
 });
 

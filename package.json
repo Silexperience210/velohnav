@@ -6,10 +6,11 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "build:apk": "VITE_DISABLE_PWA=1 vite build",
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
-    "android": "npm run build && npx cap sync android && npx cap open android"
+    "android": "npm run build:apk && npx cap sync android && npx cap open android"
   },
   "dependencies": {
     "@capacitor/android": "^8.3.0",

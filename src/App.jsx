@@ -13,7 +13,7 @@ import { ToastProvider, useToast } from "./ui/Toast.jsx";
 import { SatsReward } from "./ui/Lightning.jsx";
 import { AppHeader, TabBar, OfflineStrip, TripStrip } from "./ui/shell.jsx";
 import { Spinner } from "./ui/primitives.jsx";
-import { useOnline } from "./ui/hooks.js";
+import { useOnline, useKeyboardViewport } from "./ui/hooks.js";
 import { tripSats } from "./ui/format.js";
 const ARScreen    = lazy(() => import("./components/ARScreen.jsx"));
 const AIScreen    = lazy(() => import("./components/AIScreen.jsx"));
@@ -52,6 +52,7 @@ function Shell() {
   useI18n(); // re-render complet au changement de langue
   const toast = useToast();
   const online = useOnline();
+  const kbOpen = useKeyboardViewport();   // clavier ouvert : barre d'onglets masquée
   const [tab,setTab] = useState("map"); // map par défaut — AR demande la caméra au render
   const [sel,setSel] = useState(null);
   const [apiKey,setApiKey]     = useState(()=>localStorage.getItem("velohnav_jcdKey")||"");
@@ -261,7 +262,7 @@ function Shell() {
   const tabs = TABS.map(x=>({ ...x, label:t(`ui.tab.${x.id}`) }));
 
   return (
-    <div className="vn-app">
+    <div className="vn-app" data-kb={kbOpen || undefined}>
       <AppHeader screen={tab}
         pos={{ mode: gpsPos ? "gps" : "none", accuracy: gpsPos?.acc ?? null }}
         data={{ apiLive, isMock, offline: !online, lastUpdate }}
