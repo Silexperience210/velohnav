@@ -115,21 +115,51 @@ export const VARIANTS = Object.freeze({
 });
 
 /**
- * Modèle du moteur natif (llama.cpp, src/ai/nativeModel.js) : le même LFM2.5-350M, au
- * format GGUF, publié par LiquidAI sous la même licence LFM 1.0 que l'export ONNX.
- * Octets et SHA-256 relevés sur l'API /tree du Hub (révision épinglée), vérifiés par le
- * greffon avant d'accepter le fichier. Q4_0 plutôt que QAD-Q4_0 (même taille), mesuré au
- * banc scripts/bench-native le 11/10 : réponses en français 10/10 contre 8/10, même vitesse.
+ * Modèles natifs (llama.cpp, src/ai/nativeModel.js) candidats, au format GGUF. Octets et
+ * SHA-256 relevés sur l'API /tree du Hub (révision épinglée), vérifiés par le greffon
+ * avant d'accepter le fichier, et par scripts/bench-native/fetch.mjs au banc.
+ * `template` : famille du gabarit de conversation (chatTemplate.js) — le moteur natif ne
+ * reçoit que du texte déjà mis en forme, le gabarit doit donc suivre le modèle.
+ *
+ * Défaut : LFM2.5-350M, publié par LiquidAI sous la même licence LFM 1.0 que l'export
+ * ONNX. Q4_0 plutôt que QAD-Q4_0 (même taille), mesuré au banc scripts/bench-native le
+ * 11/10 : réponses en français 10/10 contre 8/10, même vitesse. Les autres sont évalués
+ * par scripts/bench-native/compare.mjs (docs/MODELES-NATIFS.md) ; Q4_0 est réempaqueté par
+ * llama.cpp pour les cœurs ARM à produit scalaire (Snapdragon 888), Q4_K_M ne l'est pas
+ * sans i8mm : sur le téléphone, Q4_0 est la quantification rapide.
  */
-export const NATIVE_MODEL = Object.freeze({
-  id: "LiquidAI/LFM2.5-350M-GGUF",
-  revision: "657e078c94084481950a2d555a941481f715536b",
-  file: "LFM2.5-350M-Q4_0.gguf",
-  dtype: "q4_0",
-  bytes: 219_309_792,
-  sha256: "85e32858daafad55b7bcd6b97a1343ee0661188e8036f9862d14d6b563142f50",
-  mb: 219,
-});
+const gguf = (key, id, revision, file, dtype, bytes, sha256, template) =>
+  Object.freeze({ key, id, revision, file, dtype, bytes, sha256, template, mb: Math.round(bytes / 1e6) });
+export const NATIVE_CANDIDATES = Object.freeze(Object.fromEntries([
+  gguf("lfm2.5-350m", "LiquidAI/LFM2.5-350M-GGUF", "657e078c94084481950a2d555a941481f715536b",
+    "LFM2.5-350M-Q4_0.gguf", "q4_0", 219_309_792, "85e32858daafad55b7bcd6b97a1343ee0661188e8036f9862d14d6b563142f50", "lfm"),
+  gguf("lfm2.5-1.2b", "LiquidAI/LFM2.5-1.2B-Instruct-GGUF", "8ed288026e23958ad9dfa92d53ed773a8eee7125",
+    "LFM2.5-1.2B-Instruct-Q4_0.gguf", "q4_0", 695_751_488, "2ea801949d760cdf1a2cc04a54262c22c3c0c54f0769d57760c9adeb0e59233f", "lfm"),
+  gguf("lfm2.5-1.2b-q4km", "LiquidAI/LFM2.5-1.2B-Instruct-GGUF", "8ed288026e23958ad9dfa92d53ed773a8eee7125",
+    "LFM2.5-1.2B-Instruct-Q4_K_M.gguf", "q4_k_m", 730_895_168, "b1b3de114215d9507409a662a501a631095a479a419584e8a2ded6304b19b4f5", "lfm"),
+  gguf("qwen2.5-0.5b", "Qwen/Qwen2.5-0.5B-Instruct-GGUF", "9217f5db79a29953eb74d5343926648285ec7e67",
+    "qwen2.5-0.5b-instruct-q4_k_m.gguf", "q4_k_m", 491_400_032, "74a4da8c9fdbcd15bd1f6d01d621410d31c6fc00986f5eb687824e7b93d7a9db", "chatml"),
+  gguf("qwen2.5-0.5b-q4_0", "Qwen/Qwen2.5-0.5B-Instruct-GGUF", "9217f5db79a29953eb74d5343926648285ec7e67",
+    "qwen2.5-0.5b-instruct-q4_0.gguf", "q4_0", 428_730_208, "7671c0c304e6ce5a7fc577bcb12aba01e2c155cc2efd29b2213c95b18edaf6ed", "chatml"),
+  gguf("qwen2.5-1.5b", "Qwen/Qwen2.5-1.5B-Instruct-GGUF", "91cad51170dc346986eccefdc2dd33a9da36ead9",
+    "qwen2.5-1.5b-instruct-q4_k_m.gguf", "q4_k_m", 1_117_320_736, "6a1a2eb6d15622bf3c96857206351ba97e1af16c30d7a74ee38970e434e9407e", "chatml"),
+  gguf("qwen2.5-1.5b-q4_0", "Qwen/Qwen2.5-1.5B-Instruct-GGUF", "91cad51170dc346986eccefdc2dd33a9da36ead9",
+    "qwen2.5-1.5b-instruct-q4_0.gguf", "q4_0", 1_066_227_232, "dcd819ff094852c38faba6873d8ff0c9d51eadb2844539e52042ae5d647bbfdb", "chatml"),
+  // Phi-3-mini : 2,39 Go de poids, et pas d'attention groupée (32 têtes clés-valeurs) — le
+  // cache d'un contexte de 4 096 jetons pèse 1,5 Go de plus en fp16. Hors budget mémoire.
+  gguf("phi-3-mini", "microsoft/Phi-3-mini-4k-instruct-gguf", "a64113399c2f6b8ad3e11c394733a2ddadaa7f33",
+    "Phi-3-mini-4k-instruct-q4.gguf", "q4_k_m", 2_393_231_072, "8a83c7fb9049a9b2e92266fa7ad04933bb53aa1e85136b7b30f1b8000ff2edef", "phi3"),
+  gguf("tinyllama-1.1b", "TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF", "52e7645ba7c309695bec7ac98f4f005b139cf465",
+    "tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf", "q4_k_m", 668_788_096, "9fecc3b3cd76bba89d504f29b616eedf7da85b96540e490ca5824d3f7d2776a0", "zephyr"),
+].map((m) => [m.key, m])));
+
+/**
+ * Candidat retenu, choisi À LA CONSTRUCTION (VITE_NATIVE_MODEL=<clé> npm run build) : une
+ * APK d'évaluation n'exige aucune modification du code. Clé inconnue ou absente : le défaut.
+ * @param {string|undefined} key
+ */
+export const nativeModelFor = (key) => NATIVE_CANDIDATES[key] || NATIVE_CANDIDATES["lfm2.5-350m"];
+export const NATIVE_MODEL = nativeModelFor(import.meta.env?.VITE_NATIVE_MODEL);
 
 /**
  * Moteurs natifs, dans l'ordre : le GPU (Vulkan), puis le processeur de llama.cpp, qui

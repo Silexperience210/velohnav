@@ -156,7 +156,7 @@ export async function loadNative(backend, timeoutMs, { calibrate = true, onStep 
   const run = async () => {
     const r = parse(await p.load({ file: NATIVE_MODEL.file, backend, nCtx: 4096, calibrate }).catch(rethrow("load")), "load");
     const turn = async (messages, maxTokens) => {
-      const { prefix, rest } = splitPrompt(messages);
+      const { prefix, rest } = splitPrompt(messages, { template: NATIVE_MODEL.template });
       const g = parse(await p.generate({ prefix, rest, maxTokens, phase: "selftest" }).catch(rethrow("selftest")), "selftest");
       return { raw: String(g.text ?? ""), said: String(g.text ?? "").split("<|im_end|>")[0].replace(/<\|[a-z_]+\|>/g, "").trim(), stats: g.stats };
     };
@@ -199,7 +199,7 @@ export async function loadNative(backend, timeoutMs, { calibrate = true, onStep 
 /** Calcule d'avance l'état du modèle sur la consigne (jamais d'erreur). */
 export async function warmNative(messages, tools) {
   try {
-    const { prefix } = splitPrompt(messages, { tools });
+    const { prefix } = splitPrompt(messages, { tools, template: NATIVE_MODEL.template });
     if (prefix) await (await getPlugin())?.warm({ prefix });
   } catch { /* au pire la question calcule la consigne elle-même */ }
 }
@@ -211,7 +211,7 @@ export async function warmNative(messages, tools) {
  */
 export async function generateNative(messages, { tools, maxNewTokens = 256 } = {}) {
   const p = await getPlugin();
-  const { prefix, rest } = splitPrompt(messages, { tools });
+  const { prefix, rest } = splitPrompt(messages, { tools, template: NATIVE_MODEL.template });
   const r = parse(await p.generate({ prefix, rest, maxTokens: maxNewTokens, phase: "answer" }).catch(rethrow("generate")), "generate");
   // La fin de tour n'est pas rendue en texte par le moteur : la remettre, sans quoi
   // cleanReply prendrait une réponse complète pour une réponse coupée.

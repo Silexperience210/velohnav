@@ -70,6 +70,11 @@ int main(int argc, char ** argv) {
         if (l.rfind("VmRSS:", 0) == 0) rss = atol(l.c_str() + 6);
         else if (l.rfind("VmHWM:", 0) == 0) hwm = atol(l.c_str() + 6);
     }
-    printf("{\"mem\":{\"rssKb\":%ld,\"hwmKb\":%ld}}\n", rss, hwm);
+    // PSS : part proportionnelle (pages partagées divisées) — avec les poids en mmap, RSS
+    // compte tout le fichier lu, PSS ce que le processus coûte vraiment au système.
+    std::ifstream sr("/proc/self/smaps_rollup");
+    long pss = -1;
+    for (std::string l; std::getline(sr, l);) if (l.rfind("Pss:", 0) == 0) { pss = atol(l.c_str() + 4); break; }
+    printf("{\"mem\":{\"rssKb\":%ld,\"hwmKb\":%ld,\"pssKb\":%ld}}\n", rss, hwm, pss);
     return 0;
 }

@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import {
+  NATIVE_CANDIDATES, NATIVE_MODEL, nativeModelFor,
   nativeStepText,
   NATIVE_ASIDE_KINDS, nativeFallback,
   VARIANTS, LARGEST_TENSOR_BYTES, LIMITS, assessWebGPU, watchdog,
@@ -550,5 +551,25 @@ describe("nativeStepText : sous-étape du processus :llm, en une ligne", () => {
   it("trace muette depuis 5 s ou plus : dit depuis quand", () => {
     expect(nativeStepText({ stage: "load cpu: model (cpu)", idleMs: 1_200 })).toBe("load cpu: model (cpu)");
     expect(nativeStepText({ stage: "load cpu: threads 3/3", idleMs: 42_400 })).toBe("load cpu: threads 3/3 · muette 42 s");
+  });
+});
+
+describe("candidats natifs : une liste, un défaut inchangé", () => {
+  it("défaut : LFM2.5-350M Q4_0 (aucune clé de construction)", () => {
+    expect(NATIVE_MODEL.file).toBe("LFM2.5-350M-Q4_0.gguf");
+    expect(nativeModelFor(undefined)).toBe(NATIVE_MODEL);
+    expect(nativeModelFor("inconnu")).toBe(NATIVE_MODEL);
+  });
+  it("chaque candidat est complet et accepté par le greffon (nom de fichier, taille, SHA-256, gabarit)", () => {
+    for (const [k, m] of Object.entries(NATIVE_CANDIDATES)) {
+      expect(m.key).toBe(k);
+      expect(m.file).toMatch(/^[A-Za-z0-9._-]+\.gguf$/);           // LocalLlmPlugin.modelFile
+      expect(m.revision).toMatch(/^[0-9a-f]{40}$/);
+      expect(m.sha256).toMatch(/^[0-9a-f]{64}$/);
+      expect(m.bytes).toBeGreaterThan(1e8);
+      expect(m.mb).toBe(Math.round(m.bytes / 1e6));
+      expect(["lfm", "chatml", "phi3", "zephyr"]).toContain(m.template);
+    }
+    expect(nativeModelFor("qwen2.5-1.5b-q4_0").template).toBe("chatml");
   });
 });
