@@ -100,6 +100,10 @@ function AIScreen({ stations, aiHistory, setAiHistory,
   // il n'est téléchargé que sur demande explicite. Sans lui, l'écran reste utile :
   // tout ce qui est factuel est calculé sur l'appareil, exactement.
   const [chatOn, setChatOn] = useState(false);
+  // Lu au nettoyage du chargement : conversation désactivée (false) → le modèle est arrêté ;
+  // écran quitté ou « Réessayer » (encore true) → le moteur natif garde le modèle en mémoire.
+  const chatOnRef = useRef(chatOn);
+  chatOnRef.current = chatOn;
   const endRef = useRef();
   const inputRef = useRef();
 
@@ -208,8 +212,10 @@ function AIScreen({ stations, aiHistory, setAiHistory,
     // Conversation désactivée, « Réessayer » ou écran quitté : le worker est
     // arrêté et la mémoire rendue (chargement en cours compris). Avant, il
     // survivait à tout — y compris au retour de l'interrupteur sur « arrêté » au
-    // remontage de l'écran — avec plus d'1 Go résident.
-    return ()=>{ dead = true; unloadModel(); };
+    // remontage de l'écran — avec plus d'1 Go résident. Seule exception : le moteur
+    // natif prêt, gardé par son processus :llm (notification « modèle local actif »,
+    // bouton « Arrêter ») tant que la conversation n'est pas désactivée.
+    return ()=>{ dead = true; unloadModel({ keepNative: chatOnRef.current }); };
   },[chatOn, loadSeq]);
   useEffect(()=>{ if (!chatOn) setModelState("off"); },[chatOn]);
   useEffect(()=>{ const off = onNativeDownload(setNativeDl); return ()=>{ off(); }; },[]);

@@ -4,4 +4,10 @@
     <string name="title_activity_main">VelohNav</string>
     <string name="package_name">com.silexperience.velohnav</string>
     <string name="custom_url_scheme">com.silexperience.velohnav</string>
+    <!-- Modèle local gardé en mémoire (llm/LlmService.kt) -->
+    <string name="llm_channel">Modèle local</string>
+    <string name="llm_channel_description">Indique que le modèle de conversation reste en mémoire pour répondre sans rechargement.</string>
+    <string name="llm_notification_title">VelohNav · modèle local actif</string>
+    <string name="llm_notification_text">Le modèle de conversation reste en mémoire (plusieurs centaines de Mo) pour répondre tout de suite à votre retour. Arrêtez-le pour libérer la mémoire.</string>
+    <string name="llm_notification_stop">Arrêter</string>
 </resources>

@@ -7,6 +7,10 @@
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <!-- Modèle local gardé en mémoire entre deux visites (llm/LlmService.kt) -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <!-- ARCore -->
     <uses-feature android:name="android.hardware.camera" android:required="true" />
@@ -58,11 +62,17 @@
             android:hardwareAccelerated="true" />
 
         <!-- Moteur conversationnel natif (llama.cpp) : processus séparé, un plantage du
-             pilote GPU n'emporte pas l'application (llm/LlmService.kt). -->
+             pilote GPU n'emporte pas l'application (llm/LlmService.kt). Modèle chargé : service
+             de premier plan, notification visible et bouton « Arrêter ». -->
         <service
             android:name=".llm.LlmService"
             android:process=":llm"
-            android:exported="false" />
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Modèle de langage local (llama.cpp) gardé en mémoire entre deux ouvertures de l'application, pour répondre sans relire ses poids (plusieurs centaines de Mo) ; arrêt par la notification." />
+        </service>
 
         <provider
             android:name="androidx.core.content.FileProvider"

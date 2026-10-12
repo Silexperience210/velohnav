@@ -61,6 +61,7 @@ function fakePlugin({ status = STATUS, load = {}, selfTest = {}, reply = "Bonjou
     warm: vi.fn(async () => ok({})),
     cancel: vi.fn(async () => {}),
     unload: vi.fn(async () => {}),
+    release: vi.fn(async () => {}),
   };
   return p;
 }
@@ -613,6 +614,36 @@ describe("façade : le moteur natif d'abord, repli silencieux ensuite", () => {
     mod.unloadModel();
     expect(mod.isModelReady()).toBe(false);
     await vi.waitFor(() => expect(p.unload).toHaveBeenCalled());
+  });
+
+  it("écran quitté : le moteur natif est rendu, pas arrêté — le processus :llm garde le modèle", async () => {
+    const p = fakePlugin();
+    await setup(p);
+    await mod.loadModel();
+    mod.unloadModel({ keepNative: true });
+    expect(mod.isModelReady()).toBe(false);
+    await vi.waitFor(() => expect(p.release).toHaveBeenCalled());
+    expect(p.unload).not.toHaveBeenCalled();
+  });
+
+  it("modèle repris du processus :llm : prêt sans essai à vide", async () => {
+    const p = fakePlugin({ load: { vulkan: ok({ reused: true, info: INFO.vulkan }) } });
+    await setup(p);
+    await mod.loadModel();
+    expect(mod.isModelReady()).toBe(true);
+    expect(p.calls.filter((c) => c.phase === "selftest")).toHaveLength(0);
+  });
+
+  it("arrêté depuis la notification : rechargement demandé, le moteur n'est pas écarté", async () => {
+    const p = fakePlugin({ reply: () => ok({ ok: false, error: "stopped: model stopped from the notification" }) });
+    await setup(p);
+    await mod.loadModel();
+    const before = store.get("velohnav_ai_native_ko");
+    const e = await mod.generateDetailed("", [{ role: "user", content: "Bonjour" }]).catch((x) => x);
+    expect(e.code).toBe("generate");
+    expect(e.recover).toBe(true);
+    expect(store.get("velohnav_ai_native_ko")).toBe(before);
+    expect(p.unload).toHaveBeenCalled();
   });
 
   it("la consigne est calculée d'avance par le moteur natif", async () => {

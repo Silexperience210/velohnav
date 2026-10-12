@@ -17,7 +17,7 @@ let plugin;   // undefined : pas encore cherché ; null : absent
 export function setNativePlugin(p) { plugin = p; }
 
 // Méthodes du greffon (LocalLlmPlugin.kt) appelées d'ici.
-const METHODS = ["status", "download", "cancelDownload", "deleteModels", "load", "stage", "warm", "generate", "cancel", "unload", "addListener"];
+const METHODS = ["status", "download", "cancelDownload", "deleteModels", "load", "stage", "warm", "generate", "cancel", "unload", "release", "addListener"];
 
 /**
  * Le greffon, dans un objet ordinaire. JAMAIS le proxy de registerPlugin tel quel : une
@@ -149,12 +149,18 @@ export async function cancelNativeDownload() {
  * @returns {Promise<{ info: object, selfTest: string, selfTestRaw: string[], mem: object|null, loadMs: number, bench: object }>}
  *   mem : mémoire du processus :llm après le chargement (Mo : rssMB, peakMB, pssMB, gfxMB)
  *   bench : vitesse de l'essai à vide (selfTestBench), affichée dans la ligne d'état
+ *   reused : modèle repris tel quel du processus :llm (aucun chargement, pas d'essai à vide)
  */
 export async function loadNative(backend, timeoutMs, { calibrate = true, onStep } = {}) {
   const p = await getPlugin();
   const t0 = Date.now();
   const run = async () => {
     const r = parse(await p.load({ file: NATIVE_MODEL.file, backend, nCtx: 4096, calibrate }).catch(rethrow("load")), "load");
+    // Modèle gardé en mémoire par le processus :llm depuis la visite précédente (service de
+    // premier plan) : il a déjà passé l'essai à vide dans ce processus, rien à relire ni à rejouer.
+    if (r.reused) {
+      return { info: r.info || {}, selfTest: "", selfTestRaw: [], mem: r.mem || null, loadMs: Date.now() - t0, bench: null, reused: true };
+    }
     const turn = async (messages, maxTokens) => {
       const { prefix, rest } = splitPrompt(messages, { template: NATIVE_MODEL.template });
       const g = parse(await p.generate({ prefix, rest, maxTokens, phase: "selftest" }).catch(rethrow("selftest")), "selftest");
@@ -227,6 +233,16 @@ export async function cancelNative() {
 /** Arrête le processus :llm : toute sa mémoire (poids, tampons du pilote) est rendue. */
 export async function unloadNative() {
   try { await (await getPlugin())?.unload(); } catch { /* déjà arrêté */ }
+}
+
+/**
+ * Rend le moteur sans l'arrêter : le processus :llm garde le modèle en mémoire (service de
+ * premier plan, notification « modèle local actif ») et le prochain chargement le reprend
+ * aussitôt. APK sans `release` : le moteur est arrêté, comme avant.
+ */
+export async function releaseNative() {
+  const p = await getPlugin();
+  try { await (p?.release ? p.release() : p?.unload()); } catch { /* déjà parti */ }
 }
 
 /** Efface le GGUF (et un téléchargement partiel) : un seul modèle sur l'appareil. */

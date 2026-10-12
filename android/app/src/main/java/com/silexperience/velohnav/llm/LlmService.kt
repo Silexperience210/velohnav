@@ -1,7 +1,13 @@
 package com.silexperience.velohnav.llm
 
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
 import android.app.Service
 import android.content.Intent
+import android.content.pm.ServiceInfo
+import android.os.Build
 import android.os.Bundle
 import android.os.Debug
 import android.os.Handler
@@ -11,6 +17,9 @@ import android.os.Message
 import android.os.Messenger
 import android.os.Process
 import android.util.Log
+import androidx.core.app.NotificationCompat
+import androidx.core.app.ServiceCompat
+import com.silexperience.velohnav.R
 import java.util.concurrent.Executors
 
 /**
@@ -22,6 +31,12 @@ import java.util.concurrent.Executors
  *
  * Protocole (Message.what) : requête → réponse REPLY (arg1 = numéro de requête, octets
  * JSON sous « json »). CANCEL est traité tout de suite, hors de la file de calcul.
+ *
+ * Modèle gardé entre deux visites : une fois un modèle chargé, le service passe au premier
+ * plan (notification permanente « modèle local actif », bouton « Arrêter ») et survit au
+ * départ de l'application. Au retour, un LOAD identique (même fichier, même moteur, même
+ * contexte) répond tout de suite avec « reused »: true, sans relire les poids. Sans modèle
+ * chargé, le processus part toujours avec son dernier client, comme avant.
  */
 class LlmService : Service() {
 
@@ -34,11 +49,24 @@ class LlmService : Service() {
         const val CANCEL = 6
         const val REPLY = 100
         private const val TAG = "VhLlm"
+        /** Bouton « Arrêter » de la notification : le modèle est déchargé, la mémoire rendue. */
+        const val ACTION_STOP = "com.silexperience.velohnav.llm.STOP"
+        private const val CHANNEL = "llm"
+        private const val NOTIFICATION = 7301
     }
 
     // Un seul calcul à la fois, hors du fil principal (une génération dure des secondes).
     private val worker = Executors.newSingleThreadExecutor { r -> Thread(r, "llm").apply { priority = Thread.MAX_PRIORITY } }
     private var libError: String? = null
+
+    // Modèle en mémoire (fil « llm » seulement) : clé du LOAD réussi et sa réponse, rejouée
+    // telle quelle à un LOAD identique.
+    private var loadedKey: String? = null
+    private var loadedJson: ByteArray? = null
+    // Fil principal seulement.
+    private var foreground = false
+    private var clients = false
+    @Volatile private var stopped = false
 
     override fun onCreate() {
         super.onCreate()
@@ -92,11 +120,125 @@ class LlmService : Service() {
         libError?.let { return """{"ok":false,"error":${quote("unsupported: $it")}}""".toByteArray() }
         return when (what) {
             DEVICES -> """{"ok":true,"devices":${String(LlmNative.devices())}}""".toByteArray()
-            LOAD -> withMemory(LlmNative.load(d.getByteArray("path")!!, d.getByteArray("backend")!!, d.getInt("nCtx"), d.getInt("nThreads"), d.getBoolean("calibrate", true)), full = true)
-            WARM -> LlmNative.warm(d.getByteArray("prefix")!!)
-            GENERATE -> withMemory(LlmNative.generate(d.getByteArray("prefix")!!, d.getByteArray("rest")!!, d.getInt("maxTokens"), null), full = false)
-            UNLOAD -> { LlmNative.unload(); """{"ok":true}""".toByteArray() }
+            LOAD -> load(d)
+            WARM -> stoppedReply() ?: LlmNative.warm(d.getByteArray("prefix")!!)
+            GENERATE -> stoppedReply() ?: withMemory(LlmNative.generate(d.getByteArray("prefix")!!, d.getByteArray("rest")!!, d.getInt("maxTokens"), null), full = false)
+            UNLOAD -> { forget(); """{"ok":true}""".toByteArray() }
             else -> """{"ok":false,"error":"unknown request $what"}""".toByteArray()
+        }
+    }
+
+    /**
+     * Même fichier, même moteur, même contexte que le modèle en mémoire : sa réponse de
+     * chargement est rendue avec « reused »: true (mémoire relue), en quelques millisecondes.
+     * Sinon le moteur charge (et décharge d'abord l'ancien). Réussi : premier plan.
+     */
+    private fun load(d: Bundle): ByteArray {
+        val path = d.getByteArray("path")!!
+        val backend = d.getByteArray("backend")!!
+        val key = "${String(path)}|${String(backend)}|${d.getInt("nCtx")}"
+        val kept = loadedJson
+        if (key == loadedKey && kept != null) {
+            Log.i(TAG, "modèle déjà en mémoire ($key) : rechargement évité")
+            return withMemory("{\"reused\":true,".toByteArray() + kept.copyOfRange(1, kept.size), full = false)
+        }
+        forget()
+        val json = LlmNative.load(path, backend, d.getInt("nCtx"), d.getInt("nThreads"), d.getBoolean("calibrate", true))
+        if (String(json, Charsets.UTF_8).startsWith("{\"ok\":true")) {
+            loadedKey = key
+            loadedJson = json
+            stopped = false
+            handler.post { keepAlive() }
+        }
+        return withMemory(json, full = true)
+    }
+
+    /** Modèle déchargé ; plus rien à garder au premier plan. */
+    private fun forget() {
+        loadedKey = null
+        loadedJson = null
+        LlmNative.unload()
+        handler.post { leaveForeground() }
+    }
+
+    // Arrêté depuis la notification alors que l'application était reliée : elle doit recharger.
+    private fun stoppedReply(): ByteArray? =
+        if (stopped && loadedKey == null) """{"ok":false,"error":"stopped: model stopped from the notification"}""".toByteArray() else null
+
+    /**
+     * Premier plan : le service est aussi « démarré » (il survit au départ du dernier client)
+     * et montre sa notification. Refusé par le système (application déjà en arrière-plan
+     * quand le chargement finit) : le modèle reste, mais part avec le dernier client.
+     */
+    private fun keepAlive() {
+        if (foreground) return
+        try {
+            startService(Intent(this, LlmService::class.java))
+            ServiceCompat.startForeground(this, NOTIFICATION, notification(),
+                if (Build.VERSION.SDK_INT >= 34) ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE else 0)
+            foreground = true
+            Log.i(TAG, "modèle gardé en mémoire : service de premier plan")
+        } catch (e: Exception) {
+            Log.w(TAG, "premier plan refusé : ${e.message}")
+        }
+    }
+
+    private fun leaveForeground() {
+        if (!foreground) return
+        ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
+        stopSelf()
+        foreground = false
+    }
+
+    private fun notification(): Notification {
+        val nm = getSystemService(NotificationManager::class.java)
+        if (Build.VERSION.SDK_INT >= 26 && nm.getNotificationChannel(CHANNEL) == null) {
+            nm.createNotificationChannel(NotificationChannel(CHANNEL, getString(R.string.llm_channel), NotificationManager.IMPORTANCE_LOW)
+                .apply { description = getString(R.string.llm_channel_description); setShowBadge(false) })
+        }
+        val flags = PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        val stop = PendingIntent.getService(this, 0, Intent(this, LlmService::class.java).setAction(ACTION_STOP), flags)
+        val open = packageManager.getLaunchIntentForPackage(packageName)?.let { PendingIntent.getActivity(this, 0, it, flags) }
+        return NotificationCompat.Builder(this, CHANNEL)
+            .setSmallIcon(R.drawable.ic_stat_llm)
+            .setContentTitle(getString(R.string.llm_notification_title))
+            .setContentText(getString(R.string.llm_notification_text))
+            .setStyle(NotificationCompat.BigTextStyle().bigText(getString(R.string.llm_notification_text)))
+            .setContentIntent(open)
+            .addAction(0, getString(R.string.llm_notification_stop), stop)
+            .setOngoing(true)
+            .setSilent(true)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setCategory(NotificationCompat.CATEGORY_SERVICE)
+            .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
+            .build()
+    }
+
+    /**
+     * Démarrage par keepAlive (sans action) ou bouton « Arrêter ». Jamais relancé par le
+     * système après sa mort : un service relancé n'aurait plus de modèle à garder.
+     */
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (intent?.action == ACTION_STOP) stop()
+        else if (!foreground) stopSelf(startId)   // démarré sans modèle chargé : rien à garder
+        return START_NOT_STICKY
+    }
+
+    /**
+     * « Arrêter » : la génération en cours s'interrompt, le modèle est déchargé. Sans client,
+     * le processus part avec toute sa mémoire ; avec un client, il reste relié et répond
+     * « stopped » jusqu'au prochain chargement.
+     */
+    private fun stop() {
+        Log.i(TAG, "arrêt demandé depuis la notification (client relié : $clients)")
+        stopped = true
+        leaveForeground()
+        if (libError == null) LlmNative.cancel()
+        worker.execute {
+            loadedKey = null
+            loadedJson = null
+            if (libError == null) LlmNative.unload()
+            handler.post { if (!clients) Process.killProcess(Process.myPid()) }
         }
     }
 
@@ -130,13 +272,21 @@ class LlmService : Service() {
 
     private val messenger = Messenger(handler)
 
-    override fun onBind(intent: Intent?): IBinder = messenger.binder
+    override fun onBind(intent: Intent?): IBinder { clients = true; return messenger.binder }
 
-    // Plus aucun client : le processus part avec tout ce qu'il tenait.
+    override fun onRebind(intent: Intent?) { clients = true }
+
+    // Plus aucun client : modèle au premier plan, il reste pour le prochain retour ;
+    // sinon le processus part avec tout ce qu'il tenait.
     override fun onUnbind(intent: Intent?): Boolean {
+        clients = false
+        if (foreground) {
+            Log.i(TAG, "plus de client : modèle gardé en mémoire (premier plan)")
+            return true
+        }
         Log.i(TAG, "plus de client : fin du processus :llm")
         handler.postDelayed({ Process.killProcess(Process.myPid()) }, 50)
-        return false
+        return true
     }
 }
 

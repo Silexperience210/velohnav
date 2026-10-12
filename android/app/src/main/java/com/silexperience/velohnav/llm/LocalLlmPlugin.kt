@@ -1,11 +1,13 @@
 package com.silexperience.velohnav.llm
 
+import android.Manifest
 import android.app.ActivityManager
 import android.app.ApplicationExitInfo
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
+import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -15,6 +17,8 @@ import android.os.Message
 import android.os.Messenger
 import android.os.Process
 import android.util.Log
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
 import com.getcapacitor.JSObject
 import com.getcapacitor.Plugin
 import com.getcapacitor.PluginCall
@@ -358,7 +362,23 @@ class LocalLlmPlugin : Plugin() {
             putInt("nThreads", call.getInt("nThreads") ?: LlmNative.bigCores())
             putBoolean("calibrate", call.getBoolean("calibrate") ?: true)
         }
+        askNotifications()
         request(LlmService.LOAD, "load $backend", b, relay(call))
+    }
+
+    /**
+     * Modèle chargé, le service passe au premier plan avec une notification (« modèle local
+     * actif », bouton « Arrêter »). Android 13+ : sans cette permission elle n'apparaît pas
+     * dans le volet — le service tourne quand même. Demandée une seule fois.
+     */
+    private fun askNotifications() {
+        if (Build.VERSION.SDK_INT < 33) return
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED) return
+        val prefs = context.getSharedPreferences("llm", Context.MODE_PRIVATE)
+        if (prefs.getBoolean("askedNotifications", false)) return
+        val act = activity ?: return
+        prefs.edit().putBoolean("askedNotifications", true).apply()
+        main.post { ActivityCompat.requestPermissions(act, arrayOf(Manifest.permission.POST_NOTIFICATIONS), 7301) }
     }
 
     /**
@@ -445,6 +465,19 @@ class LocalLlmPlugin : Plugin() {
                 Log.i(TAG, "processus :llm $pid ${if (proc.exists()) "toujours là après 3 s" else "arrêté"}")
                 call.resolve()
             }, "llm-unload").start()
+        }
+    }
+
+    /**
+     * Rend le moteur sans l'arrêter : la liaison est défaite, le processus :llm garde le
+     * modèle (service de premier plan) pour le prochain chargement, qui le reprend aussitôt.
+     * Sans modèle chargé, le service part avec la liaison, comme avant.
+     */
+    @PluginMethod(returnType = PluginMethod.RETURN_PROMISE)
+    fun release(call: PluginCall) {
+        main.post {
+            dropService("released")
+            call.resolve()
         }
     }
 

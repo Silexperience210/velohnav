@@ -21,7 +21,7 @@ import { readMemoryInfo } from "./deviceMemory.js";
 import { JOURNAL_KEY, journalEntry, withReply, parseJournal, pushEntry, replaceLast } from "./launchJournal.js";
 import {
   nativeStatus, downloadNative, cancelNativeDownload, loadNative, warmNative,
-  generateNative, cancelNative, unloadNative, deleteNativeModel,
+  generateNative, cancelNative, unloadNative, releaseNative, deleteNativeModel,
 } from "./nativeModel.js";
 
 export { chooseVariant };
@@ -189,9 +189,13 @@ export function isModelReady() {
   return ready;
 }
 
-/** Arrête le worker (libère la mémoire et tout ce qui y était bloqué). */
-function killWorker(err) {
-  if (native) { native = null; unloadNative(); }
+/**
+ * Arrête le worker (libère la mémoire et tout ce qui y était bloqué). `keepNative` : le
+ * moteur natif prêt est seulement rendu — le processus :llm garde le modèle pour la visite
+ * suivante (releaseNative) ; sinon il est arrêté.
+ */
+function killWorker(err, { keepNative = false } = {}) {
+  if (native) { const kept = keepNative && ready; native = null; kept ? releaseNative() : unloadNative(); }
   if (worker) worker.terminate();
   worker = null;
   ready = false;
@@ -567,7 +571,7 @@ async function tryNative(onPhase, gen, backends) {
         ...(r.bench ? { bench: r.bench } : {}),
         ...(backend !== "cpu" ? { gpuName: r.info.description || r.info.device || "" } : {}),
       };
-      console.info(`[IA] retenu : ${id} (${variant.mb} Mo, prêt en ${(r.loadMs / 1000).toFixed(1)} s)`
+      console.info(`[IA] retenu : ${id} (${variant.mb} Mo, ${r.reused ? "repris de la mémoire" : "prêt"} en ${(r.loadMs / 1000).toFixed(1)} s)`
         + ` ; appareil ${r.info.device || "?"} ${r.info.description || ""} ; ${r.info.threads ?? "?"} fils ; essai à vide ${JSON.stringify(r.selfTest)}`
         + `${report.tried.length ? ` ; avant lui : ${report.tried.map(attemptLine).join(" ; ")}` : ""}`);
       // Un seul modèle sur l'appareil : la copie ONNX de l'autre voie ne sert plus.
@@ -668,11 +672,15 @@ async function measureLoadCost(before) {
  * interrompu. Appelé quand l'utilisateur désactive la conversation libre ou
  * quitte l'écran. Avant : le worker restait en vie pour la durée de l'application
  * — plus d'1 Go résident pendant la carte et la caméra AR.
+ *
+ * `keepNative` (écran quitté) : le moteur natif prêt n'est pas arrêté, son processus :llm
+ * garde le modèle (notification « modèle local actif ») et le prochain loadModel le reprend
+ * en quelques millisecondes. Conversation désactivée : tout est arrêté.
  */
-export function unloadModel() {
+export function unloadModel({ keepNative = false } = {}) {
   generation++;
   if (abortLoad) abortLoad();
-  else if (worker || native) killWorker(new ModelError("cancelled"));
+  else if (worker || native) killWorker(new ModelError("cancelled"), { keepNative });
   // Chargement natif en cours : runNative voit `generation` changer et s'arrête ;
   // le téléchargement et le processus :llm s'arrêtent dès maintenant.
   else if (loadPromise && current?.engine.device === "native") { cancelNativeDownload(); unloadNative(); }
@@ -837,6 +845,15 @@ async function runNativeGeneration(messages, opts, seconds) {
   } catch (e) {
     if (e?.timedOut) {
       const err = new ModelError("generate_timeout", { seconds });
+      killWorker(err);
+      throw err;
+    }
+    // Moteur rendu ou arrêté entre-temps (écran quitté) : rien n'est prouvé contre lui.
+    if (native !== a) throw new ModelError("cancelled");
+    // Arrêté depuis la notification : le moteur n'a pas failli, il est rechargé tel quel.
+    if (/^stopped\b/.test(String(e?.detail || ""))) {
+      console.info("[IA] moteur natif arrêté depuis la notification : rechargement");
+      const err = new ModelError("generate", { detail: "stopped", recover: true, attempts: report.tried });
       killWorker(err);
       throw err;
     }
