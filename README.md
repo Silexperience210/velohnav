@@ -1,6 +1,6 @@
 # VelohNav
 
-**Local AI bike assistant for the Vel'OH! network in Luxembourg.**
+**Multimodal AI assistant for Vel'OH!, Luxembourg tram and RGTR buses.**
 
 [![CI](https://github.com/Silexperience210/velohnav/actions/workflows/apk.yml/badge.svg)](https://github.com/Silexperience210/velohnav/actions/workflows/apk.yml)
 ![React](https://img.shields.io/badge/React-18-61DAFB?logo=react)
@@ -13,7 +13,7 @@
 
 ## What it is
 
-VelohNav is a privacy-first Android app for cyclists in Luxembourg. It combines a live map of Vel'OH! stations, an on-device AI assistant, AR turn-by-turn navigation, weather-aware ride advice, and public-transport departures — without sending your location or questions to the cloud.
+VelohNav is a privacy-first Android app for multimodal trips in Luxembourg. It combines live Vel'OH! (JCDecaux) bike-share data, the Luxembourg tram (T1), the RGTR bus network via mobiliteit.lu, an on-device AI assistant, AR turn-by-turn navigation, weather-aware ride advice and mixed-mode routing — without sending your location or questions to the cloud.
 
 ![Map, AI assistant, and AR mockups](docs/mockups-composite.png)
 
@@ -21,15 +21,15 @@ VelohNav is a privacy-first Android app for cyclists in Luxembourg. It combines 
 
 ## Features
 
-### 🗺️ Live station map
-- Real-time bikes, e-bikes and free docks from GBFS.
+### 🗺️ Live Vel'OH! stations
+- Real-time bikes, e-bikes and free docks from the JCDecaux Vel'OH! GBFS feed.
 - Filters: available bikes, free docks, electric.
 - Search by station name.
 - Tap a station to start AR navigation or a trip.
 
 ### 🤖 Local AI assistant
 - **LFM2.5 runs on the phone** (native CPU, ~30 tokens/s, ~1.2 s load).
-- Ask in English or French: "Nearest station?", "Which station is empty?", "Weather?", "Route to Kirchberg", "Next bus?".
+- Ask in English or French: "Nearest station?", "Which station is empty?", "Weather?", "Route to Kirchberg", "Next RGTR bus?", "Next tram?".
 - Numbers and facts always come from app data, never from the model's imagination.
 - A fallback deterministic engine answers even when the model is unavailable.
 
@@ -43,9 +43,9 @@ VelohNav is a privacy-first Android app for cyclists in Luxembourg. It combines 
 - A simple bike score tells you if it's a good moment to ride.
 - Automatic multimodal suggestion when the weather degrades.
 
-### 🚌 Bus & tram departures
-- Real-time departures from Transitous (MOTIS / ATP Luxembourg).
-- Mixed-mode routing: bike to a station, then public transport.
+### 🚌 Bus, tram & multimodal
+- Real-time RGTR bus departures and Luxembourg tram (T1) times from mobiliteit.lu via Transitous / MOTIS.
+- Mixed-mode routing: bike to a Vel'OH! station, then bus or tram.
 
 ### 🔒 100 % private
 - No cloud LLM.
@@ -77,7 +77,7 @@ xdg-open docs/showcase.html    # Linux
 | AR | ARCore (Android) |
 | Weather | Open-Meteo |
 | Routing | OSRM + BRouter |
-| Transit | Transitous / MOTIS |
+| Transit | mobiliteit.lu · Transitous / MOTIS |
 | Crypto | Bitcoin Lightning via LNURL-pay |
 | Tests | Vitest |
 
@@ -116,4 +116,4 @@ The GitHub Actions workflow builds a debug APK on every push.
 
 ## License
 
-MIT — Data © Vel'OH! / Ville de Luxembourg, Transitous, OpenStreetMap contributors, Open-Meteo.
+MIT — Data © Vel'OH! / Ville de Luxembourg, mobiliteit.lu / RGTR / Tram Luxembourg, Transitous, OpenStreetMap contributors, Open-Meteo.
