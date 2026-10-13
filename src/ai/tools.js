@@ -22,7 +22,7 @@ export const TOOLS = Object.freeze([
     "Vel'OH! bike-share station: bikes, e-bikes and free docks. With name: that station. Without name: the nearest one having what the user needs.",
     {
       name: { type: "string", description: "Station name if the user gave one, e.g. Gare, Hamilius" },
-      need: { type: "string", enum: ["bike", "ebike", "dock"], description: "bike to take a bike, ebike for an electric bike, dock to return or park a bike" },
+      need: { type: "string", enum: ["bike", "ebike", "dock", "empty", "full"], description: "bike to take a bike, ebike for an electric bike, dock to return or park a bike, empty for a station with no bikes, full for a station with the most bikes / fewest free docks" },
     }),
   fn("list_stations",
     "List the closest Vel'OH! stations with their bikes and docks.",
@@ -61,6 +61,8 @@ const ENUM_ALIASES = {
   "e-bike": "ebike", electric: "ebike", elec: "ebike",
   docks: "dock", return: "dock", parking: "dock", borne: "dock",
   bikes: "bike", trams: "tram", buses: "bus",
+  empty: "empty", vide: "empty", aucun: "empty", none: "empty",
+  full: "full", pleine: "full", plein: "full", "max-bikes": "full",
 };
 
 /**

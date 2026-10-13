@@ -85,7 +85,7 @@ function details(ctx, st) {
 
 /** Mise au pluriel : injectée par l'application (consciente de la langue), avec un
  *  repli neutre pour les appels sans contexte. */
-const pluralizer = (ctx) => ctx.tn || ((key, n) => `${n} ${ctx.t(key + (n === 1 ? ".one" : ".many"))}`);
+export const pluralizer = (ctx) => ctx.tn || ((key, n) => `${n} ${ctx.t(key + (n === 1 ? ".one" : ".many"))}`);
 
 /**
  * Lieu connu de l'application (station Vel'OH! ou arrêt du tram) le mieux nommé par
@@ -208,12 +208,32 @@ export function answerLocally(question, ctx) {
     return answerDocks(ctx);
   }
 
-  // 5. Station la plus proche
+  // 5. Station vide (0 vélo)
+  if (/\b(vide|empty|aucun velo|aucun bike|no bike|pas de velo)\b/.test(q)) {
+    const st = closestStation(ctx.stations, (s) => s.bikes === 0);
+    return st
+      ? { text: t("ui.ai.ans.empty", { name: st.name, dist: distLabel(ctx, st.dist), docks: tn("ui.ai.unit.dock", st.docks) }) }
+      : { text: t("ui.ai.ans.no_empty") };
+  }
+
+  // 6. Station la plus pleine (le plus de vélos)
+  if (/\b(plein|pleine|full|max|plus de velos|plus de bikes)\b/.test(q)) {
+    let best = null;
+    for (const s of ctx.stations || []) {
+      if (s.status === "CLOSED") continue;
+      if (!best || s.bikes > best.bikes || (s.bikes === best.bikes && (s.dist ?? Infinity) < (best.dist ?? Infinity))) best = s;
+    }
+    return best
+      ? { text: t("ui.ai.ans.full", { name: best.name, dist: distLabel(ctx, best.dist), bikes: tn("ui.ai.unit.bike", best.bikes), docks: tn("ui.ai.unit.dock", best.docks) }) }
+      : { text: t("ui.ai.ans.no_station") };
+  }
+
+  // 7. Station la plus proche
   if (/(station|proche|plus pres|pres de moi|ou est|ou trouver|nearest|closest|where is|where can)/.test(q)) {
     return answerNearest(ctx);
   }
 
-  // 6. Vélos électriques
+  // 8. Vélos électriques
   if (/(electri|elec\b|ebike|electric|e-bike)/.test(q)) {
     return answerElec(ctx);
   }

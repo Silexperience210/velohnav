@@ -18,7 +18,7 @@ import { fmtDuration, walkMinutes, stationView } from "../ui/format.js";
 import { readModelOutput, TOOLS } from "./tools.js";
 import {
   norm, approxDist, closestStation, upcoming, distLabel, findPlace, navAnswer, stationDetails,
-  answerNearest, answerDocks, answerDepartures, answerWeather,
+  answerNearest, answerDocks, answerDepartures, answerWeather, pluralizer,
 } from "./localAnswers.js";
 
 // tojson du gabarit de LFM2.5 : séparateurs « , » et « : » espacés, comme en Python.
@@ -67,6 +67,23 @@ function findStation(ctx, { name, need }) {
   if (need === "ebike") {
     const st = closestStation(stations, (s) => stationView(s).elec > 0);
     return { text: st ? stationDetails(ctx, st) : ctx.t("ui.ai.ans.no_station") };
+  }
+  if (need === "empty") {
+    const st = closestStation(stations, (s) => s.bikes === 0);
+    return st
+      ? { text: ctx.t("ui.ai.ans.empty", { name: st.name, dist: distLabel(ctx, st.dist), docks: pluralizer(ctx)("ui.ai.unit.dock", st.docks) }) }
+      : { text: ctx.t("ui.ai.ans.no_empty") };
+  }
+  if (need === "full") {
+    // Station la plus « pleine » : celle avec le plus de vélos ; à égalité, la plus proche.
+    let best = null;
+    for (const s of stations) {
+      if (s.status === "CLOSED") continue;
+      if (!best || s.bikes > best.bikes || (s.bikes === best.bikes && (s.dist ?? Infinity) < (best.dist ?? Infinity))) best = s;
+    }
+    return best
+      ? { text: ctx.t("ui.ai.ans.full", { name: best.name, dist: distLabel(ctx, best.dist), bikes: pluralizer(ctx)("ui.ai.unit.bike", best.bikes), docks: pluralizer(ctx)("ui.ai.unit.dock", best.docks) }) }
+      : { text: ctx.t("ui.ai.ans.no_station") };
   }
   return answerNearest(ctx);
 }

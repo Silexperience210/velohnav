@@ -153,6 +153,15 @@ describe("exécution : la réponse vient des données, jamais du modèle", () =>
   it("rendre un vélo : station avec des bornes libres", () => {
     expect(executeTool({ name: "find_station", args: { need: "dock" } }, ctx).text).toMatch(/^ui\.ai\.ans\.docks .*Hamilius/);
   });
+  it("station vide : la plus proche avec 0 vélo", () => {
+    const r = executeTool({ name: "find_station", args: { need: "empty" } }, ctx);
+    expect(r.text).toMatch(/^ui\.ai\.ans\.empty /);
+    expect(r.text).toMatch(/"docks":"20 /);
+  });
+  it("station pleine : celle avec le plus de vélos", () => {
+    const r = executeTool({ name: "find_station", args: { need: "full" } }, ctx);
+    expect(r.text).toMatch(/^ui\.ai\.ans\.full /);
+  });
   it("liste : stations fermées exclues, limite respectée", () => {
     const r = executeTool({ name: "list_stations", args: { limit: 5 } }, ctx);
     expect(r.text.split("\n")).toHaveLength(3);
