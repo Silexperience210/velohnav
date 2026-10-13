@@ -15,7 +15,7 @@
 
 VelohNav is a privacy-first Android app for cyclists in Luxembourg. It combines a live map of Vel'OH! stations, an on-device AI assistant, AR turn-by-turn navigation, weather-aware ride advice, and public-transport departures — without sending your location or questions to the cloud.
 
-![Map, AI assistant, and AR mockups](docs/mockups.svg)
+![Map, AI assistant, and AR mockups](docs/mockups-composite.png)
 
 ---
 
