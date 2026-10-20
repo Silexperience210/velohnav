@@ -61,7 +61,7 @@ export function NetworkSummary({ totals, lastUpdate }) {
       {totals.bikes > 0 && totals.elec === totals.bikes
         ? <span style={{ color: color.elec }}><Icon name="bolt" size={11} stroke={2} style={{ display: "inline", verticalAlign: "-1px" }}/> {t("ui.map.all_elec")}</span>
         : <span><b style={{ color: color.elec }}>{totals.elec}</b> {t("ui.st.elec").toLowerCase()}</span>}
-      <span><b style={{ color: color.text }}>{totals.docks}</b> {t("ui.net.docks_free")}</span>
+      <span><b style={{ color: color.text }}>{totals.docks}</b> {t("ui.st.docks").toLowerCase()}</span>
       {lastUpdate !== undefined && <span style={{ marginLeft: "auto", color: "var(--vn-text3)" }}>
         <Icon name="clock" size={11} stroke={2} style={{ display: "inline", verticalAlign: "-1px", marginRight: 3 }}/>
         {fmtAgo(lastUpdate)}</span>}
