@@ -225,6 +225,7 @@ export default {
   "ui.st.elec":            "E-bikes",
   "ui.st.meca":            "Classic",
   "ui.st.docks":           "Docks",
+  "ui.net.docks_free":     "free return spaces",
   "ui.st.cap":             "Capacity {n}",
   "ui.st.walk":            "{min} min walk",
   "ui.st.go":              "Go",

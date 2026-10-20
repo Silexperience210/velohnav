@@ -226,6 +226,9 @@ export default {
   "ui.st.elec":            "Élec",
   "ui.st.meca":            "Méca",
   "ui.st.docks":           "Bornes",
+  // Dans un total reseau, « bornes » se lit comme la capacite du reseau. Ce sont les
+  // places ou l'on peut RENDRE un velo maintenant : le mot doit le dire.
+  "ui.net.docks_free":     "places de retour libres",
   "ui.st.cap":             "Capacité {n}",
   "ui.st.walk":            "{min} min à pied",
   "ui.st.go":              "Y aller",
