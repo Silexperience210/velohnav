@@ -229,6 +229,7 @@ export default {
   // Dans un total reseau, « bornes » se lit comme la capacite du reseau. Ce sont les
   // places ou l'on peut RENDRE un velo maintenant : le mot doit le dire.
   "ui.net.docks_free":     "places de retour libres",
+  "ui.net.stations_open":  "{open} / {total} stations ouvertes",
   "ui.st.cap":             "Capacité {n}",
   "ui.st.walk":            "{min} min à pied",
   "ui.st.go":              "Y aller",
