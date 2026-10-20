@@ -226,7 +226,6 @@ export default {
   "ui.st.meca":            "Classic",
   "ui.st.docks":           "Docks",
   "ui.net.docks_free":     "free return spaces",
-  "ui.net.stations_open":  "{open} / {total} open stations",
   "ui.st.cap":             "Capacity {n}",
   "ui.st.walk":            "{min} min walk",
   "ui.st.go":              "Go",
